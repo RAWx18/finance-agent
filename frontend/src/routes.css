@@ -1,0 +1,68 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.site-navigation { display: flex; align-items: center; gap: .25rem 1.15rem; min-width: 0; }
+.site-navigation > a { min-height: 44px; display: inline-flex; align-items: center; font-size: .85rem; font-weight: 550; text-decoration: none; border-bottom: 2px solid transparent; }
+.site-navigation > a[aria-current="page"] { border-color: var(--teal); }
+.site-navigation > a:hover { text-decoration: underline; text-underline-offset: .2em; }
+.site-navigation .quiet { font-size: .85rem; }
+.access-page { width: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(1.5rem, 5vw, 5rem); align-content: center; align-items: center; overflow: auto; scrollbar-width: thin; }
+.access-copy { max-width: 38rem; }
+.access-copy h1 { font-size: clamp(2.25rem, 4vw, 3.5rem); font-weight: 550; margin-block: 1rem; }
+.access-copy > p:not(.eyebrow) { max-width: 40ch; }
+.signin-card { max-width: 32rem; padding: clamp(1.25rem, 3vw, 2rem); }
+.signin-card > .hint { margin-top: 1.25rem; }
+.access-status { grid-column: 1 / -1; width: min(100%, 42rem); }
+.access-status h1 { font-size: 1.6rem; }
+.google-signin { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; margin-top: 1.25rem; }
+.google-signin p { flex-basis: 100%; margin: 0; }
+.page-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; }
+.page-heading h1 { font-size: clamp(1.65rem, 3vw, 2.15rem); margin: 0; }
+.page-heading .eyebrow { margin-bottom: .4rem; }
+main.product-main:not([data-route="/app"]) { grid-template-rows: auto minmax(0, 1fr); padding-bottom: 1rem; }
+.figures-page { min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.figures-content { min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: #93a7a1 transparent; padding: .1rem .65rem 1rem .1rem; scroll-padding: 1rem; }
+.figures-content .projection-bar { margin-top: 0; }
+.figures-content .editor { padding: 1.25rem; border: 1px solid var(--line); }
+.figures-content .editor-actions { bottom: -1rem; }
+.figure-navigation { max-width: 44rem; }
+.figure-actions { padding-top: .7rem; border-top: 1px solid var(--line); }
+.figure-actions .quiet.danger { margin-left: auto; color: var(--warning); }
+.figure-actions > * { font-size: .85rem; }
+.account-page { overflow: auto; min-height: 0; scrollbar-width: thin; padding: 0 .5rem .5rem 0; }
+.account-layout { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 1.5rem; max-width: 72rem; align-items: start; }
+.account-layout form { display: grid; gap: .7rem; margin-block: 1.4rem; }
+.account-layout form button { justify-self: start; }
+.account-layout form p { margin: 0; }
+.google-identity { border-top: 1px solid var(--line); padding-top: 1.25rem; }
+.google-identity dl { display: grid; gap: .8rem; margin-block: 1rem; }
+.google-identity dd { overflow-wrap: anywhere; }
+.account-details { display: grid; gap: 1.25rem; }
+.account-delete button.quiet { color: var(--warning); }
+.account-delete { margin-top: 1rem; }
+.dialog:has(#delete-confirmation) { height: auto; max-height: calc(100dvh - 2rem); }
+#delete-confirmation { margin-block: .6rem 1rem; }
+
+@media (max-width: 700px) {
+  .site-header { flex-wrap: wrap; gap: .1rem; }
+  .site-navigation { width: 100%; justify-content: space-between; gap: .4rem; }
+  .site-navigation > a, .site-navigation .quiet { font-size: .78rem; }
+  .site-navigation > a { min-height: 44px; }
+  .access-page { grid-template-columns: minmax(0, 1fr); align-content: start; gap: 1.5rem; padding-block: 1.5rem; }
+  .access-copy h1 { font-size: 2rem; }
+  .signin-card { max-width: none; }
+  .account-layout { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .account-delete { margin-top: 0; }
+  #root:has(.product-main:not([data-route="/app"])), #root:has(.access-page) { height: auto; min-height: 100dvh; }
+  .figures-page, .account-page, .figures-content { overflow: visible; }
+  .figures-content { padding-right: 0; }
+  .figures-content .scroll-region { max-height: none; overflow: visible; }
+  .figure-actions { margin-top: 1rem; }
+  .figure-actions .quiet.danger { margin-left: 0; }
+  .page-heading > .button { font-size: .8rem; }
+}
+@media (max-width: 360px), (max-height: 560px) {
+  .site-navigation { flex-wrap: wrap; }
+  .access-page, .account-page, .figures-content { overflow: visible; }
+  .figures-page { display: block; }
+  .page-heading h1, .access-copy h1, .access-status h1 { overflow-wrap: anywhere; }
+}
