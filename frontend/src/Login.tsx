@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 import { api, ApiError, authEpoch } from './api';
 import type { AuthSettings, ReturnPath } from './api';
-import { useAuth } from './Auth';
+import { dismiss, notify } from './Toast';
 
 export function returnPath(value: string | null | undefined): ReturnPath {
   return value === '/figures' || value === '/account' ? value : '/app';
@@ -12,25 +12,42 @@ export function returnPath(value: string | null | undefined): ReturnPath {
 
 export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBegin?: () => void }) {
   const [settings, setSettings] = useState<AuthSettings | null>(null);
-  const [error, setError] = useState('');
+  const [error, setError] = useState<{ message: string; source: 'settings' | 'start' } | null>(null);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const mounted = useRef(false);
   const pending = useRef(false);
+  const start = useRef<(() => Promise<void>) | null>(null);
+  useEffect(() => { start.current = signIn; });
   useEffect(() => {
     mounted.current = true;
     const controller = new AbortController();
     void api.auth.settings(controller.signal).then(value => {
-      if (!controller.signal.aborted) { setSettings(value); setError(''); }
-    }).catch(() => { if (!controller.signal.aborted) setError('Sign-in could not be checked. Please try again.'); });
-    return () => { mounted.current = false; controller.abort(); };
+      if (!controller.signal.aborted) { setSettings(value); setError(null); }
+    }).catch(() => { if (!controller.signal.aborted) setError({ message: 'Sign-in could not be checked. Please try again.', source: 'settings' }); });
+    return () => { mounted.current = false; controller.abort(); dismiss('login:error'); };
   }, [attempt]);
 
+  useEffect(() => {
+    if (!error) return;
+    let current = true;
+    const epoch = authEpoch();
+    notify({ id: 'login:error', title: error.source === 'settings' ? 'Could not check sign-in' : 'Could not start sign-in',
+      message: error.message, severity: 'error', duration: null,
+      action: { label: error.source === 'settings' ? 'Check again' : 'Retry', disabled: busy, onClick: () => {
+        if (!current || !mounted.current || epoch !== authEpoch() || pending.current) return;
+        current = false;
+        if (error.source === 'start') return start.current?.();
+        setError(null); setAttempt(value => value + 1);
+      } } });
+    return () => { current = false; dismiss('login:error'); };
+  }, [error, busy]);
+
   async function signIn() {
-    if (pending.current || !settings?.googleAvailable) return;
+    if (!mounted.current || pending.current || !settings?.googleAvailable) return;
     pending.current = true;
     const epoch = authEpoch();
-    setBusy(true); setError(''); onBegin?.();
+    setBusy(true); setError(null); dismiss('login:error'); onBegin?.();
     try {
       const { url } = await api.auth.login(returnTo);
       if (!mounted.current || authEpoch() !== epoch) return;
@@ -40,10 +57,10 @@ export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBe
       if ((!google && !callback) || target.username || target.password) throw new Error('Invalid sign-in destination');
       window.location.assign(url);
     } catch (reason) {
-      if (mounted.current && authEpoch() === epoch) setError(reason instanceof ApiError && reason.status === 429
+      if (mounted.current && authEpoch() === epoch) setError({ source: 'start', message: reason instanceof ApiError && reason.status === 429
         ? 'Sign-in is busy. Wait a moment, then try again.'
         : reason instanceof ApiError && reason.status === 503 ? 'Sign-in is temporarily unavailable. Please try again shortly.'
-          : 'Sign-in couldn’t start. Check your connection and try again.');
+          : 'Sign-in couldn’t start. Check your connection and try again.' });
     } finally {
       pending.current = false;
       if (mounted.current) setBusy(false);
@@ -51,13 +68,12 @@ export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBe
   }
 
   return <div className="google-signin">
-    {settings?.googleAvailable === false && <p className="notice">Sign-in is not available yet. Please try again later.</p>}
-    {error && <p className="notice warning" role="alert">{error}</p>}
+    {settings?.googleAvailable === false && <p className="hint">Sign-in is not available yet. Please try again later.</p>}
     {!settings && !error && <p role="status">Checking sign-in availability…</p>}
     <button className="primary" disabled={!settings?.googleAvailable || busy} onClick={() => void signIn()}>
       {busy ? 'Opening Google…' : 'Continue with Google'}
     </button>
-    {(!settings && error || settings?.googleAvailable === false) && <button onClick={() => { setError(''); setAttempt(value => value + 1); }}>Check again</button>}
+    {settings?.googleAvailable === false && !error && <button onClick={() => { setError(null); setAttempt(value => value + 1); }}>Check again</button>}
   </div>;
 }
 
@@ -69,21 +85,32 @@ const failures: Record<string, string> = {
 };
 
 export function Login() {
-  const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const signin = useRef<HTMLElement>(null);
   const params = new URLSearchParams(location.search);
   const returnTo = returnPath(params.get('returnTo'));
-  const failure = failures[params.get('error') ?? ''];
+  const code = params.get('error') ?? '';
+  const failure = failures[code];
+  useEffect(() => {
+    if (!failure) return;
+    let current = true;
+    notify({ id: 'login:error', title: code === 'cancelled' ? 'Sign-in cancelled' : 'Sign-in not completed',
+      message: failure, severity: code === 'cancelled' ? 'info' : 'error', duration: code === 'cancelled' ? 6000 : null,
+      action: code === 'cancelled' ? undefined : { label: 'Continue', onClick: () => {
+        if (current) signin.current?.querySelector<HTMLButtonElement>('.google-signin .primary')?.focus();
+      } } });
+    return () => { current = false; dismiss('login:error'); };
+  }, [failure, code, location.search]);
+
   return <main id="main" className="access-page">
     <section className="access-copy"><p className="eyebrow">Your next 30 days</p>
       <h1>A clearer plan starts here.</h1><p>Talk through your money and bills, see what’s coming, and decide what to do next.</p>
       <p className="hint">No bank connection. No payments made.</p>
     </section>
-    <section className="card signin-card" aria-labelledby="signin-heading">
+    <section ref={signin} className="card signin-card" aria-labelledby="signin-heading">
       <h2 id="signin-heading">Sign in to Cash flow</h2>
       <p>Keep your figures private and return to your saved plan.</p>
-      {(failure || auth.message) && <p className={`notice${failure ? ' warning' : ''}`} role={failure ? 'alert' : 'status'}>{failure || auth.message}</p>}
       <GoogleSignIn returnTo={returnTo} onBegin={() => {
         if (location.search) void navigate(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`, { replace: true });
       }} />
