@@ -5,26 +5,53 @@ import { api, ApiError, authEpoch } from './api';
 import { useAuth } from './Auth';
 import { Dialog } from './Dialog';
 import { GoogleSignIn } from './Login';
+import { dismiss, notify } from './Toast';
 
 export function Account({ retentionHours }: { retentionHours: number | undefined }) {
   const auth = useAuth();
   const user = auth.session!.user;
   const [name, setName] = useState(user.displayName);
-  const [message, setMessage] = useState('');
+  const [saveFailed, setSaveFailed] = useState(false);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmation, setConfirmation] = useState('');
-  const [deleteError, setDeleteError] = useState('');
+  const [deleteFailed, setDeleteFailed] = useState(false);
   const [requiresSignin, setRequiresSignin] = useState(false);
   const mounted = useRef(false);
   const pending = useRef(false);
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const actions = useRef<{ save: () => Promise<void>; remove: () => Promise<void> } | null>(null);
+  useEffect(() => { mounted.current = true; return () => {
+    mounted.current = false;
+    dismiss('account:save'); dismiss('account:delete');
+  }; }, []);
+
+  useEffect(() => { actions.current = { save, remove }; });
+
+  useEffect(() => {
+    if (!saveFailed) return;
+    const epoch = authEpoch();
+    notify({ id: 'account:save', title: 'Your name could not be saved',
+      message: 'Check your connection and try again.', severity: 'error', duration: null,
+      action: { label: 'Retry', disabled: busy, onClick: () => {
+        if (mounted.current && epoch === authEpoch()) return actions.current?.save();
+      } } });
+  }, [saveFailed, busy]);
+
+  useEffect(() => {
+    if (!deleteFailed || !deleting || requiresSignin) { dismiss('account:delete'); return; }
+    const epoch = authEpoch();
+    notify({ id: 'account:delete', title: 'Account deletion could not be confirmed',
+      message: 'Check your connection. Keep DELETE entered to retry, or keep your account for now.', severity: 'critical', duration: null,
+      action: { label: 'Retry deletion', disabled: busy || confirmation !== 'DELETE', onClick: () => {
+        if (mounted.current && epoch === authEpoch()) return actions.current?.remove();
+      } } });
+  }, [deleteFailed, deleting, requiresSignin, busy, confirmation]);
 
   async function save() {
-    if (pending.current) return;
+    if (!mounted.current || pending.current) return;
     const displayName = name.trim();
-    setMessage('');
+    dismiss('account:save'); setSaveFailed(false);
     if (!displayName || Array.from(displayName).length > 80 || /\p{C}/u.test(name)) {
       setError('Use 1–80 characters, without control characters.'); return;
     }
@@ -34,10 +61,12 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
     try {
       const saved = await api.account.update(displayName);
       if (!mounted.current || epoch !== authEpoch()) return;
-      auth.updateUser(saved); setName(saved.displayName); setMessage('Your name is saved.');
+      auth.updateUser(saved); setName(saved.displayName);
+      notify({ id: 'account:save', title: 'Your name is saved.', severity: 'success', duration: 6000 });
     } catch (reason) {
-      if (mounted.current && epoch === authEpoch()) setError(reason instanceof ApiError && reason.status === 422
-        ? 'Use 1–80 characters, without control characters.' : 'Your name could not be saved. Check your connection and try again.');
+      if (!mounted.current || epoch !== authEpoch()) return;
+      if (reason instanceof ApiError && reason.status === 422) setError('Use 1–80 characters, without control characters.');
+      else setSaveFailed(true);
     } finally {
       pending.current = false;
       if (mounted.current) setBusy(false);
@@ -45,18 +74,20 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
   }
 
   async function remove() {
-    if (pending.current || confirmation !== 'DELETE' || requiresSignin) return;
+    if (!mounted.current || !deleting || pending.current || confirmation !== 'DELETE' || requiresSignin) return;
     pending.current = true;
-    setBusy(true); setDeleteError('');
+    setBusy(true); setDeleteFailed(false); dismiss('account:delete');
     const epoch = authEpoch();
     try {
       const result = await api.account.delete('DELETE');
-      if (result.deleted && mounted.current && epoch === authEpoch()) auth.deleted();
+      if (!mounted.current || epoch !== authEpoch()) return;
+      if (result.deleted) auth.deleted();
+      else setDeleteFailed(true);
     } catch (reason) {
       if (!mounted.current || epoch !== authEpoch()) return;
       if (reason instanceof ApiError && reason.status === 428 && reason.body.code === 'requiresSignin') {
         setRequiresSignin(true); setConfirmation('');
-      } else setDeleteError('Account deletion could not be confirmed. Check your connection and try again.');
+      } else setDeleteFailed(true);
     } finally {
       pending.current = false;
       if (mounted.current) setBusy(false);
@@ -70,9 +101,8 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
         <form onSubmit={event => { event.preventDefault(); void save(); }}>
           <label htmlFor="display-name">Display name</label>
           <input id="display-name" autoComplete="nickname" value={name} disabled={busy} aria-invalid={!!error} aria-describedby={error ? 'name-error' : undefined}
-            onChange={event => { setName(event.target.value); setError(''); setMessage(''); }} />
+            onChange={event => { setName(event.target.value); setError(''); }} />
           {error && <p id="name-error" className="field-error" role="alert">{error}</p>}
-          {message && <p role="status">{message}</p>}
           <button className="primary" disabled={busy || name === user.displayName}>{busy && !deleting ? 'Saving…' : 'Save name'}</button>
         </form>
         <div className="google-identity"><h3>Signed in with Google</h3><dl>
@@ -85,7 +115,7 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
       </section>
       <section className="card account-delete" aria-labelledby="delete-heading"><h2 id="delete-heading">Delete app account</h2>
         <p>Permanently delete your figures, plan, assumptions and every app login session.</p>
-        <button className="quiet danger" disabled={busy} onClick={() => { setDeleting(true); setConfirmation(''); setDeleteError(''); setRequiresSignin(false); }}>Delete app account</button>
+        <button className="quiet danger" disabled={busy} onClick={() => { setDeleting(true); setConfirmation(''); setDeleteFailed(false); setRequiresSignin(false); }}>Delete app account</button>
       </section></div>
     </div>
     <Dialog open={deleting} title="Delete your app account?" onClose={() => { if (!busy) setDeleting(false); }} actions={!requiresSignin && <>
@@ -99,7 +129,6 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
         <label htmlFor="delete-confirmation">Type DELETE to confirm</label>
         <input id="delete-confirmation" autoComplete="off" spellCheck={false} value={confirmation} disabled={busy} onChange={event => setConfirmation(event.target.value)} />
       </>}
-      {deleteError && <p className="notice warning" role="alert">{deleteError}</p>}
     </Dialog>
   </section>;
 }

@@ -7,6 +7,7 @@ import { dateLabel, decimal, money, parseAmount } from './money';
 import { PagedList } from './PagedList';
 import { ProposalReview } from './ScenarioDetails';
 import { Dialog } from './Dialog';
+import { dismiss, notify } from './Toast';
 
 type Choice = AdjustmentOptions['options'][number] & { amount: string };
 
@@ -51,6 +52,18 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
     });
     return () => controller.abort();
   }, [active, key, snapshot.revision]);
+
+  useEffect(() => {
+    let current = true;
+    if (active && loadError) notify({ id: 'choices:load', title: 'Choices could not be loaded', message: loadError,
+      severity: 'error', duration: null, action: { label: 'Retry', disabled: blocked, onClick: () => {
+        if (!current || blocked) return;
+        current = false;
+        setRefresh(value => value + 1);
+      } } });
+    else dismiss('choices:load');
+    return () => { current = false; dismiss('choices:load'); };
+  }, [active, loadError, blocked]);
 
   function fail(message: string) {
     setError(message);
@@ -98,10 +111,10 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
     {locked && !draft && !pending && <p className="hint">Please wait for your figures to reconnect or your action to finish.</p>}
     {snapshot.accepted && <div className="actions"><button type="button" disabled={blocked} onClick={() => onCommand({ type: 'clearAccepted' })}>Clear saved assumptions</button>
       <span className="hint">Restores your original amounts and clears the preview.</span></div>}
-    {loadError ? <p className="notice warning" role="alert">{loadError}</p> : !options ? <p role="status">Loading choices…</p>
-      : !options.options.length && <p className="notice">No eligible spending changes are available. Essentials, loans, automatic debits and uncertain amounts cannot be reduced here.</p>}
-    {(loadError || staleChoices || preview) && <button type="button" className="quiet" disabled={blocked} onClick={() => setRefresh(refresh + 1)}>
-      {loadError ? 'Retry loading choices' : 'Refresh choices'}</button>}
+    {!loadError && !options && <p role="status">Loading choices…</p>}
+    {options && !options.options.length && <p className="notice">No eligible spending changes are available. Essentials, loans, automatic debits and uncertain amounts cannot be reduced here.</p>}
+    {(staleChoices || preview) && <button type="button" className="quiet" disabled={blocked} onClick={() => setRefresh(value => value + 1)}>
+      Refresh choices</button>}
     {!selecting && errorNotice}
     {staleChoices && <div className="notice warning"><p>Your figures changed. Check your selections; reselect any payment or expense whose amount or terms changed.</p>
       <button type="button" disabled={blocked || !options} onClick={() => {
