@@ -1,12 +1,12 @@
 /* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
 /* SPDX-License-Identifier: AGPL-3.0-only */
-.captions { display: flex; flex: 1; flex-direction: column; min-inline-size: 0; min-block-size: min-content; padding-block-start: .25rem; }
-.live-caption { flex: none; block-size: 90px; min-inline-size: 0; padding: .5rem .75rem; border: 1px solid #d5dfd5; border-inline-start-width: 3px; border-radius: 12px; color: var(--ink, #253c33); background: #fffefa; overflow: auto; overflow-wrap: anywhere; scrollbar-width: thin; scrollbar-color: #9cab9e transparent; }
+.captions { --caption-size: 90px; display: flex; flex: 1; flex-direction: column; min-inline-size: 0; min-block-size: calc(var(--caption-size) + 44px + 3.75rem); padding-block-start: .25rem; }
+.live-caption { flex: none; block-size: var(--caption-size); min-inline-size: 0; padding: .5rem .75rem; border: 1px solid #d5dfd5; border-inline-start-width: 3px; border-radius: 12px; color: var(--ink, #253c33); background: #fffefa; overflow: auto; overflow-wrap: anywhere; scrollbar-width: thin; scrollbar-color: #9cab9e transparent; }
 .captions .caption-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem .75rem; }
 .captions .caption-heading h3, .captions .caption-heading strong { margin: 0; font-size: .78rem; font-weight: 600; color: var(--ink, #253c33); }
 .captions time { flex: none; color: var(--muted, #59665e); font-size: .75rem; font-variant-numeric: tabular-nums; }
 .live-caption > p { margin: .25rem 0 0; font-size: .95rem; line-height: 1.5; white-space: pre-wrap; }
-.captions .caption-history { display: flex; flex: 1; flex-direction: column; min-inline-size: 0; min-block-size: min-content; }
+.captions .caption-history { display: flex; flex: 1; flex-direction: column; min-inline-size: 0; min-block-size: calc(44px + 3.5rem); }
 .captions .captions-heading { flex: none; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .25rem .65rem; min-block-size: 44px; }
 .captions .captions-heading h3 { margin: 0; font-size: .8rem; color: var(--muted, #59665e); font-weight: 550; }
 .captions-heading button { min-block-size: 44px; max-inline-size: 100%; font-size: .78rem; }
@@ -22,15 +22,17 @@
   .live-caption { background: rgb(255 255 255 / 82%); backdrop-filter: blur(8px); }
 }
 @media (min-width: 701px) and (max-height: 800px) {
-  .live-caption { block-size: 72px; }
+  .captions { --caption-size: 72px; }
 }
 @media (max-width: 700px) {
-  .live-caption { block-size: 68px; padding: .375rem .625rem; }
+  .captions { --caption-size: 68px; }
+  .live-caption { padding: .375rem .625rem; }
   .live-caption > p, .caption-history-scroll .transcript p { font-size: .85rem; }
   .captions .caption-heading { gap: .125rem .5rem; }
   .captions .caption-heading h3, .captions .caption-heading strong { font-size: .75rem; }
 }
 @media (max-width: 360px), (max-height: 700px), (max-width: 700px) and (max-height: 780px) {
+  .captions { --caption-size: 5.625rem; flex: none; }
+  .captions .caption-history { flex: none; }
   .caption-history-scroll { flex: none; block-size: 7.5rem; }
-  .live-caption { block-size: 5.625rem; }
 }
