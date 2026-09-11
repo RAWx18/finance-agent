@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Environment and local credentials; examples must contain no secrets.
+.env
+.env.*
+!.env.example
+!.env.*.example
+.secrets/
+.credentials/
+.ssh/
+
+# Node.js package installs and caches; keep manifests and lockfiles.
+node_modules/
+.npm/
+.pnpm-store/
+**/.yarn/cache/
+**/.yarn/unplugged/
+**/.yarn/build-state.yml
+**/.yarn/install-state.gz
+.pnp.cjs
+.pnp.loader.mjs
+
+# React/TypeScript and package build outputs.
+dist/
+build/
+*.tsbuildinfo
+.eslintcache
+.stylelintcache
+.cache/
+
+# Python environments, bytecode, packaging, and tool caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.uv-cache/
+.hypothesis/
+
+# Retained local financial sessions.
+.data/
+
+# Test reports and coverage.
+coverage/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.nyc_output/
+playwright-report/
+test-results/
+
+# Docker client credentials and local runtime metadata, not build definitions.
+**/.docker/config.json
+**/.docker/contexts/
+**/.docker/buildx/
+
+# Azure/OpenTofu local data; keep definitions, shared variables, and lockfiles.
+.azure/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tofuplan
+.terraform.tfstate.lock.info
+.terraformrc
+terraform.rc
+.tofurc
+tofu.rc
+credentials.tfrc.json
+# Private variable values use *.local.tfvars or *.local.tofuvars (also JSON).
+*.local.tfvars
+*.local.tfvars.json
+*.local.tofuvars
+*.local.tofuvars.json
+
+# Editor-local state; keep shared VS Code and IDE project configuration.
+**/.idea/workspace.xml
+**/.idea/tasks.xml
+**/.idea/shelf/
+**/.idea/dataSources.local.xml
+*.swp
+*.swo
+*~
+
+# OS metadata, logs, and temporary files.
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.temp
+.tmp/
