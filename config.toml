@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
+# SPDX-License-Identifier: AGPL-3.0-only
+
+currency = "INR"
+timezone = "Asia/Kolkata"
+horizon_days = 30
+retention_hours = 24
+cleanup_seconds = 60
+heartbeat_seconds = 15
+max_request_bytes = 131072
+max_records = 200
+max_occurrences = 1000
+max_money_paise = 1000000000000
+max_total_paise = 1000000000000000
+max_sessions = 100
+max_commands = 100
+max_event_streams = 200
+max_streams_per_session = 4
+
+[auth]
+session_hours = 168
+idle_hours = 24
+oauth_seconds = 300
+recheck_seconds = 300
+recent_signin_seconds = 900
+provider_timeout_seconds = 5
+provider_max_bytes = 65536
+provider_connections = 8
+clock_skew_seconds = 30
+jwks_cache_seconds = 3600
+jwks_refresh_seconds = 30
+max_flows = 1000
+max_users = 1000
+max_logins_per_user = 5
+max_cookie_bytes = 4096
+rate_window_seconds = 60
+login_limit = 10
+invalid_limit = 30
+account_limit = 10
+mutation_limit = 120
+voice_limit = 5
+max_rate_keys = 2000
+
+[voice]
+reasoning_effort = "none"
+stt_locale = "en-IN"
+stt_segmentation_ms = 500
+stt_phrases = ["rupees", "paise", "lakh", "lakhs", "crore", "crores", "EMI", "equated monthly instalment", "minimum due"]
+tts_voice = "en-IN-Aarti:DragonHDLatestNeural"
+tts_locale = "en-IN"
+call_seconds = 1800
+startup_seconds = 45
+shutdown_seconds = 10
+tool_timeout_seconds = 30
+speech_timeout_seconds = 0.6
