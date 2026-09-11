@@ -3,12 +3,13 @@
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { App } from '../src/App';
+import { App, mockAuth } from './appSupport';
 import { api, ApiError } from '../src/api';
 import type { AdjustmentOptions, Snapshot } from '../src/api';
 import { adjustmentOptions, planningSnapshot, scenario, settings, Stream } from './fixtures';
 
 beforeEach(() => {
+  mockAuth();
   Stream.instances = [];
   vi.stubGlobal('EventSource', Stream);
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
@@ -59,7 +60,7 @@ describe('integrated spending comparison', () => {
     await user.click(screen.getByRole('button', { name: 'Overview' }));
     expect(screen.queryByRole('region', { name: 'Spending changes' })).not.toBeInTheDocument();
     expect(vi.mocked(api.options).mock.calls[0][0]?.aborted).toBe(true);
-    await user.click(screen.getByRole('button', { name: 'Close your figures' }));
+    await user.click(screen.getByRole('link', { name: 'Back to conversation' }));
     act(() => Stream.instances.at(-1)!.emit('snapshot', { ...planningSnapshot(), revision: 1, sequence: 1 }));
     expect(api.options).toHaveBeenCalledTimes(1);
   });
