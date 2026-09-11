@@ -6,6 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App, mockAuth } from './appSupport';
 import { api, ApiError } from '../src/api';
 import type { AdjustmentOptions, Snapshot } from '../src/api';
+import { Comparison } from '../src/Comparison';
+import { ToastViewport } from '../src/Toast';
+import * as notifications from '../src/Toast';
 import { adjustmentOptions, planningSnapshot, scenario, settings, Stream } from './fixtures';
 
 beforeEach(() => {
@@ -98,6 +101,9 @@ describe('integrated spending comparison', () => {
     await user.type(screen.getByLabelText('Planned amount (₹)'), value as string);
     await user.click(screen.getByRole('button', { name: 'Add to preview' }));
     expect(screen.getByRole('alert')).toHaveTextContent(message as string);
+    expect(screen.getByLabelText('Planned amount (₹)')).toHaveAttribute('aria-invalid', 'true');
+    expect(within(screen.getByRole('dialog', { name: 'Choose a spending change' })).getByRole('alert')).toBeVisible();
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole('alert')).toHaveFocus());
     expect(api.save).not.toHaveBeenCalled();
   });
@@ -371,10 +377,14 @@ describe('integrated spending comparison', () => {
     act(() => Stream.instances.at(-1)!.emit('snapshot', { ...planningSnapshot(), revision: 1, sequence: 1 }));
     await screen.findByText(/Choices could not be loaded/);
     await act(async () => resolve(adjustmentOptions));
-    expect(screen.getByRole('alert')).toHaveTextContent('Choices could not be loaded');
+    const notice = screen.getByRole('alert', { name: 'Spending choices unavailable' });
+    expect(notice).toHaveTextContent('Choices could not be loaded');
+    expect(within(screen.getByRole('complementary', { name: 'Notifications' })).getByRole('alert')).toBe(notice);
+    expect(within(screen.getByRole('region', { name: 'Spending changes' })).queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText('Loading choices…')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add a change' })).toBeDisabled();
     vi.mocked(api.options).mockResolvedValueOnce({ ...adjustmentOptions, revision: 1, options: [] });
-    await user.click(screen.getByRole('button', { name: 'Retry loading choices' }));
+    await user.click(within(notice).getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText(/No eligible spending changes/)).toBeVisible();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
@@ -410,5 +420,58 @@ describe('integrated spending comparison', () => {
     await screen.findAllByText(/a date may have passed/);
     expect(screen.getByRole('button', { name: 'Refresh choices' })).toBeEnabled();
     expect(within(screen.getByRole('region', { name: 'Spending change preview' })).getByRole('region', { name: 'Before · reported figures' })).toHaveTextContent('₹10,000.00');
+  });
+});
+
+describe('spending choice notifications', () => {
+  it('disables retries while locked, preserves selections, and clears the failure on recovery', async () => {
+    const user = userEvent.setup();
+    const notify = vi.spyOn(notifications, 'notify');
+    vi.mocked(api.options).mockRejectedValueOnce(new TypeError('private service diagnostic'));
+    const props = { snapshot: { ...planningSnapshot(), accepted: scenario() }, settings, active: true,
+      locked: true, draft: false, pending: false, onCommand: vi.fn() };
+    const view = render(<><Comparison {...props} /><ToastViewport /></>);
+    const notice = await screen.findByRole('alert', { name: 'Spending choices unavailable' });
+    expect(within(notice).getByRole('button', { name: 'Retry' })).toBeDisabled();
+    expect(notice).not.toHaveTextContent('private service diagnostic');
+    expect(notify).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'choices:load', severity: 'error', duration: null }));
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Optional purchase');
+    view.rerender(<><Comparison {...props} locked={false} /><ToastViewport /></>);
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a change' })).toBeEnabled());
+    expect(api.options).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Optional purchase');
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(['inactive', 'unmounted'])('dismisses its notification and invalidates its retry when %s', async state => {
+    const notify = vi.spyOn(notifications, 'notify');
+    vi.mocked(api.options).mockRejectedValue(new TypeError('Offline'));
+    const props = { snapshot: planningSnapshot(), settings, active: true, locked: false,
+      draft: false, pending: false, onCommand: vi.fn() };
+    const view = render(<><Comparison {...props} /><ToastViewport /></>);
+    await screen.findByRole('alert', { name: 'Spending choices unavailable' });
+    const retry = notify.mock.calls.at(-1)![0].action!.onClick;
+    if (state === 'inactive') view.rerender(<><Comparison {...props} active={false} /><ToastViewport /></>);
+    else view.rerender(<ToastViewport />);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await act(async () => { await retry(); });
+    expect(api.options).toHaveBeenCalledTimes(1);
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not notify for a request that fails after leaving the view', async () => {
+    let reject!: (reason: unknown) => void;
+    vi.mocked(api.options).mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const notify = vi.spyOn(notifications, 'notify');
+    const view = render(<><Comparison snapshot={planningSnapshot()} settings={settings} active locked={false}
+      draft={false} pending={false} onCommand={vi.fn()} /><ToastViewport /></>);
+    expect(screen.getByRole('status')).toHaveTextContent('Loading choices');
+    view.rerender(<ToastViewport />);
+    expect(vi.mocked(api.options).mock.calls[0][0]?.aborted).toBe(true);
+    await act(async () => reject(new Error('Offline')));
+    expect(notify).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });

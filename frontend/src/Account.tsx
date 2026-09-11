@@ -42,7 +42,7 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
     if (!deleteFailed || !deleting || requiresSignin) { dismiss('account:delete'); return; }
     const epoch = authEpoch();
     notify({ id: 'account:delete', title: 'Account deletion could not be confirmed',
-      message: 'Check your connection. Keep DELETE entered to retry, or keep your account for now.', severity: 'critical', duration: null,
+      message: 'Deletion may have completed. Check your connection and keep DELETE entered to retry.', severity: 'critical', duration: null,
       action: { label: 'Retry deletion', disabled: busy || confirmation !== 'DELETE', onClick: () => {
         if (mounted.current && epoch === authEpoch()) return actions.current?.remove();
       } } });
@@ -118,14 +118,14 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
         <button className="quiet danger" disabled={busy} onClick={() => { setDeleting(true); setConfirmation(''); setDeleteFailed(false); setRequiresSignin(false); }}>Delete app account</button>
       </section></div>
     </div>
-    <Dialog open={deleting} title="Delete your app account?" onClose={() => { if (!busy) setDeleting(false); }} actions={!requiresSignin && <>
-      <button disabled={busy} onClick={() => setDeleting(false)}>Keep account</button>
+    <Dialog open={deleting} title="Delete your app account?" onClose={() => { if (!pending.current) setDeleting(false); }} actions={!requiresSignin && <>
+      <button disabled={busy} onClick={() => { if (!pending.current) setDeleting(false); }}>Keep account</button>
       <button className="danger" disabled={confirmation !== 'DELETE' || busy} onClick={() => void remove()}>{busy ? 'Deleting account…' : 'Permanently delete app account'}</button>
     </>}>
       <p>This irreversibly deletes all your app figures, plan and assumptions, signs out every app session, and stops any conversation.</p>
       <p><strong>Your Google account will not be deleted.</strong> Download your plan first if you want a copy.</p>
       {requiresSignin ? <><p className="notice">Sign in again with Google before deleting your app account. You’ll return here to confirm deletion again; signing in does not delete anything.</p>
-        <GoogleSignIn returnTo="/account" /></> : <>
+        {deleting && <GoogleSignIn returnTo="/account" />}</> : <>
         <label htmlFor="delete-confirmation">Type DELETE to confirm</label>
         <input id="delete-confirmation" autoComplete="off" spellCheck={false} value={confirmation} disabled={busy} onChange={event => setConfirmation(event.target.value)} />
       </>}

@@ -55,7 +55,7 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
 
   useEffect(() => {
     let current = true;
-    if (active && loadError) notify({ id: 'choices:load', title: 'Choices could not be loaded', message: loadError,
+    if (active && loadError) notify({ id: 'choices:load', title: 'Spending choices unavailable', message: loadError,
       severity: 'error', duration: null, action: { label: 'Retry', disabled: blocked, onClick: () => {
         if (!current || blocked) return;
         current = false;
