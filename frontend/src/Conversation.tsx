@@ -110,12 +110,13 @@ function audioSource(current: Attempt): 'local' | 'remote' | undefined {
     && remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false) return 'remote';
 }
 
-export function Conversation({ settings, sessionId, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, visible = true, sessionIssue }: {
+export function Conversation({ settings, sessionId, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, visible = true, sessionIssue, updatesLost = false }: {
   settings: Settings | null; sessionId?: string; disabled: boolean;
   onStarted: (snapshot: Snapshot) => void; onBusyChange: (busy: boolean) => void;
   presentation: 'landing' | 'ready' | 'session'; onPrepare: () => void;
   onPhaseChange: (phase: VoicePhase) => void; onSettings: (settings: Settings) => void;
   visible?: boolean; sessionIssue?: 'expired' | 'deleted' | 'unreadable' | 'unauthorized';
+  updatesLost?: boolean;
 }) {
   const [phase, setPhase] = useState<VoicePhase>('idle');
   const [activity, setActivity] = useState(quiet);
@@ -139,7 +140,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const running = phase === 'connecting' || phase === 'active' || phase === 'ending';
   const checkingCall = !!sessionId && !sessionBlocked && checkedSession !== sessionId;
   const busy = running || needsEnd || checkingCall;
-  const startBlocked = disabled || sessionBlocked || !settings?.voiceAvailable || running || needsEnd || checkingCall;
+  const startBlocked = disabled || updatesLost || sessionBlocked || !settings?.voiceAvailable || running || needsEnd || checkingCall;
   const actions = useRef({ start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId });
   const notifyPhase = useEffectEvent(onPhaseChange);
   const notifyBusy = useEffectEvent(onBusyChange);
@@ -161,7 +162,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     };
   }, []);
 
-  useLayoutEffect(() => {
+  const stopUnavailable = useEffectEvent(() => {
     const current = attempt.current;
     availability.current?.abort(); availability.current = null;
     setCheckingAvailability(false);
@@ -169,8 +170,11 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       dismiss('voice:problem'); dismiss('voice:availability'); dismiss('voice:audio');
       setProblem(null);
     } else setProblem(value => value?.type === 'session' ? null : value);
-    if (current && (sessionIssue || sessionId !== current.parentSession && sessionId !== current.sessionId)) void actions.current.finish('error');
-  }, [sessionIssue, sessionId]);
+    if (current && (sessionIssue || updatesLost || sessionId !== current.parentSession && sessionId !== current.sessionId))
+      void actions.current.finish('error', updatesLost && !sessionIssue ? { id: 'voice:problem', type: 'reconnect', title: 'Conversation stopped',
+        severity: 'warning', duration: null, message: 'Financial updates were interrupted. Microphone and assistant audio are off. Restore updates, then reconnect.' } : undefined);
+  });
+  useLayoutEffect(() => { stopUnavailable(); }, [sessionIssue, sessionId, updatesLost]);
 
   useEffect(() => {
     if (!problem || sessionIssue) { dismiss('voice:problem'); return; }
@@ -195,12 +199,13 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       action: { label: 'Resume audio', disabled, onClick: () => actions.current.playAudio() } });
   }, [activity, sessionBlocked, disabled]);
 
-  useEffect(() => {
+  const available = useEffectEvent(() => {
     if (settings?.voiceAvailable) {
       dismiss('voice:availability');
       setProblem(value => value?.id === 'voice:availability' ? null : value);
     }
-  }, [settings?.voiceAvailable]);
+  });
+  useEffect(() => { available(); }, [settings?.voiceAvailable]);
 
   useEffect(() => {
     if (!sessionId || sessionIssue) return;
@@ -321,6 +326,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       const updateTracks = () => {
         if (!live() || !current) return;
         const { localTrack, remoteTrack } = current;
+        if (localTrack?.readyState === 'ended') { microphoneLost(); return; }
         if (remoteTrack?.readyState === 'ended') update({ playing: false, blocked: false });
         update({ capture: localTrack?.readyState === 'live' && !localTrack.muted && localTrack.enabled !== false, muted: !client.isMicEnabled,
           remote: remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false });
@@ -331,6 +337,8 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         for (const event of ['mute', 'unmute', 'ended']) track.addEventListener?.(event, updateTracks);
       };
       const fail = (issue: Problem) => { if (live()) void actions.current.finish('error', issue); };
+      const microphoneLost = () => fail({ id: 'voice:problem', type: 'retry', title: 'Microphone disconnected', severity: 'error', duration: null,
+        message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
       const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
       const client = new PipecatClient({ transport, enableMic: true, enableCam: false, callbacks: {
         onConnected: () => update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false }),
@@ -446,7 +454,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       current.client.on(RTVIEvent.TrackStopped, (track, participant) => {
         if (!live()) return;
         current?.tracks.delete(track);
-        if (participant?.local && current?.localTrack === track) current.localTrack = undefined;
+        if (participant?.local && current?.localTrack === track) { microphoneLost(); return; }
         if (current?.remoteTrack === track) { current.remoteTrack = undefined; current.remoteId = undefined; }
         updateTracks();
         const stream = audio.current?.srcObject as MediaStream | null;

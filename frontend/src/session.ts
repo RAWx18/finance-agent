@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useCallback, useEffect, useReducer, useRef } from 'react';
-import { api, ApiError, authEpoch, errorMessage, exactNumbers, reportAuthLoss } from './api';
+import { api, ApiError, authEpoch, errorMessage, exactNumbers, reportAuthLoss, readSnapshot } from './api';
 import type { Command, FactsInput, Settings, Snapshot } from './api';
 import { draftFacts } from './money';
 
@@ -97,6 +97,8 @@ export function useSession() {
   const lock = useRef(false);
   const generation = useRef(0);
   const stream = useRef<EventSource | null>(null);
+  const latest = useRef(state.snapshot);
+  useEffect(() => { latest.current = state.snapshot; }, [state.snapshot]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -133,28 +135,36 @@ export function useSession() {
     const source = new EventSource('/api/session/events');
     const epoch = authEpoch();
     stream.current = source;
+    let recovery = 0;
+    const current = () => !controller.signal.aborted && epoch === authEpoch() && stream.current === source;
     dispatch({ type: 'connection', connection: 'connecting' });
-    source.onopen = () => dispatch({ type: 'connection', connection: 'live' });
+    // An open socket is not evidence that its financial picture is current.
+    source.onopen = () => { if (current()) recovery++; };
     source.addEventListener('snapshot', (event) => {
-      if (controller.signal.aborted || epoch !== authEpoch()) return;
+      if (!current()) return;
       try {
-        const snapshot = JSON.parse((event as MessageEvent<string>).data, exactNumbers) as Snapshot;
+        const snapshot = readSnapshot(JSON.parse((event as MessageEvent<string>).data, exactNumbers));
+        if (snapshot.sessionId !== sessionId || snapshot.sequence < (latest.current?.sequence ?? 0)) return;
+        latest.current = snapshot;
+        recovery++;
         dispatch({ type: 'snapshot', snapshot });
+        dispatch({ type: 'connection', connection: 'live' });
       } catch {
-        source.close();
+        source.close(); controller.abort();
         dispatch({ type: 'terminal', phase: 'unavailable', message: 'The saved figures could not be read safely. Retry the connection.' });
       }
     });
     for (const name of ['unauthenticated', 'sessionExpired', 'authUnavailable'] as const) {
       source.addEventListener(name, () => {
-        if (controller.signal.aborted) return;
+        if (!current()) return;
         source.close(); controller.abort();
         reportAuthLoss(name, epoch);
       });
     }
     for (const name of ['expired', 'deleted', 'notFound', 'unavailable'] as const) {
       source.addEventListener(name, () => {
-        source.close();
+        if (!current()) return;
+        source.close(); controller.abort();
         dispatch({ type: 'terminal', phase: name === 'notFound' ? 'deleted' : name,
           message: name === 'unavailable' ? 'Live updates are unavailable. Your draft is still here.'
             : name === 'expired' ? 'This projection has expired. Start again with fresh figures.'
@@ -163,15 +173,16 @@ export function useSession() {
       });
     }
     source.onerror = () => {
-      if (controller.signal.aborted || epoch !== authEpoch()) { source.close(); return; }
+      if (!current()) { source.close(); return; }
+      const version = ++recovery;
       dispatch({ type: 'connection', connection: 'reconnecting' });
       // EventSource hides HTTP errors; this one-off check distinguishes a terminal session from a dropped stream.
       void api.current(controller.signal).then((snapshot) => {
-        if (!controller.signal.aborted) dispatch({ type: 'snapshot', snapshot });
+        if (current() && version === recovery) dispatch({ type: 'snapshot', snapshot });
       }).catch((error: unknown) => {
-        if (controller.signal.aborted) return;
+        if (!current() || version !== recovery) return;
         if (error instanceof ApiError && ([404, 410, 503, 429].includes(error.status) || error.body.code === 'invalidStoredState')) {
-          source.close();
+          source.close(); controller.abort();
           dispatch({ type: 'terminal', phase: error.body.code === 'invalidStoredState' ? 'unreadable'
             : error.status === 410 ? 'expired' : error.status === 404 ? 'deleted' : 'unavailable', message: errorMessage(error) });
         }
@@ -200,6 +211,7 @@ export function useSession() {
         await api.delete();
         if (epoch === generation.current) {
           stream.current?.close();
+          stream.current = null;
           generation.current += 1;
           dispatch({ type: 'deleted' });
         }
@@ -224,6 +236,7 @@ export function useSession() {
       });
       if (error instanceof ApiError && [404, 410].includes(error.status)) {
         stream.current?.close();
+        stream.current = null;
         dispatch({ type: 'terminal', phase: error.status === 410 ? 'expired' : 'deleted', message: errorMessage(error) });
       }
     } finally {

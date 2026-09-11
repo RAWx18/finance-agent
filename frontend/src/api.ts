@@ -41,6 +41,18 @@ export function exactNumbers(_key: string, value: unknown): unknown {
   return value;
 }
 
+export function readSnapshot(value: unknown): Snapshot {
+  const snapshot = value as Snapshot | null;
+  if (!snapshot || typeof snapshot.sessionId !== 'string' || !snapshot.sessionId
+    || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0
+    || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0
+    || typeof snapshot.anchorDate !== 'string' || typeof snapshot.endDateExclusive !== 'string'
+    || typeof snapshot.expiresAt !== 'string' || !snapshot.facts?.opening || !snapshot.facts.coverage
+    || !Array.isArray(snapshot.facts.records) || !snapshot.plan || !Array.isArray(snapshot.plan.events)
+    || !Array.isArray(snapshot.plan.daily)) throw new Error('The saved figures could not be read safely.');
+  return snapshot;
+}
+
 async function request<T>(path: string, init?: RequestInit, text = false): Promise<T> {
   const epoch = generation;
   const response = await fetch(`/api/${path}`, { ...init, credentials: 'same-origin' });
@@ -55,7 +67,9 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
       reportAuthLoss(response.status === 401 ? body.code === 'sessionExpired' ? 'sessionExpired' : 'unauthenticated' : 'authUnavailable', epoch);
     throw new ApiError(response.status, body);
   }
-  return (response.status === 204 ? undefined : text ? content : JSON.parse(content, exactNumbers)) as T;
+  const value = response.status === 204 ? undefined : text ? content : JSON.parse(content, exactNumbers);
+  return (response.status !== 204 && (path === 'session' && init?.method !== 'DELETE' || path === 'session/commands')
+    ? readSnapshot(value) : value) as T;
 }
 
 export const api = {

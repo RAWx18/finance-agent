@@ -70,7 +70,7 @@ function Workspace() {
 
   useEffect(() => {
     if (state.connection === 'reconnecting' && state.phase === 'ready') notify({ id: 'session:connection', severity: 'warning', duration: null,
-      title: 'Reconnecting to your figures', message: 'Showing the last saved picture until updates return.',
+      title: 'Reconnecting to your figures', message: 'Showing the last saved picture. Any conversation has been stopped; reconnect explicitly after updates return.',
       action: { label: 'Retry updates', disabled: state.busy, onClick: () => actions.current.retryConnection() } });
     else dismiss('session:connection');
   }, [state.connection, state.phase, state.busy]);
@@ -160,6 +160,7 @@ function Workspace() {
               onStarted={value => dispatch({ type: 'started', snapshot: value })} onBusyChange={setVoiceBusy}
               onPrepare={() => navigate('ready')} onPhaseChange={voiceChanged}
               visible={conversationVisible && !reviewing}
+              updatesLost={!!snapshot && (state.connection === 'reconnecting' || state.connection === 'closed' || state.phase !== 'ready')}
               sessionIssue={state.phase === 'expired' || state.phase === 'deleted' || state.phase === 'unreadable' ? state.phase : undefined}
               onSettings={value => dispatch({ type: 'settings', settings: value })} />
           </div>
