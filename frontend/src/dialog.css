@@ -1,0 +1,40 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+body:has(dialog[open]) { overflow: hidden; }
+dialog.dialog { position: fixed; inset: 0; margin: auto; width: min(36rem, calc(100% - 2rem)); height: min(36rem, calc(100dvh - 3rem)); max-width: none; max-height: none; border: 1px solid var(--line); border-radius: 14px; background: var(--paper); color: var(--ink); padding: 0; overflow: hidden; }
+dialog.dialog[open] { display: flex; flex-direction: column; }
+dialog.dialog-wide { width: min(70rem, calc(100% - 3rem)); height: min(50rem, calc(100dvh - 3rem)); }
+dialog::backdrop { background: rgb(27 44 34 / 30%); }
+.dialog-heading { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .65rem 1.2rem; border-bottom: 1px solid var(--line); }
+.dialog-heading h2 { font-size: 1.1rem; margin: 0; }
+.dialog-heading h2:focus { outline: none; }
+.dialog-heading .quiet { font-size: .85rem; }
+.dialog-body { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #acbbb0 transparent; padding: 1.2rem; }
+.dialog-body > p { font-size: .9rem; }
+.dialog-actions { flex: none; display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; padding: .75rem 1.2rem; border-top: 1px solid var(--line); }
+.dialog-actions button, .dialog-actions .button { font-size: .8rem; }
+.dialog-body .scroll-region, .context-scroll .scroll-region { max-height: none; overflow: visible; padding-right: 0; }
+.dialog-body .card { padding: 1rem; }
+.dialog-body .projection-bar { margin: 0 0 .75rem; }
+.dialog-body .projection-bar h2 { font-size: .9rem; }
+.dialog-body .projection-bar p { font-size: .77rem; }
+.figure-navigation { display: flex; gap: .4rem; margin-block: .5rem 1rem; }
+.figure-navigation button { flex: 1; font-size: .85rem; background: transparent; border-color: transparent; border-radius: 5px; }
+.figure-navigation button[aria-pressed="true"] { background: var(--sage); color: var(--teal); }
+.figures-content .workspace { display: block; }
+.editor.card { border: 0; padding: 0; }
+.editor header { border: 0; padding-bottom: .2rem; margin-bottom: .75rem; }
+.editor-actions { position: sticky; bottom: -1.2rem; background: var(--paper); padding-block: .75rem; z-index: 1; }
+.record-editor { border: 0; background: transparent; padding: 0; margin-top: 0; }
+.dialog .notice { font-size: .82rem; padding: .75rem; }
+.dialog .comparison.card { border: 0; padding: 0; }
+@media (max-width: 700px) {
+  dialog.dialog, dialog.dialog-wide { width: calc(100% - 1rem); height: calc(100dvh - 1rem); border-radius: 12px; }
+  .dialog-heading { padding: .5rem .9rem; }
+  .dialog-body { padding: .9rem; }
+  .dialog-actions { padding: .5rem .9rem max(.5rem, env(safe-area-inset-bottom)); }
+  .dialog-actions button, .dialog-actions .button { flex: 1; }
+  .figure-navigation { gap: .15rem; }
+  .figure-navigation button { font-size: .75rem; padding-inline: .45rem; }
+  .editor-actions { bottom: -.9rem; }
+}

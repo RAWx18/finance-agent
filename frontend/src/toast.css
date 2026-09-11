@@ -1,0 +1,22 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.toast-viewport { position: fixed; inset: auto max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) auto; z-index: 30; width: min(21.25rem, calc(100dvw - 24px)); max-width: calc(100dvw - max(12px, env(safe-area-inset-left)) - max(12px, env(safe-area-inset-right))); max-height: min(42dvh, 26rem); display: flex; flex-direction: column; gap: .5rem; margin: 0; padding: 0; color: var(--ink); font-size: .875rem; }
+.toast-viewport[hidden] { display: none; }
+.toast-stack { flex: 1; min-height: 0; margin: 0; padding: 4px; list-style: none; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #9aaba0 transparent; scroll-padding: 4px; }
+.toast-stack > li + li { margin-top: .5rem; }
+.toast { --toast-accent: #255c47; --toast-border: #bfcec2; border: 1px solid var(--toast-border); border-left: 3px solid var(--toast-accent); border-radius: 10px; padding: .65rem .8rem .4rem; background: var(--paper); box-shadow: 0 2px 8px rgb(27 44 34 / 10%); overflow-wrap: anywhere; }
+.toast[data-severity="warning"] { --toast-accent: #815016; --toast-border: #d6bc91; }
+.toast[data-severity="error"], .toast[data-severity="critical"] { --toast-accent: #8b3024; --toast-border: #d9b3aa; }
+.toast-severity { display: block; margin-bottom: .15rem; color: var(--toast-accent); font-size: .75rem; font-weight: 650; }
+.toast-title { margin: 0; color: var(--ink); font-size: .925rem; line-height: 1.4; }
+.toast-message { margin: .3rem 0 0; color: var(--muted); font-size: .85rem; line-height: 1.5; }
+.toast-actions { display: flex; align-items: center; gap: .4rem; margin-top: .3rem; min-width: 0; }
+.toast-actions button { min-height: 44px; border-radius: 6px; font-size: .85rem; }
+.toast-action { flex: 1; display: block; min-width: 0; padding: .4rem .6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; color: var(--toast-accent); }
+.toast-actions .toast-dismiss { flex: none; width: 44px; margin-left: auto; padding: .3rem; border-color: transparent; background: transparent; font-size: 1.35rem; }
+.toast-more { flex: none; width: 100%; min-height: 44px; padding: .4rem .7rem; font-size: .8rem; box-shadow: 0 2px 8px rgb(27 44 34 / 10%); }
+.toast-stack:focus-visible { outline-offset: 0; }
+.toast-actions button:focus-visible { outline-offset: 1px; }
+@media print {
+  .toast-viewport { display: none; }
+}
