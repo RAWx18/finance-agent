@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
+# SPDX-License-Identifier: AGPL-3.0-only
+
+*
+!Dockerfile
+!LICENSE.md
+!config.toml
+!backend/
+backend/*
+!backend/pyproject.toml
+!backend/uv.lock
+!backend/app/
+!frontend/
+frontend/*
+!frontend/package.json
+!frontend/package-lock.json
+!frontend/index.html
+!frontend/tsconfig.json
+!frontend/vite.config.ts
+!frontend/src/
+**/__pycache__/
+**/*.pyc
+**/node_modules/
+**/.venv/
+**/.env*
