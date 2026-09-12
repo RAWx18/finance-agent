@@ -237,6 +237,55 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
   }
 
+  test('End shows stable review immediately while slow cleanup gates reconnect despite a hung SDK', async ({ page, voice }, info) => {
+    await speaking(page);
+    const saved = await current(page);
+    let release!: () => void;
+    const cleanup = new Promise<void>(resolve => { release = resolve; });
+    await page.route('**/api/session/call', async route => {
+      if (route.request().method() === 'DELETE') await cleanup;
+      await route.fallback();
+    });
+    await page.evaluate(() => { window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined); });
+    try {
+      const end = page.getByRole('button', { name: 'End conversation', exact: true });
+      await end.focus(); await page.keyboard.press('Enter');
+      await expect(page.locator('main')).toHaveAttribute('data-view', 'review', { timeout: 1000 });
+      await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+      await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'true');
+      await expect(page.getByRole('heading', { name: 'Ready to talk again?', exact: true })).toBeVisible();
+      expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+      await expect(page.locator('audio')).toHaveJSProperty('srcObject', null);
+      await expect(page.getByRole('link', { name: 'Money', exact: true })).toBeDisabled();
+      await page.getByRole('button', { name: 'Return to conversation', exact: true }).click();
+      await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+      await expect(page.locator('.voice-status-hint')).toHaveText('Your microphone is off. Confirming the call is closed.');
+      const reconnect = page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true });
+      await expect(reconnect).toBeDisabled(); await expect(reconnect).toHaveAttribute('aria-busy', 'true');
+      await expect(reconnect).toBeInViewport({ ratio: 1 });
+      await page.evaluate(() => {
+        const client = window.voiceFixture.clients[0];
+        client.callbacks.onBotReady!({ version: '2.1' }); client.callbacks.onDisconnected!(); client.callbacks.onBotStartedSpeaking!();
+      });
+      await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await page.screenshot({ path: info.outputPath('ended-cleanup-pending.png'), fullPage: true });
+      expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
+      expect(await page.evaluate(() => window.voiceFixture.clients.length)).toBe(1);
+      release();
+      await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'false');
+      await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+      await expect(reconnect).toBeEnabled();
+      await expect(page.getByRole('link', { name: 'Money', exact: true })).toBeEnabled();
+      expect(await current(page)).toEqual(saved);
+      await reconnect.click();
+      await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[1]?.connections.length ?? 0)).toBe(1);
+      expect(voice.calls.filter(method => method === 'POST')).toHaveLength(2);
+      await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+      await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+    } finally { release(); }
+  });
+
   test('browser refresh preserves owned End recovery after unload network loss and hung SDK disconnect', async ({ page, voice }) => {
     const started = page.waitForRequest(request => new URL(request.url()).pathname === '/api/session/call' && request.method() === 'POST');
     await speaking(page);
@@ -250,7 +299,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       const fetch = window.fetch;
       window.fetch = (input, init) => {
         if (String(input).endsWith('/api/session/call') && init?.method === 'DELETE') {
-          sessionStorage.setItem('voice-unload-request', JSON.stringify({ keepalive: init.keepalive, body: init.body, aborted: init.signal?.aborted }));
+          sessionStorage.setItem('voice-unload-request', JSON.stringify({ keepalive: init.keepalive, body: init.body, cancellable: !!init.signal }));
           return Promise.reject(new TypeError('Synthetic unload network loss'));
         }
         return fetch(input, init);
@@ -263,7 +312,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.reload();
     const unload = await page.evaluate(() => ({ request: sessionStorage.getItem('voice-unload-request'), state: sessionStorage.getItem('voice-unload-state') }));
     expect(unload, 'Real pagehide must synchronously start keepalive End before its context disappears').toMatchObject({
-      request: JSON.stringify({ keepalive: true, body: JSON.stringify({ callId }), aborted: false }),
+      request: JSON.stringify({ keepalive: true, body: JSON.stringify({ callId }), cancellable: false }),
     });
     expect(JSON.parse(unload.state!)).toMatchObject({ stopped: true });
     expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(0);

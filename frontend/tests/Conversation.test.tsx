@@ -122,6 +122,99 @@ beforeEach(() => {
 });
 
 describe('owned lifecycle deadlines and background cleanup', () => {
+  it.each(['transport', 'disconnect'] as const)('ends locally before slow provider cleanup even when SDK %s never settles', async stage => {
+    const pending = new Promise<never>(() => undefined);
+    if (stage === 'transport') sdk.connect.mockReturnValueOnce(pending);
+    sdk.disconnect.mockReturnValueOnce(pending);
+    const release = deferred<Awaited<ReturnType<typeof api.endCall>>>();
+    vi.mocked(api.endCall).mockReturnValueOnce(release.promise);
+    const view = show(); await start();
+    if (stage === 'disconnect') ready();
+    const microphone = sdk.tracks().local.audio as MediaStreamTrack;
+    const bot = await hear();
+    const events = sdk.options!.callbacks!;
+    view.onPhaseChange.mockImplementation(phase => {
+      if (phase === 'ended') {
+        expect(microphone.stop).toHaveBeenCalled(); expect(bot.stop).toHaveBeenCalled();
+        expect(view.container.querySelector('audio')!.srcObject).toBeNull();
+      }
+    });
+    vi.useFakeTimers();
+    try {
+      act(() => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
+      expect(view.onPhaseChange).not.toHaveBeenCalledWith('ending');
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(view.container.querySelector('.conversation')).toHaveAttribute('data-running', 'false');
+      expect(view.container.querySelector('.conversation')).toHaveAttribute('data-cleanup-pending', 'true');
+      expectOrb('idle', 0, 'ended');
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+      const reconnect = panel().getByRole('button', { name: 'Reconnect' });
+      expect(reconnect).toBeDisabled(); expect(reconnect).toHaveAttribute('aria-busy', 'true');
+      fireEvent.click(reconnect);
+      act(() => { events.onBotReady!({ version: '2.1' }); events.onDisconnected!(); events.onBotStartedSpeaking!(); });
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000 - 1));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(reconnect).toBeDisabled();
+      expect(api.startCall).toHaveBeenCalledOnce(); expect(sdk.initDevices).toHaveBeenCalledOnce();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      await act(async () => release.resolve({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null }));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(view.container.querySelector('.conversation')).toHaveAttribute('data-cleanup-pending', 'false');
+      expect(reconnect).toBeEnabled(); expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+      expect(sdk.disconnect).toHaveBeenCalledOnce();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('leaves permission under user control and lets End cancel a never-settling device attempt', async () => {
+    sdk.initDevices.mockReturnValueOnce(new Promise<never>(() => undefined));
+    const view = show();
+    vi.useFakeTimers();
+    try {
+      act(() => fireEvent.click(panel().getByRole('button', { name: 'Start talking' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceStartupSeconds * 3000));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Connecting$/);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      act(() => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      await act(async () => undefined);
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      const late = track();
+      act(() => sdk.listeners.get(RTVIEvent.TrackStarted)!(late, { ...remote, local: true }));
+      expect(late.stop).toHaveBeenCalledOnce();
+      expect(api.start).not.toHaveBeenCalled(); expect(api.startCall).not.toHaveBeenCalled();
+      expect(api.endCall).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each(['end', 'pagehide', 'unmount'] as const)('keeps the owned HTTP termination alive beyond the confirmation deadline on %s', async action => {
+    const view = show(); await start(); ready();
+    vi.mocked(api.endCall).mockRestore();
+    const fetch = vi.fn().mockReturnValue(new Promise<never>(() => undefined));
+    vi.stubGlobal('fetch', fetch);
+    sdk.disconnect.mockReturnValueOnce(new Promise<never>(() => undefined));
+    vi.useFakeTimers();
+    try {
+      if (action === 'end') act(() => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      else if (action === 'pagehide') act(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+      else view.unmount();
+      expect(fetch).toHaveBeenCalledExactlyOnceWith('/api/session/call', {
+        credentials: 'same-origin', method: 'DELETE', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callId: join.callId }), keepalive: true, signal: undefined,
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(fetch.mock.calls[0][1].signal).toBeUndefined();
+      expect(fetch).toHaveBeenCalledOnce();
+      if (action !== 'unmount') {
+        expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
+        expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+        expect(panel().getByRole('status')).toHaveTextContent(action === 'end' ? /^Conversation ended$/ : /^Disconnected$/);
+      }
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
   it.each(['timeout', 'connected', 'ready'] as const)('bounds active transport reconnection and handles %s', async outcome => {
     const view = show(); await start(); ready();
     const events = sdk.options!.callbacks!;
@@ -138,7 +231,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
       if (outcome === 'timeout') {
         expect(screen.getByRole('alert', { name: 'Connection timed out' })).toBeVisible();
         expect(microphone.stop).toHaveBeenCalled();
-        expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+        expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
         expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
       } else {
         expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
@@ -155,7 +248,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
     expect(await screen.findByRole('status', { name: 'Call expired' })).toHaveTextContent('saved figures');
     expect(sdk.connect).not.toHaveBeenCalled();
-    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
     expect(view.onStarted).toHaveBeenCalledWith(snapshot());
     expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
     expect(screen.queryByText('Conversation unavailable')).not.toBeInTheDocument();
@@ -173,7 +266,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
       expect(screen.getByRole('status', { name: 'Call expired' })).toBeVisible();
       expect(microphone.stop).toHaveBeenCalled();
       expect(api.startCall).toHaveBeenCalledOnce();
-      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
     } finally { view.unmount(); vi.useRealTimers(); }
   });
@@ -209,7 +302,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     show(); await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
     await waitFor(() => expect(api.startCall).toHaveBeenCalledOnce());
     await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
-    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
     expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
     vi.mocked(crypto.randomUUID).mockReturnValue('e2639293-b514-436d-b359-88637e030142');
     await start(); ready();
@@ -234,9 +327,8 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     expect(api.endCall).toHaveBeenCalledOnce();
   });
 
-  it.each(['devices', 'session', 'updates', 'room', 'transport', 'BotReady'] as const)('bounds hung %s using configured deadlines without claiming readiness', async stage => {
+  it.each(['session', 'updates', 'room', 'transport', 'BotReady'] as const)('bounds hung %s using configured deadlines without claiming readiness', async stage => {
     const pending = new Promise<never>(() => undefined);
-    if (stage === 'devices') sdk.initDevices.mockReturnValueOnce(pending);
     if (stage === 'session') vi.mocked(api.start).mockReturnValueOnce(pending);
     if (stage === 'room') vi.mocked(api.startCall).mockReturnValueOnce(pending);
     if (stage === 'transport') sdk.connect.mockReturnValueOnce(pending);
@@ -280,12 +372,16 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     try {
       act(() => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
       expect(microphone.stop).toHaveBeenCalled();
-      expect(screen.getByText('Your microphone is off. Confirming the call ended.')).toBeVisible();
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(screen.getByText('Your microphone is off. Confirming the call is closed.')).toBeVisible();
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
       await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000));
       expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
-      expect(vi.mocked(api.endCall).mock.calls[0][1]?.aborted).toBe(true);
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
       await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Retry ending call' })));
-      expect(api.endCall).toHaveBeenNthCalledWith(2, join.callId, expect.any(AbortSignal));
+      expect(api.endCall).toHaveBeenNthCalledWith(2, join.callId);
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
       await act(async () => release.resolve({ callId: join.callId, status: 'active', cleanupConfirmed: false, message: null }));
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
@@ -299,16 +395,19 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     await panel().findByRole('button', { name: 'Retry ending call' });
     expect(sdk.initDevices).not.toHaveBeenCalled();
     await userEvent.click(panel().getByRole('button', { name: 'Retry ending call' }));
-    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(callId, expect.any(AbortSignal));
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(callId);
     expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
   });
 
   it.each(['ending', 'ended', 'error'] as const)('does not treat an unconfirmed DELETE %s as safe to reconnect', async status => {
     vi.mocked(api.endCall).mockResolvedValueOnce({ callId: join.callId, status, cleanupConfirmed: false, message: null });
-    show(); await start(); ready();
+    const view = show(); await start(); ready();
     await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
     expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
     expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
+    expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+    expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
+    expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
     expect(panel().queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
   });
 
@@ -318,7 +417,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     show(); await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
     await panel().findByRole('button', { name: 'Retry ending call' });
     expect(sdk.connect).not.toHaveBeenCalled();
-    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
   });
 
   it('bounds a hung refresh check and discovers its call ID before retrying termination', async () => {
@@ -331,7 +430,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
       expect(vi.mocked(api.call).mock.calls[0][0]?.aborted).toBe(true);
       vi.mocked(api.call).mockResolvedValueOnce({ callId: join.callId, status: 'ending', cleanupConfirmed: false, message: null });
       await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Retry ending call' })));
-      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
     } finally { view.unmount(); vi.useRealTimers(); }
   });
@@ -915,7 +1014,7 @@ describe('real SDK integration boundary', () => {
     ready(); expect(view.onPhaseChange).toHaveBeenLastCalledWith('active');
     await userEvent.click(screen.getByRole('button', { name: 'End conversation' }));
     await waitFor(() => expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended'));
-    expect(view.onPhaseChange.mock.calls.map(([phase]) => phase)).toEqual(['idle', 'connecting', 'active', 'ending', 'ended']);
+    expect(view.onPhaseChange.mock.calls.map(([phase]) => phase)).toEqual(['idle', 'connecting', 'active', 'ended']);
     expect(view.onStarted).toHaveBeenCalledOnce();
   });
   it('gives actual interruption precedence and preserves spoken prefixes against late output', async () => {
@@ -1219,7 +1318,7 @@ describe('real SDK integration boundary', () => {
     await waitFor(() => expect(api.startCall).toHaveBeenCalled());
     await userEvent.click(screen.getByRole('button', { name: 'End conversation' }));
     expect(screen.getByRole('button', { name: 'Reconnect' })).toBeEnabled();
-    expect(api.endCall).toHaveBeenCalledWith(join.callId, expect.any(AbortSignal));
+    expect(api.endCall).toHaveBeenCalledWith(join.callId);
     expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
     expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
     await act(async () => room.resolve(join));
@@ -1302,12 +1401,15 @@ describe('real SDK integration boundary', () => {
     expectOrb('idle', 0, 'disconnected');
     expect(within(screen.getByRole('alert', { name: 'Connection lost' })).getByText('Check your internet connection, then reconnect.')).toBeVisible(); expect(api.endCall).toHaveBeenCalledTimes(1);
   });
-  it('does not call a backend error response a successful conclusion', async () => {
+  it('keeps local End stable while reporting a confirmed backend error separately', async () => {
     vi.mocked(api.endCall).mockResolvedValue({ callId: join.callId, status: 'error', cleanupConfirmed: true, message: 'Provider failed' });
-    show(); await start(); ready();
+    const view = show(); await start(); ready();
     await userEvent.click(screen.getByRole('button', { name: 'End conversation' }));
     await screen.findByText(/conversation stopped with an error/);
-    expect(screen.queryByText('Conversation ended', { exact: true })).not.toBeInTheDocument();
+    expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+    expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
+    expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
   });
   it('treats an active DELETE response as unconfirmed and offers termination retry', async () => {
     vi.mocked(api.endCall).mockResolvedValue({ callId: join.callId, status: 'active', cleanupConfirmed: false, message: null });
@@ -1399,7 +1501,8 @@ describe('media-derived official orb feedback', () => {
     act(() => events.onUserMuteStopped!());
     expectOrb('listening', 0);
     await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
-    expectOrb('idle', 0, 'ending');
+    expectOrb('idle', 0, 'ended');
+    expect(view.container.querySelector('.conversation')).toHaveAttribute('data-cleanup-pending', 'true');
     await act(async () => release.resolve({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null }));
     expectOrb('idle', 0, 'ended');
     expect(view.container.querySelector('canvas.aui-voice-orb')).toBe(canvas);
@@ -1736,7 +1839,7 @@ describe('notice ownership and current actions', () => {
     expect(microphone.stop).toHaveBeenCalled();
     const notice = await screen.findByRole(type === 'permissions' ? 'status' : 'alert', { name: title });
     expect(within(notice).getByText(message)).toBeVisible();
-    expect(within(notice).getByRole('button', { name: 'Retry' })).toBeEnabled();
+    await waitFor(() => expect(within(notice).getByRole('button', { name: 'Retry' })).toBeEnabled());
     expect(published).toHaveBeenCalledWith(expect.objectContaining({ title, message, duration: null }));
     expect(view.container).not.toHaveTextContent('private SDK diagnostic');
     expect(api.endCall).toHaveBeenCalledOnce(); expect(sdk.disconnect).toHaveBeenCalledOnce();
@@ -1929,7 +2032,7 @@ describe('terminal session boundaries', () => {
     view.change({ updatesLost: true });
     expect(microphone.stop).toHaveBeenCalled(); expect(bot.stop).toHaveBeenCalled();
     expect(view.container.querySelector('audio')!.srcObject).toBeNull();
-    expectOrb('idle', 0, 'ending');
+    expectOrb('idle', 0, 'unavailable');
     act(() => {
       events.onBotReady!({ version: '2.1' }); events.onLocalAudioLevel!(1);
       events.onUserTranscript!({ text: 'Stale financial words', final: true, timestamp: 'late', user_id: 'me' });
@@ -2016,7 +2119,7 @@ describe('terminal session boundaries', () => {
     expect(screen.queryByText(/Stale words|Stale output/)).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(sdk.disconnect).toHaveBeenCalledOnce(); expect(api.endCall).toHaveBeenCalledOnce();
-    expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(view.onBusyChange).toHaveBeenLastCalledWith(false));
   });
 
   it('does not check or start a session already known to be unauthorized', async () => {

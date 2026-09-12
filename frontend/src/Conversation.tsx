@@ -14,9 +14,9 @@ import type { Notice } from './Toast';
 import { VoiceOrb } from './components/assistant-ui/elements/voice';
 import type { VoiceOrbState } from './components/assistant-ui/elements/voice';
 
-export type VoicePhase = 'idle' | 'connecting' | 'active' | 'ending' | 'ended' | 'disconnected' | 'error';
+export type VoicePhase = 'idle' | 'connecting' | 'active' | 'ended' | 'disconnected' | 'error';
 type VoiceState = 'idle' | 'connecting' | 'listening' | 'userSpeaking' | 'assistantSpeaking'
-  | 'processing' | 'interrupted' | 'reconnecting' | 'muted' | 'paused' | 'unavailable' | 'disconnected' | 'ended' | 'ending';
+  | 'processing' | 'interrupted' | 'reconnecting' | 'muted' | 'paused' | 'unavailable' | 'disconnected' | 'ended';
 type Release = 'ended' | 'error' | 'unconfirmed';
 type CallOwner = { callId?: string; authEpoch: number };
 type Problem = Omit<Notice, 'action'> & { type: 'retry' | 'reconnect' | 'availability' | 'end' | 'session' };
@@ -61,7 +61,8 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
         }
         if (!owner.callId || owner.authEpoch !== authEpoch() || controller.signal.aborted) return 'unconfirmed';
         mark('end-request');
-        const call = await api.endCall(owner.callId, controller.signal);
+        // The deadline limits confirmation, not delivery of the keepalive termination request.
+        const call = await api.endCall(owner.callId);
         if (owner.authEpoch !== authEpoch() || call.callId !== owner.callId || call.cleanupConfirmed !== true) return 'unconfirmed';
         if (call.status !== 'idle' && call.status !== 'ended' && call.status !== 'error') return 'unconfirmed';
         mark('end-confirmed');
@@ -169,6 +170,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const [interim, setInterim] = useState<{ text: string; time: number } | null>(null);
   const [problem, setProblem] = useState<Problem | null>(null);
   const [endIssue, setEndIssue] = useState<'open' | 'unconfirmed' | null>(null);
+  const [cleanupPending, setCleanupPending] = useState(false);
   const [checkedSession, setCheckedSession] = useState<string>();
   const [checkingAvailability, setCheckingAvailability] = useState(false);
   const voiceAvailable = settings?.voiceAvailable;
@@ -195,10 +197,10 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const availability = useRef<AbortController | null>(null);
   const sessionBlocked = !!sessionIssue || problem?.type === 'session';
   const needsEnd = endIssue !== null && !sessionBlocked;
-  const running = phase === 'connecting' || phase === 'active' || phase === 'ending';
+  const running = phase === 'connecting' || phase === 'active';
   const checkingCall = !!sessionId && !sessionBlocked && checkedSession !== sessionId;
-  const busy = running || needsEnd || checkingCall;
-  const startBlocked = disabled || updatesLost || sessionBlocked || !settings?.voiceAvailable || running || needsEnd || checkingCall;
+  const busy = running || cleanupPending || needsEnd || checkingCall;
+  const startBlocked = disabled || updatesLost || sessionBlocked || !settings?.voiceAvailable || busy;
   const actions = useRef({ start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId, updatesReady });
   const notifyPhase = useEffectEvent(onPhaseChange);
   const notifyBusy = useEffectEvent(onBusyChange);
@@ -251,8 +253,8 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       message: endIssue === 'open' ? 'Another conversation is still open. End it before connecting here.'
         : 'Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.',
       severity: 'critical', duration: null, dismissible: false,
-      action: { label: 'Retry ending call', disabled: phase === 'ending', dismiss: false, onClick: () => actions.current.finish('ended') } });
-  }, [endIssue, phase, sessionBlocked]);
+      action: { label: 'Retry ending call', disabled: cleanupPending, dismiss: false, onClick: () => actions.current.finish('ended') } });
+  }, [endIssue, cleanupPending, sessionBlocked]);
 
   useEffect(() => {
     if (!activity.blocked || sessionBlocked) { dismiss('voice:audio'); return; }
@@ -326,7 +328,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     ending.current = true;
     mark('end');
     generation.current += 1;
-    setPhase('ending');
+    setCleanupPending(true);
     setInterim(null); interimTime.current = null;
     setCaptions((items) => items.map((item) => item.pending ? { ...item, pending: false, interrupted: true } : item));
     if (current) resetLevel(current);
@@ -336,14 +338,17 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     if (audio.current) audio.current.srcObject = null;
     const owner = current ?? previousCall.current ?? { authEpoch: authEpoch() };
     previousCall.current = owner;
-    const released = current ? await dispose(current) : settings ? await releaseCall(owner, settings.voiceShutdownSeconds) : 'unconfirmed';
+    const cleanup = current ? dispose(current) : settings ? releaseCall(owner, settings.voiceShutdownSeconds) : 'unconfirmed';
+    // Voice phase describes the local interaction, independently of provider cleanup.
+    setPhase(next);
+    if (issue && issue.type !== 'end' && !actions.current.sessionBlocked) setProblem(issue);
+    const released = await cleanup;
     if (!mounted.current || attempt.current !== current) return;
     attempt.current = null;
     ending.current = false;
+    setCleanupPending(false);
     if (issue?.type === 'end') previousCall.current = { authEpoch: owner.authEpoch };
     setEndIssue(issue?.type === 'end' ? 'open' : released === 'unconfirmed' ? endIssue === 'open' ? 'open' : 'unconfirmed' : null);
-    setPhase(released === 'ended' ? next : 'error');
-    if (issue && issue.type !== 'end' && !actions.current.sessionBlocked) setProblem(issue);
     if (released === 'error' && !issue && !problem && !actions.current.sessionBlocked) setProblem({ ...callError(undefined),
       title: 'Conversation stopped', message: 'The conversation stopped with an error. Try a new conversation.' });
   }
@@ -609,7 +614,6 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         }
       });
       // Device permission starts directly in the click handler, before any room request.
-      deadline();
       mark('mic-request');
       current.devicesPending = true;
       try { current.devices = current.client.initDevices(); await current.devices; }
@@ -733,11 +737,11 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     muted: 'Microphone muted', paused: activity.waiting ? 'Paused' : activity.blocked || activity.bot ? 'Assistant audio paused' : 'Listening paused',
     unavailable: sessionBlocked ? 'Conversation unavailable' : phase === 'error' ? 'Unable to connect' : !running ? 'Conversations unavailable'
       : activity.bot ? 'Assistant audio unavailable' : 'Microphone not connected',
-    disconnected: 'Disconnected', ended: 'Conversation ended', ending: 'Ending…' }[state];
+    disconnected: 'Disconnected', ended: 'Conversation ended' }[state];
   const hint = phase === 'active' ? activity.waiting ? activity.resumeFailed ? 'No response yet. Try Continue again.'
     : activity.continuing ? 'Waiting for the assistant…' : activity.responseMissing ? 'The assistant did not finish a response. Continue to try again.' : 'Continue when you’re ready.' : activity.blocked || activity.reconnecting ? '' : activity.muted ? 'Unmute to speak'
     : capturing ? activity.bot && audible && !activity.interrupted ? 'Speak to interrupt' : 'Go ahead' : activity.paused ? '' : 'Reconnect your microphone'
-    : phase === 'connecting' ? 'Allow microphone access if asked' : phase === 'ending' ? 'Your microphone is off. Confirming the call ended.' : '';
+    : phase === 'connecting' ? 'Allow microphone access if asked' : cleanupPending ? 'Your microphone is off. Confirming the call is closed.' : '';
   const orbState: VoiceOrbState = state === 'connecting' || state === 'reconnecting' ? 'connecting'
     : phase === 'active' && (activity.muted || activity.paused) || state === 'paused' || state === 'muted' ? 'muted'
       : state === 'assistantSpeaking' ? 'speaking'
@@ -755,7 +759,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     }} />
     {presentation === 'landing' ? <div className="conversation-entry no-print">
       <button className="primary" disabled={disabled || !settings || sessionBlocked} onClick={onPrepare}>Start conversation</button>
-    </div> : <section className="conversation card no-print" data-phase={phase} data-running={running} aria-labelledby="conversation-heading">
+    </div> : <section className="conversation card no-print" data-phase={phase} data-running={running} data-cleanup-pending={cleanupPending} aria-labelledby="conversation-heading">
       <h2 id="conversation-heading" className="sr-only">Your conversation</h2>
       <header className="call-header">
         <div className="voice-status-panel" data-capturing={capturing}>
@@ -774,12 +778,12 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
             aria-label={activity.muted ? 'Unmute microphone' : 'Mute microphone'} title={activity.muted ? 'Unmute microphone' : 'Mute microphone'}>
             <CallIcon kind="microphone" muted={activity.muted} />
           </button>}
-          {running || needsEnd ? <button type="button" className="call-control call-end danger" disabled={phase === 'ending'} onClick={() => void finish('ended')}
-            aria-busy={phase === 'ending'}
+          {running || needsEnd ? <button type="button" className="call-control call-end danger" disabled={cleanupPending} onClick={() => void finish('ended')}
+            aria-busy={cleanupPending}
             aria-label={needsEnd && !running ? 'Retry ending call' : 'End conversation'} title={needsEnd && !running ? 'Retry ending call' : 'End conversation'}>
             <CallIcon kind="end" />
           </button>
-            : <button type="button" className="call-control primary" disabled={startBlocked} onClick={() => void start()}
+            : <button type="button" className="call-control primary" disabled={startBlocked} aria-busy={cleanupPending} onClick={() => void start()}
               aria-label={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'Reconnect' : 'Start talking'}
               title={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'Reconnect' : 'Start talking'}>
               <CallIcon kind={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'retry' : 'call'} />
