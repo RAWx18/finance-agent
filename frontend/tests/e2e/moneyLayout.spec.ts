@@ -39,21 +39,22 @@ async function seed(page: Page, count: 105 | 120) {
 async function fits(page: Page, natural = false) {
   const size = await page.evaluate(() => ({
     width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth,
-    scrollHeight: document.documentElement.scrollHeight, overflow: getComputedStyle(document.body).overflowY,
+    scrollHeight: document.documentElement.scrollHeight, overflow: getComputedStyle(document.body).overflowY, modal: !!document.querySelector('dialog:modal'),
   }));
   expect(size.scrollWidth, 'No horizontal document overflow').toBeLessThanOrEqual(size.width + 1);
-  if (natural) {
+  if (natural || size.width <= 700) {
     expect(size.scrollHeight, 'Enlarged narrow layouts permit natural vertical scrolling').toBeGreaterThan(size.height);
-    expect(['hidden', 'clip']).not.toContain(size.overflow);
+    if (size.modal) expect(size.overflow, 'A modal locks the background document').toBe('hidden');
+    else expect(['hidden', 'clip']).not.toContain(size.overflow);
   } else {
     expect(size.scrollHeight, 'Normal viewports use bounded content, not a growing document').toBeLessThanOrEqual(size.height + 1);
     expect(await page.locator('#money-heading').evaluate(element => Number.parseFloat(getComputedStyle(element).fontSize))).toBeLessThanOrEqual(24);
   }
   const small = await page.locator('.money-page button:visible, .money-page a.button:visible').evaluateAll(elements => elements.flatMap(element => {
     const rect = element.getBoundingClientRect();
-    return rect.width < 44 || rect.height < 44 ? [{ name: element.getAttribute('aria-label') ?? element.textContent, width: rect.width, height: rect.height }] : [];
+    return rect.width < 24 || rect.height < 24 ? [{ name: element.getAttribute('aria-label') ?? element.textContent, width: rect.width, height: rect.height }] : [];
   }));
-  expect(small, 'Money buttons have at least 44 × 44 CSS-pixel targets').toEqual([]);
+  expect(small, 'Compact Money buttons meet the 24 × 24 CSS-pixel minimum target size').toEqual([]);
 }
 
 async function bounded(list: Locator) {
@@ -78,10 +79,10 @@ async function wraps(heading: Locator) {
 
 test('105 real records keep the overview compact and preserve the complete backend export', async ({ page }, info) => {
   const saved = await seed(page, 105); await fits(page);
-  await expect(page.getByRole('region', { name: 'Next money and payments' }).getByRole('listitem')).toHaveCount(3);
+  await expect(page.getByRole('region', { name: 'Next money and payments' }).getByRole('listitem')).toHaveCount(4);
   await expect(page.getByRole('region', { name: 'Money in this plan' })).toContainText('₹35,008.75');
   await page.screenshot({ path: info.outputPath('money-overview-105.png'), fullPage: true });
-  const details = page.getByRole('button', { name: 'Plan details', exact: true }); await details.click();
+  const details = page.getByRole('button', { name: 'View calculation', exact: true }); await details.click();
   const dialog = page.getByRole('dialog', { name: 'Plan details', exact: true });
   await expect(dialog).toContainText('₹34,482.50'); await fits(page);
   await page.screenshot({ path: info.outputPath('money-plan-details.png'), fullPage: true });

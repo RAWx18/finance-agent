@@ -3,14 +3,20 @@
 import { Link } from 'react-router';
 import type { Command, Snapshot } from './api';
 import { Details } from './Dialog';
-import { dateLabel, decimal, money } from './money';
+import { dateLabel as fullDateLabel, decimal, lastDate, money as preciseMoney } from './money';
 import { ResultDetails } from './WorkspaceDetails';
-import { ActionDetails, actionLabels } from './ScenarioDetails';
-import { MoneyEvent } from './MoneyUpcoming';
+import { ActionDetails } from './ScenarioDetails';
+import { PlanExpiry, PlanSummary, ResultQualification } from './PlanSummary';
+import { Download } from './Download';
+import { MoneyChart } from './MoneyChart';
 import { MoneyIcon } from './MoneyIcon';
 import type { EditTarget } from './MoneyEdit';
 import { moneyIssues } from './MoneyChecks';
 import { factStatus } from './MoneyRecords';
+import './moneyOverview.css';
+
+const money = (value: number | null) => preciseMoney(value).replace(/\.00$/, '');
+const dateLabel = (value: string) => fullDateLabel(value).replace(/ \d{4}$/, '');
 
 export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }: {
   snapshot: Snapshot; blocked: boolean; onEdit: (target: EditTarget) => void; onChecks: () => void;
@@ -19,77 +25,76 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const assessment = plan.decisionAssessment;
   const outcome = assessment?.outcome;
-  const actions = snapshot.workspace?.actions ?? [];
-  const action = actions.find(item => item.id === assessment?.nextActionId) ?? actions[0];
+  const action = snapshot.workspace?.actions?.find(item => item.id === assessment?.nextActionId);
   const issues = moneyIssues(snapshot);
-  const questions = snapshot.workspace?.questions ?? [];
-  const selectedQuestion = questions.find(item => item.id === assessment?.nextQuestionId) ?? questions[0];
-  const question = issues.find(item => item.id === selectedQuestion?.id);
-  const check = question ?? issues[0];
-  const checkNames = check?.recordIds.map(id => snapshot.facts.records.find(record => record.id === id)?.label).filter(Boolean).join(', ');
-  const checkLabels: Record<string, string> = { opening: 'Starting cash', amount: 'Amount', target: 'Intended payment', outstanding: 'Outstanding balance', 'schedule.date': 'Expected or due date', coverage: 'Category review', reliability: 'Income reliability', controllability: 'Whether spending can change', providerResponses: 'Payment terms', ambiguousRecordIds: 'Which item was meant' };
-  const actionNames = action?.recordIds.map(id => snapshot.facts.records.find(record => record.id === id)?.label).filter(Boolean).join(', ');
   const choice = snapshot.workspace?.choices?.find(item => item.id === action?.choiceId);
-  const undated = new Set(plan.budgetBasis.unresolvedAmounts.filter(item => item.reason === 'missingDate').map(item => item.recordId)).size;
-  const excludedIncome = new Set(snapshot.workspace?.contributions?.filter(item => !item.id.startsWith('proposal:') && !item.included && item.reason === 'conditionalReceipt'
-    && snapshot.facts.records.some(record => record.id === item.recordId && record.kind === 'income')).map(item => item.recordId)).size;
+  const incomplete = plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete;
+  const conflicts = !!snapshot.facts.conflicts?.length;
+  const estimated = snapshot.facts.opening.status === 'estimate' || plan.events.some(event => event.included && (event.amountStatus === 'estimate' || snapshot.facts.records.find(record => record.id === event.recordId)?.schedule.certainty === 'estimate'));
+  const nextIncome = plan.events.find(event => event.kind === 'income' && event.included && event.amountPaise && event.date >= plan.evaluatedOn);
   const upcoming = plan.events.filter(event => event.date >= plan.evaluatedOn);
   const elapsed = plan.events.length - upcoming.length;
-  const conflicts = snapshot.facts.conflicts?.length ?? 0;
-  const reserveBreach = assessment?.consequences?.find(item => item.kind === 'reserveBreach');
-  const headline = plan.firstGap ? 'First funding gap' : plan.reserveShortfallPaise ? 'Cash to keep aside is not covered' : plan.closingPaise === null ? 'Your picture needs a check' : outcome?.branch === 'fits' && outcome.readiness === 'ready' ? 'Known dated payments fit' : 'What needs attention';
-  const result = (id: string) => {
+  const undated = new Set(plan.budgetBasis.unresolvedAmounts.filter(item => item.reason === 'missingDate').map(item => item.recordId)).size;
+  const seen = new Set<string>();
+  const nextItems = upcoming.filter(event => { if (seen.has(event.recordId)) return false; seen.add(event.recordId); return true; }).slice(0, 4);
+  const hasIncome = snapshot.facts.records.some(record => record.kind === 'income') || snapshot.facts.coverage.income === 'none';
+  const hasOutflow = snapshot.facts.records.some(record => record.kind !== 'income') || ['essential', 'optional', 'debt'].every(kind => snapshot.facts.coverage[kind as 'essential' | 'optional' | 'debt'] === 'none');
+  const unknownIncome = plan.reliableIncomePaise === 0 && plan.uncertainIncomePaise === 0 && plan.budgetBasis.unresolvedAmounts.some(item => snapshot.facts.records.some(record => record.id === item.recordId && record.kind === 'income'));
+  const unknownOutflow = plan.outflowPaise === 0 && plan.budgetBasis.unresolvedAmounts.some(item => snapshot.facts.records.some(record => record.id === item.recordId && record.kind !== 'income'));
+  const actionNames = action?.recordIds.map(id => snapshot.facts.records.find(record => record.id === id)?.label).filter(Boolean).slice(0, 2).join(', ');
+  const actionLabel = action ? ({ contactPayee: 'Discuss payment options', verifyTerms: 'Check payment terms', followUp: 'Follow up on payment options', seekSupport: 'Explore support options', resolveGroup: 'Review these payments together', confirmReceipt: 'Check incoming money', previewChange: 'Compare a spending change', reconcileStatus: 'Check earlier payments', clarify: 'Confirm a detail', reviewOutcome: 'Review your next step' }[action.kind] ?? 'Review next step') : '';
+  const result = (id: string, label: string) => {
     const value = snapshot.workspace?.results?.find(item => item.id === id);
-    const labels: Record<string, string> = { firstGap: 'Why the shortfall?', reliableIncome: 'Income calculation', closing: 'Closing calculation', peakGap: 'Largest gap calculation' };
-    return value && <ResultDetails result={value} snapshot={snapshot} label={labels[id]} />;
+    return value && <ResultDetails result={value} snapshot={snapshot} label={label} />;
   };
   return <div className="money-overview">
-    <section className={`money-panel money-attention${plan.firstGap || plan.reserveShortfallPaise || conflicts ? ' has-risk' : ''}`} aria-label="What needs attention">
-      <div className="money-section-head"><h2>{headline}</h2>{issues.length > 0 && <button className="detail-button money-check-count" onClick={onChecks}>{issues.length} {issues.length === 1 ? 'check' : 'checks'}</button>}</div>
-      {plan.firstGap && <p className="money-gap"><strong>{money(plan.firstGap.amountPaise)}</strong><span>short on {dateLabel(plan.firstGap.date)} · Calculated</span></p>}
-      {!!plan.reserveShortfallPaise && <p className="money-warning">Cash to keep aside: {money(snapshot.facts.reservePaise)}. Largest reserve shortfall: {money(plan.reserveShortfallPaise)} · Calculated, separate from the funding gap.{reserveBreach?.date && <> First falls below the reserve on {dateLabel(reserveBreach.date)}.</>}</p>}
-      {!plan.firstGap && !plan.reserveShortfallPaise && <p className="money-meta">{plan.closingPaise === null ? 'A starting amount is needed to calculate the balance.' : outcome?.readiness === 'ready' && outcome.branch === 'fits' ? 'Based on the dates and amounts in this plan.' : 'Some details still need checking before relying on the result.'}</p>}
-      {!!conflicts && <p className="money-warning">Conflicting reports · no amount chosen for you</p>}
-      {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p className="money-warning">Partial calculation · some figures, dates or category coverage are unresolved</p>}
-      {action && <div className="money-next"><h3>Next step</h3><p><strong>{action.kind === 'contactPayee' ? 'Discuss payment options' : actionLabels[action.kind] ?? 'Review the next step'}</strong>{actionNames && <> · {actionNames}</>}</p>
-        {action?.beforeDate && <p className="money-meta">Before {dateLabel(action.beforeDate)}</p>}
-        <div className="money-detail-actions"><Details label="What to check"><ActionDetails action={action} plan={plan} facts={snapshot.facts} /></Details>
-          {action.kind === 'previewChange' && choice?.adjustmentAmounts.length ? <button disabled={blocked || !!snapshot.preview} onClick={() => onCommand({ type: 'previewAdjustments', adjustments: choice.adjustmentAmounts.map(item => ({ eventId: item.eventId, amount: decimal(item.amountPaise) })) })}>Compare change</button>
-            : ['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button className="detail-button" disabled={blocked} title="Skip this step; payment dates and amounts stay unchanged" aria-label={['clarify', 'confirmReceipt', 'verifyTerms'].includes(action.kind) ? 'I cannot confirm this now' : 'I cannot take this step now'} onClick={() => onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' })}>Skip this step</button>}</div>
-      </div>}
-      <div className="money-detail-actions">{result(plan.firstGap || !plan.reserveShortfallPaise ? 'firstGap' : 'reserveShortfall')}<Details label="Plan details">
-        <dl className="money-detail-values"><div><dt>Cash at plan start · {factStatus(snapshot, 'opening')}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div>
-          <div><dt>Included income · Calculated</dt><dd>{money(plan.reliableIncomePaise)}</dd></div>
-          <div><dt>Dated payments · Calculated</dt><dd>{money(plan.outflowPaise)}</dd></div>
-          <div><dt>Projected closing cash · Calculated</dt><dd>{money(plan.closingPaise)}</dd></div>
-          <div><dt>Largest funding gap · Calculated</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div>
-          {snapshot.facts.reservePaise > 0 && <><div><dt>Cash to keep aside · Reported, not spending</dt><dd>{money(snapshot.facts.reservePaise)}</dd></div><div><dt>Reserve shortfall · Calculated, separate from funding gap</dt><dd>{money(plan.reserveShortfallPaise)}</dd></div></>}
-        </dl><p>Starting cash + included income − dated payments = closing cash.</p>
-        <p>Closing cash is not spare spending money. Later receipts cannot cover an earlier deadline; the first and largest gaps are not amounts to add together.</p>
-        <div className="money-detail-actions">{result('closing')}{result('peakGap')}
-          {outcome && <Details label="Conditions & open questions"><p>{outcome.summary}</p><p>{outcome.covered}</p><p>{outcome.notCovered}</p><p>{outcome.conditions}</p></Details>}</div>
-      </Details></div>
+    <section className="money-summary" aria-label="Money in this plan">
+      <dl className="money-metrics">
+        <div className="money-metric"><dt>Starting cash<button className="money-edit-cash" disabled={blocked} aria-label="Correct starting cash" title="Correct starting cash" onClick={() => onEdit({ field: 'opening' })}><MoneyIcon name="edit" /></button></dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd><span>{dateLabel(snapshot.anchorDate)}{snapshot.facts.opening.status === 'estimate' && ' · Estimated'}{factStatus(snapshot, 'opening') === 'Conflicting reports' && ' · Check amount'}</span></div>
+        <div className="money-metric is-income"><dt><span className="money-direction" aria-hidden="true">↙</span> Money coming in</dt><dd>{hasIncome ? unknownIncome ? 'Unknown' : money(plan.reliableIncomePaise) : 'Not added'}</dd><span>{unknownIncome ? 'Amount or date still needed' : nextIncome ? `Next ${dateLabel(nextIncome.date)}` : plan.uncertainIncomePaise > 0 ? 'Only confirmed amounts included' : hasIncome ? 'During these 30 days' : 'Add your expected income'}</span></div>
+        <div className="money-metric"><dt><span className="money-direction" aria-hidden="true">↗</span> Money going out</dt><dd>{hasOutflow ? unknownOutflow ? 'Unknown' : money(plan.outflowPaise) : 'Not added'}</dd><span>{unknownOutflow ? 'Amount or date still needed' : hasOutflow ? 'Payments & budgeted spending' : 'Add bills and living costs'}</span></div>
+        <div className="money-metric money-metric-closing"><dt>Closing forecast</dt><dd>{money(plan.closingPaise)}</dd><span>For {dateLabel(lastDate(snapshot.endDateExclusive))}</span><ResultQualification snapshot={snapshot} id="closing" /></div>
+      </dl>
     </section>
-    <section className="money-panel" aria-label="Money in this plan"><h2>Money in this plan</h2>
-      <dl className="money-start-values"><div><dt>Cash at plan start · {dateLabel(snapshot.anchorDate)}</dt><dd><strong>{money(snapshot.facts.opening.amountPaise)}</strong><button className="icon-button" disabled={blocked} aria-label="Correct starting cash" title="Correct starting cash" onClick={() => onEdit({ field: 'opening' })}><MoneyIcon name="edit" /></button></dd><span className="money-meta">{factStatus(snapshot, 'opening')}</span></div>
-        <div><dt>Income included during this plan · Calculated</dt><dd><strong>{money(plan.reliableIncomePaise)}</strong></dd><span className="money-meta">Expected, not marked received</span></div></dl>
-      {!!excludedIncome && <p className="money-warning">{excludedIncome} conditional income {excludedIncome === 1 ? 'item is' : 'items are'} not counted on.</p>}
-      <div className="money-detail-actions"><Link to="/money/income">View income</Link>{result('reliableIncome')}<button className="detail-button" disabled={blocked} onClick={() => onEdit({ field: 'reserve' })}>Cash to keep aside{snapshot.facts.reservePaise > 0 && <> · {money(snapshot.facts.reservePaise)}</>}</button></div>
-    </section>
-    <section className="money-panel" aria-label="Next money and payments"><div className="money-section-head"><h2>Next money & payments</h2><Link className="button icon-button" to="/money/upcoming" aria-label="View all upcoming events" title="View all upcoming events"><MoneyIcon name="expand" /></Link></div>
-      {upcoming.length ? <ol className="money-events money-next-events">{upcoming.slice(0, 3).map(event => <MoneyEvent key={event.id} {...{ event, snapshot }} compact />)}</ol> : <p>{plan.events.length ? 'No later dated requirements in this plan.' : 'No dated events in this plan.'} See category coverage and checks before drawing a conclusion.</p>}
-      {!!elapsed && <p className="money-meta"><Link to="/money/upcoming">{elapsed} earlier {elapsed === 1 ? 'requirement' : 'requirements'}</Link> · status not confirmed</p>}
-      {!!undated && <p className="money-warning"><Link to="/money/upcoming">{undated} {undated === 1 ? 'item needs' : 'items need'} a date</Link> · not in dated balances.</p>}
-    </section>
-    <section className="money-panel" aria-label="Needs your check"><h2>Needs your check</h2>
-      <p>{check ? <>{checkNames && <strong>{checkNames} · </strong>}{checkLabels[check.field ?? ''] ?? 'An unconfirmed detail'}</> : conflicts ? 'Conflicting reports' : 'No open checks in this assessment.'}</p>
-      {!question && issues.length > 0 && <p className="money-meta">Still unresolved · you can return to these later</p>}
-      {(issues.length > 0 || conflicts > 0) && <button className="detail-button" onClick={onChecks}>{issues.length > 1 ? `Review ${issues.length} checks` : 'Review checks'}</button>}
-      {(snapshot.preview || snapshot.accepted || snapshot.invalidatedAssumptions?.length) ? <div className="money-change-notice">
-        <p>{snapshot.preview ? 'Proposed changes · not in your plan' : snapshot.accepted ? 'Saved changes are active · not payment confirmations' : 'Some changes need fresh consent'}</p>
-        {!!snapshot.invalidatedAssumptions?.length && <p className="money-warning">{snapshot.invalidatedAssumptions.length} saved changes are no longer included.</p>}
-        <Link to="/money/changes">Review plan changes</Link>
-      </div> : null}
-    </section>
+
+    {snapshot.facts.opening.amountPaise === null && !conflicts && <button disabled={blocked} onClick={() => onEdit({ field: 'opening' })}>Add starting cash</button>}
+    <PlanSummary snapshot={snapshot}>
+      <div className="money-attention-action">{action ? <Details label={actionLabel} title="Your next step"><h3>{actionLabel}{actionNames && <> · {actionNames}</>}</h3><ActionDetails action={action} plan={plan} facts={snapshot.facts} />
+        {action.kind === 'previewChange' && choice?.adjustmentAmounts.length ? <button disabled={blocked || !!snapshot.preview} onClick={() => onCommand({ type: 'previewAdjustments', adjustments: choice.adjustmentAmounts.map(item => ({ eventId: item.eventId, amount: decimal(item.amountPaise) })) })}>Compare change</button>
+          : ['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button disabled={blocked} onClick={() => onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' })}>I can’t confirm or take this step now</button>}
+      </Details> : <button onClick={onChecks}>Review details</button>}</div>
+    </PlanSummary>
+
+    <div className="money-overview-body">
+      <section className="money-panel money-flow" aria-label="Cash flow forecast">
+        <header className="money-section-head"><div><h2>Your cash flow</h2><span className="money-subtitle">Where money gets tight, not just where it ends</span></div><span className={`money-status-pill${incomplete || estimated || conflicts ? ' is-caution' : ''}`}>{conflicts ? 'Check figures' : incomplete ? 'Some details missing' : estimated ? 'Includes estimates' : 'Forecast'}</span></header>
+        <MoneyChart snapshot={snapshot} />
+        <div className="money-flow-footer"><span>Forecast, not a live bank balance or spending allowance.</span><Details label="View calculation" title="Plan details">
+          <dl className="money-detail-values"><div><dt>Starting cash · {dateLabel(snapshot.anchorDate)}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div><div><dt>Income included</dt><dd>{money(plan.reliableIncomePaise)}</dd></div><div><dt>Payments and budgeted spending</dt><dd>{money(plan.outflowPaise)}</dd></div><div><dt>Projected closing cash</dt><dd>{money(plan.closingPaise)}</dd></div><div><dt>Largest shortfall</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div></dl>
+          <p>Starting cash + included income − planned spending = closing cash. The first and largest shortfalls are not amounts to add together.</p>
+          <p>Payments precede income on the same day. Unconfirmed receipts, amounts and dates are not available money.</p>
+          {outcome && <p>{outcome.conditions}</p>}
+          <div className="money-detail-actions">{result('closing', 'How this is calculated')}{result('firstGap', 'What causes the first shortfall')}{result('reliableIncome', 'Which income is included')}</div>
+        </Details></div>
+      </section>
+      <section className="money-panel money-coming-up" aria-label="Next money and payments">
+        <header className="money-section-head"><h2>Coming up</h2><Link to="/money/upcoming" className="money-text-link" aria-label="View all upcoming events">View all <MoneyIcon name="expand" /></Link></header>
+        {nextItems.length ? <ol className="money-upcoming-compact">{nextItems.map(event => {
+          const record = snapshot.facts.records.find(record => record.id === event.recordId);
+          const recurring = record && record.schedule.recurrence !== 'once';
+          const basis = !event.included ? 'Not included · unconfirmed' : event.amountBasis === 'requiredOnly' ? 'Minimum only · total not known' : event.amountBasis === 'assumed' ? 'Saved change · not paid' : record?.target ? 'Intended payment · includes minimum' : event.kind === 'income' ? 'Expected' : record?.kind === 'debt' ? 'Required payment' : '';
+          const certainty = event.amountStatus === 'estimate' || record?.schedule.certainty === 'estimate' ? 'Estimated' : '';
+          return <li key={event.recordId} aria-label={event.label}><span className={`money-event-symbol${event.kind === 'income' ? ' is-income' : ''}`} aria-hidden="true">{event.kind === 'income' ? '↙' : '↗'}</span><div className="money-upcoming-name"><strong>{event.label}</strong><span>{dateLabel(event.originalDueDate)}{event.amountBasis === 'budget' ? ' · Daily budget' : event.autoDebit ? ' · Auto-debit' : recurring ? ' · Next payment' : ''}</span><span className="money-upcoming-status">{[basis, certainty].filter(Boolean).join(' · ')}</span></div><strong className={`money-upcoming-amount${event.kind === 'income' ? ' is-income' : ''}`}>{event.amountPaise === null ? 'Unknown' : `${event.kind === 'income' ? '+' : '−'}${money(event.amountPaise)}`}</strong></li>;
+        })}</ol> : <div className="money-upcoming-empty"><p>{elapsed ? 'No later dated items' : 'No upcoming dates yet'}</p><Link to={elapsed ? '/money/upcoming' : '/money/spending'}>{elapsed ? 'Review earlier payments' : 'Add a bill or expense'}</Link></div>}
+        {!!elapsed && nextItems.length > 0 && <Link className="money-text-link" to="/money/upcoming">{elapsed} earlier {elapsed === 1 ? 'item' : 'items'} · status unconfirmed</Link>}
+      </section>
+    </div>
+
+    <div className="money-overview-footnotes">
+      <div>{plan.uncertainIncomePaise > 0 && <span className="money-inline-note"><i />{money(plan.uncertainIncomePaise)} uncertain income not included</span>}{(issues.length > 0 || undated > 0) && <button className="money-text-link" onClick={onChecks}>{undated ? `${undated} ${undated === 1 ? 'item needs' : 'items need'} a date` : `${issues.length} ${issues.length === 1 ? 'detail' : 'details'} to review`} <MoneyIcon name="expand" /></button>}</div>
+      <div><button className="money-text-link" disabled={blocked} onClick={() => onEdit({ field: 'reserve' })}>{snapshot.facts.reservePaise > 0 ? `Cash buffer ${money(snapshot.facts.reservePaise)}` : 'Set a cash buffer'}<MoneyIcon name="edit" /></button>{!!(snapshot.preview || snapshot.accepted || snapshot.invalidatedAssumptions?.length) && <Link className="money-text-link" to="/money/changes">{snapshot.preview ? 'Preview not applied' : snapshot.invalidatedAssumptions?.length ? 'Review changed assumptions' : 'Saved changes included'}<MoneyIcon name="expand" /></Link>}</div>
+    </div>
+    <PlanExpiry snapshot={snapshot} />
+    {!blocked && <Download label="Download saved plan" />}
   </div>;
 }
