@@ -15,7 +15,7 @@ production readiness. Do not compare alternative providers before exercising thi
 
 | Responsibility | Initial implementation | What must be verified in the configured account |
 | --- | --- | --- |
-| Conversation and reasoning | Azure-hosted GPT-5.6-Terra; `AzureLLMService` with environment-supplied v1 endpoint and deployment; initial reasoning effort `none` | Deployment access, tool accuracy, useful follow-ups, correction handling and latency |
+| Conversation and reasoning | Azure-hosted GPT-5.6-Terra; `AzureLLMService` with environment-supplied v1 endpoint and configured `voice.model` deployment; reasoning effort `none` | Deployment access, tool accuracy, useful follow-ups, correction handling and latency |
 | STT | Microsoft Foundry Speech continuous real-time recognition through Pipecat's `AzureSTTService`; `en-IN` | Current service-managed English model, regional availability and numeric/date accuracy |
 | TTS | Microsoft Foundry Speech through Pipecat's streaming `AzureTTSService`; female `en-IN-Aarti:DragonHDLatestNeural` | Exact voice availability, streaming audio, pronunciation, word-boundary events and listener preference |
 | Transport and turns | Daily WebRTC and Pipecat, local Silero speech detection, timeout-based turn completion | Real microphone/playback, turn endings, interruption and resource cleanup |
@@ -59,7 +59,7 @@ supported female English neural voice explicitly after checking the resource and
 - The same committed snapshot updates cards and conversational context. Fact corrections invalidate
   dependent assumptions. Stale review revisions are rejected; external edits interrupt obsolete
   speech. Interrupted writes must be reread rather than assumed successful.
-- **Start conversation** opens preparation without capture; **Connect microphone** requests
+- **Start conversation** opens preparation without capture; **Start talking** requests
   microphone access before room creation. Ready/listening/speaking/captions follow actual SDK
   events. End releases capture, playback and server resources. Reopening saved figures does not
   reopen the microphone. The manual inspector remains secondary.
@@ -72,8 +72,18 @@ Implementation: [pipeline](../backend/app/voice_pipeline.py), [Azure speech](../
 
 ## Speech and latency behavior
 
-Start with short complete sentences sent to Azure while audio chunks stream back immediately;
-do not wait for a full multi-sentence answer. This is streamed **audio output**, not a claim that
+Turn completion uses a 2.6-second continuation window rearmed by recognition activity as well as
+VAD stop. VAD uses confidence/volume 0.5, 100-ms start and 200-ms stop; Azure's 500-ms segmentation
+only finalizes recognition segments. Sixty seconds after assistant playback ends, the server enters
+waiting and the browser disables capture. Explicit Continue retains the room and financial context;
+the 30-minute absolute call deadline does not move. An empty model response also offers explicit
+Continue, with a distinct explanation and no automatic model retry. See [evidence and limits](releaseChecks.md).
+
+The configured opening guidance produces one short model introduction with tools disabled,
+through guarded synthesis, followed by listening. Its instruction is then removed from context.
+For later turns, buffer model prose until tool selection is complete: discard tool-bearing prose,
+commit facts and recalculate before publishing an answer. Accepted text goes to Azure as complete
+sentences with streamed audio. This is streamed **audio output**, not a claim that
 the current Pipecat adapter uses Azure's incremental-text WebSocket v2 API. Sending each token as
 an independent synthesis request would undermine pronunciation and naturalness.
 
@@ -117,8 +127,8 @@ measured problem with this stack; change one variable at a time rather than buil
 ## Setup and current verification boundary
 
 Use [the root setup](../README.md) and [.env.example](../.env.example): `AZURE_OPENAI_API_KEY`,
-`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT`, `DAILY_API_KEY`, `AZURE_SPEECH_KEY`, and
-`AZURE_SPEECH_REGION`. The assistant uses the verified Azure deployment; there is no directly billed
+`AZURE_OPENAI_ENDPOINT`, `DAILY_API_KEY`, `AZURE_SPEECH_KEY`, and `AZURE_SPEECH_REGION`.
+Select the verified Azure deployment in `voice.model`; there is no directly billed
 OpenAI fallback. No dated inference API-version is required by the selected v1 API.
 
 The [Azure deployment report](azureSetup.md) verifies existing Terra `2026-07-09`, the linked
@@ -131,8 +141,12 @@ The latest authorized Daily check passed actual audio-only joins and bidirection
 audio between two native clients, followed by room deletion and clean client teardown. The earlier
 `account-missing-payment-method` blocker did not recur. No billing settings were changed.
 Offline tests use real financial HTTP/SSE and Pipecat frame aggregation with isolated provider
-boundaries, not a completed live call. Real microphone/playback, end-to-end latency, acoustic
-interruption and the complete consumer outcome still need integrated live acceptance.
+boundaries. A separate real browser/Daily/Pipecat/Azure smoke passed spoken cash capture,
+₹6,000 → ₹6,500 correction, visible card updates, audio traffic and cleanup using synthetic
+microphone speech and test-only Google identity. Eleven real-model text turns also exercised
+multi-fact intake, repeated information, uncertainty, similar debts and conflicting corrections.
+See [reproducible release checks](releaseChecks.md). Human microphone recognition, end-to-end
+latency, acoustic interruption and consumer understanding still need human acceptance.
 
 ## Verification sources
 

@@ -8,7 +8,13 @@ Streaming Azure Speech connects a GPT-5.6-Terra conversation role to validated f
 Provider-backed calls require the setup in [../README.md](../README.md);
 [Azure component checks](../docs/azureSetup.md) verified actual target-account inference/STT/TTS,
 not the complete Daily call or human recognition quality. Manual comparisons and export
-use the same state. No payments, bank connections, recorded audio or persisted transcripts exist.
+use the same state. No payments, bank connections or audio recordings are made. Actual final human
+captions and emitted Isha responses are retained as separate per-call conversations in SQLite.
+
+The [financial workspace contract](../docs/financialWorkspace.md) describes templates, fact
+lifecycle, evidence and conversational boundaries. `updateFacts` and voice `update_facts` use
+[app/facts.py](app/facts.py); [app/workspace.py](app/workspace.py) derives the same read-only
+workspace for HTTP/SSE, cards and Isha.
 
 ## Run and validate
 
@@ -16,7 +22,7 @@ From the repository root, with Python 3.12–3.14 and uv:
 
 ```sh
 uv sync --project backend --locked
-uv run --project backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000
+uv run --project backend uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8000 --no-proxy-headers --no-access-log
 uv run --project backend pytest backend/tests --cov=app --cov-report=term-missing --cov-report=xml:backend/coverage.xml
 uv run --project backend ruff check backend/app backend/tests
 uv run --project backend ruff format --check backend/app backend/tests
@@ -35,14 +41,18 @@ currency/timezone/horizon and invalid limits fail startup. Only these environmen
 | `APP_ENV` | `local` | `local` or `staging`; staging requires HTTPS |
 | `PUBLIC_ORIGIN` | `http://localhost:8000` | Exact public origin, without trailing slash/path |
 | `DATA_DIR` | repository `.data` directory | SQLite storage; set `/data` in the container |
+| `GOOGLE_CLIENT_ID` | empty | Google Web application OAuth client; required for sign-in |
+| `GOOGLE_CLIENT_SECRET` | unset | Google client secret; backend only |
+| `AUTH_ENCRYPTION_KEY` | unset | Stable Fernet key for persisted Google grants |
 | `AZURE_OPENAI_API_KEY` | unset | Azure resource key for conversation; secret |
 | `AZURE_OPENAI_ENDPOINT` | empty | Azure resource root or `/openai/v1/` URL; normalized to v1 |
-| `AZURE_OPENAI_DEPLOYMENT` | empty | User-chosen Azure conversation deployment name |
 | `DAILY_API_KEY` | unset | Required for private rooms and scoped participant tokens |
 | `AZURE_SPEECH_KEY` | unset | Required for Foundry Speech continuous recognition and streaming synthesis |
 | `AZURE_SPEECH_REGION` | empty | Matching resource region; no region or resource is silently selected |
 
-Credentials and region are required only for voice. The selected stack and live evaluation steps
+Azure/Daily credentials and Speech region are required only for voice. Google settings are
+required for all user access; missing settings do not disable health endpoints or the login page.
+The selected stack and live evaluation steps
 are in [../docs/voicePlan.md](../docs/voicePlan.md). Database creation and cleanup start in lifespan,
 not on import. Session expiry is fixed at creation, not extended by reads or edits.
 The local-date anchor and `asOf` cash basis stay fixed on refresh and editing. Corrections refer
@@ -56,6 +66,34 @@ connection/worker resources; inline scripts/styles remain blocked. Build CSS to 
 
 ## Conversation execution
 
+The primary configuration's `[voice]` section selects the assistant name/introduction, language,
+tone, verified model deployment, turn/VAD timings, inactivity, token/tool budgets and response
+length guidance. Resource endpoints and credentials stay in the environment. The configured
+opening guidance drives one model response after client readiness with financial tools disabled.
+It requests a brief introduction and free invitation, not opening cash. User-first speech preempts
+it; its one-time instruction is removed before processing the first user turn.
+
+Every completed user turn requires a processing tool before speech. One `update_facts` can merge
+all clear facts; `read_state` handles a turn without changes. Tool-bearing completions do not
+publish their accompanying prose. Only a completed, current-generation response after the tools
+may speak. The same model handles extraction and language; no second financial planner runs.
+Model streams and tool rounds have configured upper bounds. Sentence/question limits guide model
+presentation; they are not proof of arbitrary language compliance.
+
+Recognition activity rearms the 2.6-second continuation window even when VAD misses a short filler.
+The independent 60-second idle state pauses browser capture, not the room or financial session.
+Sequenced Continue is explicit, read-only and owner-validated; it cannot extend the original
+30-minute call deadline. Empty normal-stop model output offers the same recovery with an
+unfinished-response explanation, never automatic retries or fabricated audio. Provider failures
+remain bounded and fail closed. [Live checks and limits](../docs/releaseChecks.md) distinguish
+real audio/connection evidence from synthetic identity/input and intermittent recognition failures.
+
+An explicit unknown money value or null date in a patch records an unavailable answer only for
+the corresponding clarification, in the same transaction. Omitted fields are not such answers.
+Unknowns remain visible and qualified; later corrections invalidate dependent responses. Ambiguous
+record targets and competing field values are retained until an explicit clarification, not silently
+chosen or erased by an unrelated manual draft.
+
 [app/voice.py](app/voice.py) verifies the configured Azure female English voice, then provisions
 a private room with separate short-lived browser/bot tokens. Both room and tokens use
 `permissions: {canSend: ["audio"], canAdmin: false}`; neither participant is a meeting owner.
@@ -67,11 +105,14 @@ supervises readiness and closes the call on end, deletion, expiry or failure.
 SSML without unsupported prosody/silence tags. The standard en-IN STT endpoint is service-managed;
 no invented latest model ID or batch-transcription path is used. TTS streams audio per short sentence.
 [app/voice_tools.py](app/voice_tools.py) exposes `read_state`, `update_facts`, `review_plan`,
-`respond_to_action`, `preview_adjustments`, `accept_preview`, `discard_preview`, and `clear_accepted`.
-`review_plan({expectedRevision})` reads the deterministic active assessment; no planner LLM runs.
+`respond_to_action`, `preview_adjustments`, `accept_preview`, `reject_preview`, `discard_preview`,
+and `clear_accepted`. `review_plan({expectedRevision})` reads the deterministic workspace and
+active assessment; no planner LLM runs. Explicit rejection records refusal; discarding only closes
+exploration. Both leave reported facts unchanged.
 Persist concerns through `update_facts.decision`. Scenario tools use the same commands as HTTP.
 `AzureLLMService` sends streaming Chat Completions to the supplied Azure v1 endpoint;
-the deployment name goes in the API's `model` field. No direct OpenAI billing is used.
+`voice.model` supplies the verified deployment name in the API's `model` field. No direct OpenAI
+billing is used.
 No dated inference `api-version` is needed. Terra's Chat Completions tools require the configured
 `reasoning_effort=none`; a different deployment must be verified for compatible capabilities.
 `parallel_tool_calls=false` prevents parallel model tool requests; Pipecat callbacks also run
@@ -85,16 +126,31 @@ reliability and debt type can remain explicitly unknown. Completed tool argument
 transcripts—reach the store. Interruption cancels synchronous tools; transactions either commit
 or roll back, and the assistant must reread before assuming a save succeeded. External edits
 interrupt obsolete speech and refresh its context. Review rejects stale revisions. Canonical state
-includes `activeAssessment`, `currentAction`, `actionResponses`, `outcome` and a deterministic
-`spokenBrief`; no second financial ledger lives inside the agent. Framework integration tests
+includes the same `workspace` as the cards, explicit `scope`, `activeAssessment`, `currentAction`,
+`actionResponses`, `outcome` and a deterministic `spokenBrief`. Bounded `dialogue.questionOptions`
+identify material fields and decision relevance; Isha chooses the wording, not the engine.
+Results carry contributing/excluded references and the exact deficit-producing occurrences.
+No second financial ledger lives inside the agent. Framework integration tests
 do not establish acoustic barge-in, recognition accuracy or end-to-end voice latency.
 
+Model text, tool results and synthesized audio carry the current conversation generation. State
+changes and interruption invalidate prior output; late native SDK callbacks belong only to their
+original synthesis request. The watcher refreshes canonical state on heartbeat as well as events.
+Errors revoke output before bounded cleanup, without exposing provider exception bodies.
+
+Voice creation rejects a repeated normalized label within its category rather than silently
+adding another commitment. `distinct: true` is reserved for an explicitly separate new item;
+corrections use the existing ID. Ambiguous targets must be clarified, and disputed amounts must
+not be presented as newly confirmed. This guard supplements, not replaces, model-level semantic
+evaluation. See the [recovery suite and opt-in live checks](../docs/releaseChecks.md).
+
 `respond_to_action({expectedRevision, actionId, response})` records only a completed explicit
-`unavailable` answer to the selected clarification/receipt/terms question or inability to take its
-contact, follow-up, support or shared-commitment review step. `declined` rejects only the selected
+`unavailable` answer to a currently offered clarification/receipt/terms question or inability to take
+its contact, follow-up, support or shared-commitment review step. `declined` rejects only that
 spending reduction. Deferral never invents a payee response; outstanding steps and risks remain
 in the outcome. The HTTP operation is `respondToAction`. The server owns
-dependency keys and validates the active action; facts, coverage and obligations stay unchanged.
+dependency keys and validates membership in the bounded workspace actions; facts, coverage and
+obligations stay unchanged. Deferred questions leave the candidate list but remain visible issues.
 Relevant corrections invalidate responses while unrelated edits preserve them. An overlapping
 different preview is a conflict requiring review/discard, not permission to guess the user's intent.
 
@@ -104,6 +160,32 @@ Reported terms preserve known zero/estimated costs. Label corrections refresh re
 labels without changing amounts, occurrence consent or its original acceptance revision.
 
 ## HTTP contract
+
+Google OIDC and account management are separate from financial facts. See
+[app/auth.py](app/auth.py), [app/auth_routes.py](app/auth_routes.py) and [app/google.py](app/google.py).
+Google subject plus issuer maps to an internal UUID; emails never link accounts. OAuth uses
+one-use state bound to a browser cookie, S256 PKCE, nonce, RS256 ID-token validation and fixed Google
+endpoints. Access/refresh tokens stay encrypted on the server. Logins are opaque random cookies
+stored as hashes, with absolute/idle expiry. Configured rechecks detect revoked Google grants;
+provider failures fail closed without erasing finances.
+
+| Identity endpoint | Contract |
+| --- | --- |
+| `GET /api/auth/settings` | Public `{googleAvailable, sessionHours}` |
+| `POST /api/auth/login` | `{returnTo}` → `{url}`; exact allowlisted app, Money and history destinations create a bound sign-in flow |
+| `GET /auth/callback` | Only cross-site callback; validates and consumes state, then redirects to an allowed route |
+| `GET /api/auth/session` | `{user:{id,displayName,googleName,email},expiresAt}` or 401 |
+| `POST /api/auth/refresh` | `{}` → auth session; never extends the absolute limit |
+| `POST /api/auth/logout` | `{}` → 204; revoke current login and stop its voice connection |
+| `PATCH /api/account` | `{displayName}` → user; 1–80 trimmed characters, no controls |
+| `DELETE /api/account` | `{confirmation:"DELETE"}` → `{deleted:true}`; recent login required |
+
+Account deletion atomically removes identity, grants, every login, financial rows and command
+history; queued streams and voice work are revoked before commit. `Access` is revalidated inside
+financial transaction boundaries so a racing request cannot restore deleted data. Limits cover
+sign-in attempts, invalid cookies, sensitive mutations and voice starts; logs contain event codes,
+not tokens, profile details or financial values. Forwarded headers are not trusted. Serve one
+worker; configure a trusted proxy explicitly before changing that deployment boundary.
 
 All JSON models forbid extra fields and use lowerCamelCase aliases. The schema is available at
 `GET /openapi.json`, or print it without initializing storage:
@@ -124,16 +206,28 @@ uv run --project backend python -c 'import json,sys; sys.path.insert(0,"backend"
 | `POST /api/session/commands` | `Command` → committed `Snapshot` |
 | `GET /api/session/events` | SSE `snapshot` events containing complete `Snapshot` JSON |
 | `GET /api/session/export` | `text/plain` attachment using the same stored calculation |
-| `DELETE /api/session` | `{ "deleted": true }`; clears owner cookie |
+| `GET /api/history` | Owner-scoped conversations; optional `search` matches titles, dates and stored message text |
+| `GET /api/history/{slug}` | One chronological human/Isha conversation, with timestamps and partial-caption markers |
+| `GET /api/history/{slug}/transcript` | Plain-text captions attachment: timestamp, speaker and exact stored text only |
+| `DELETE /api/session` | `{ "deleted": true }`; deletes only the user's financial plan, not their login |
 | `GET /health/live`, `GET /health/ready` | `{ "status": "ok" }`; readiness checks local DB/cleanup only |
 
-Use `credentials: "same-origin"` and **`Content-Type: application/json` for all POSTs**.
+Financial endpoints and settings require a valid app login. Use `credentials: "same-origin"`
+and **`Content-Type: application/json` for POST/PATCH and account DELETE requests**.
 No custom CSRF header is required. The browser's `Origin` must equal `PUBLIC_ORIGIN`;
-`Host` must match its authority. Nonbrowser requests without `Origin` are accepted only with
-that matching Host. Cross-site/same-site Fetch Metadata is rejected; no wildcard CORS is enabled.
-The opaque `financeOwner` cookie is HttpOnly, SameSite Strict, Secure under HTTPS, and hashed
-in storage. A session ID does not authorize access. Never place credentials in URL parameters,
-JavaScript storage, or logs. Serialize the initial cookie-establishing POST in the frontend.
+`Host` must match its authority. Mutations require matching Origin or same-origin Fetch Metadata;
+cross-site/same-site requests and API query parameters other than History's bounded `search` are rejected. The Google callback is the
+narrow exception for cross-site navigation. No wildcard CORS is enabled. Cookies are host-only,
+HttpOnly and SameSite Lax; HTTPS uses Secure `__Host-` names. Client-supplied user/session IDs never
+authorize access. Never place credentials in application URLs, JavaScript storage or logs.
+
+[app/history.py](app/history.py) stores one chat per call, not per financial revision. Public RTVI
+output is saved before forwarding captions; interim speech, generated-but-unspoken text, tools and
+financial context are excluded. Interrupted prefixes cannot be extended by late completions. History
+uses the financial session's expiry and cascades on plan/account deletion; sign-out revokes access
+without deleting retained captions. Limits are in `[history]` in [config.toml](../config.toml). Existing
+unsaved calls cannot be recovered. History routes accept bounded lowercase slugs through the same
+protected SPA and Google return-path validation as other application routes.
 
 ### Command and financial input
 

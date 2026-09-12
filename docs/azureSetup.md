@@ -39,7 +39,10 @@ blocker, not the separate real-consumer conversation acceptance gate.
 Browser setup uses Daily's no-eval loader to preserve the Content Security Policy, and Pipecat
 owns SDK disconnection rather than directly calling Daily's prohibited `destroy()` method.
 The [live browser verifier](../frontend/scripts/verifyVoice.mjs) remains opt-in and exits nonzero
-on a failed provider join. Its successful media/correction branch is not yet verified.
+on a failed provider join. Its media/correction branch subsequently passed using real Daily/Azure
+and synthetic microphone speech with test-only Google identity: cash ₹6,000 → ₹6,500, visible
+card update, bidirectional WebRTC audio, stopped capture and deleted test room. See
+[release checks](releaseChecks.md) for the repeatable harness and evidence limits.
 
 ## Resource inventory
 
@@ -117,7 +120,7 @@ Deterministic financial state/calculations remain local.
 
 Endpoint validation accepts HTTPS resource roots or `/openai/v1/` on `.openai.azure.com` and
 `.services.ai.azure.com`, normalizing to v1. Arbitrary/direct-OpenAI hosts and dated deployment URLs
-are rejected. Change endpoint/deployment environment values for another approved compatible
+are rejected. Change the endpoint environment value and `voice.model` in [config.toml](../config.toml) for another approved compatible
 Azure deployment; the alias need not equal its underlying model ID. Reverify capabilities before
 changing models. Management API versions are separate: Cognitive Services advertised stable
 `2026-07-01`; invoice-credit inspection used the current Consumption `2026-06-01` API.
@@ -218,19 +221,20 @@ trailing silence: roughly **US$0.06** at the listed rates, not a settled invoice
 
 ## Runtime environment mapping
 
-Supply these privately using [.env.example](../.env.example). All six are required to start a
+Supply these privately using [.env.example](../.env.example). These five values are required to start a
 voice call; none is required merely to inspect saved manual figures.
 
 | Variable | Value/source | Secret? |
 | --- | --- | --- |
 | `AZURE_OPENAI_API_KEY` | Key 1 or Key 2 from `caracalaus`; authenticates the voice assistant LLM | **Yes** |
 | `AZURE_OPENAI_ENDPOINT` | `https://caracalaus.openai.azure.com/openai/v1/` | No |
-| `AZURE_OPENAI_DEPLOYMENT` | `gpt-5.6-terra` (verified deployment name) | No |
 | `AZURE_SPEECH_KEY` | Key 1 or Key 2 from `financeVoiceIndia`; authenticates STT and TTS | **Yes** |
 | `AZURE_SPEECH_REGION` | `centralindia` | No |
 | `DAILY_API_KEY` | Daily dashboard → Developers → API keys; authenticates private rooms/tokens, separate billing | **Yes** |
 
-All six are **voice-only requirements**; application startup/manual inspection works without them.
+These are **voice-only requirements**; application startup/manual inspection works without them.
+The verified deployment name is selected separately as `voice.model = "gpt-5.6-terra"` in
+[config.toml](../config.toml), alongside ordinary conversation behavior.
 Neither Azure subscription/tenant IDs, a Speech endpoint variable nor an API-version variable is
 required by application runtime. Keep provider entries blank in the committed example. Put actual
 values privately in the root [.env](../.env); it is ignored by Git. Do not send secrets to chat.
@@ -242,7 +246,7 @@ Azure Portal → **Subscriptions → Azure subscription 1 → Resource groups �
 - Open **caracalaus → Resource Management → Keys and Endpoint**; copy Key 1 or Key 2 privately into
   `AZURE_OPENAI_API_KEY`. Use the verified v1 URL above for `AZURE_OPENAI_ENDPOINT`.
 - Open **caracalaus → Go to Microsoft Foundry → Models + endpoints / Deployments**; the deployed
-  alias is `gpt-5.6-terra`, placed in `AZURE_OPENAI_DEPLOYMENT`.
+  alias is `gpt-5.6-terra`, selected by `voice.model` in the primary configuration.
 - Open **financeVoiceIndia → Resource Management → Keys and Endpoint**; copy its Key 1 or Key 2
   into `AZURE_SPEECH_KEY`, and its region `centralindia` into `AZURE_SPEECH_REGION`.
 - Daily is not in Azure. A Daily account owner/admin obtains `DAILY_API_KEY` from
@@ -258,7 +262,6 @@ AZURE_OPENAI_API_KEY="$(az cognitiveservices account keys list --subscription "$
 AZURE_SPEECH_KEY="$(az cognitiveservices account keys list --subscription "$SUBSCRIPTION_ID" --resource-group rg-monitoring --name financeVoiceIndia --query key1 --output tsv --only-show-errors)"
 export AZURE_OPENAI_API_KEY AZURE_SPEECH_KEY
 export AZURE_OPENAI_ENDPOINT='https://caracalaus.openai.azure.com/openai/v1/'
-export AZURE_OPENAI_DEPLOYMENT='gpt-5.6-terra'
 export AZURE_SPEECH_REGION='centralindia'
 ```
 
