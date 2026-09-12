@@ -52,11 +52,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (error instanceof ApiError && error.status === 401) {
         commit({ phase: 'anonymous', session: null, message: uncertain ? 'You’re signed out.'
           : error.body.code === 'sessionExpired' ? 'Your sign-in has expired. Sign in again to continue.'
-            : current.current.message || (current.current.session ? 'Please sign in again to continue.' : '') });
+            : current.current.phase === 'unavailable' ? 'Please sign in again to continue.'
+              : current.current.message || (current.current.session ? 'Please sign in again to continue.' : '') });
         if (uncertain) channel.current?.postMessage('logout');
       } else commit({ phase: uncertain ? 'logoutUncertain' : 'unavailable', session: null,
-        message: uncertain ? 'Sign-out could not be confirmed. Your figures are hidden. Retry or check your sign-in.'
-          : 'We couldn’t check your sign-in. Your figures are hidden until the connection is restored.' });
+        message: uncertain ? 'We couldn’t confirm you’re signed out. Your figures are hidden for now.'
+          : 'We’ve lost the connection for a moment. Retry to see your figures.' });
     } finally {
       if (request.current === controller) request.current = null;
     }
@@ -79,7 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       channel.current?.postMessage('logout');
     } catch {
       if (mounted.current && version === generation.current) commit({ phase: 'logoutUncertain', session: null,
-        message: 'Sign-out could not be confirmed. Your figures are hidden. Retry or check your sign-in.' });
+        message: 'We couldn’t confirm you’re signed out. Your figures are hidden for now.' });
     }
   }, [clear, commit]);
 

@@ -9,7 +9,7 @@ export type Notice = {
   title: string;
   message?: string;
   severity: 'info' | 'success' | 'warning' | 'error' | 'critical';
-  action?: { label: string; onClick: () => void | Promise<void>; disabled?: boolean };
+  action?: { label: string; onClick: () => void | Promise<void>; disabled?: boolean; dismiss?: boolean };
   duration?: number | null;
   dismissible?: boolean;
 };
@@ -149,24 +149,28 @@ export function registerToastHost(element: HTMLElement): () => void {
 function ToastItem({ entry, notice }: { entry: Entry; notice: Notice }) {
   const id = useId();
   const attach = useCallback((element: HTMLElement | null) => {
-    stopTimer(entry);
-    entry.element = element;
-    schedule(entry);
+    const owned = entries.get(entry.notice.id);
+    if (owned !== entry) return;
+    stopTimer(owned);
+    owned.element = element;
+    schedule(owned);
   }, [entry]);
 
   return <li><article ref={attach} className="toast" data-severity={notice.severity}
     role={notice.severity === 'error' || notice.severity === 'critical' ? 'alert' : 'status'}
     aria-labelledby={`${id}-title`} aria-describedby={notice.message ? `${id}-message` : undefined} aria-atomic="true">
-    <span className="toast-severity">{labels[notice.severity]}</span>
-    <h2 className="toast-title" id={`${id}-title`}>{notice.title}</h2>
-    {notice.message && <p className="toast-message" id={`${id}-message`}>{notice.message}</p>}
+    <span className="toast-severity sr-only">{labels[notice.severity]}</span>
+    <div className="toast-copy">
+      <h2 className="toast-title" id={`${id}-title`}>{notice.title}</h2>
+      {notice.message && <>{' '}<span className="toast-message" id={`${id}-message`}>{notice.message}</span></>}
+    </div>
     {(notice.action || notice.dismissible !== false) && <div className="toast-actions">
       {notice.action && <button type="button" className="toast-action" title={notice.action.label} disabled={notice.action.disabled}
         onClick={async () => {
           const action = entry.notice.action;
           if (entries.get(entry.notice.id) !== entry || !action || action.disabled) return;
           const currentGeneration = generation;
-          dismiss(entry.notice.id);
+          if (action.dismiss !== false) dismiss(entry.notice.id);
           try { await action.onClick(); }
           catch {
             if (generation === currentGeneration) notify({ id: `toast:${entry.notice.id}:action`, severity: 'error',
@@ -184,6 +188,8 @@ function ToastItem({ entry, notice }: { entry: Entry; notice: Notice }) {
 export function ToastViewport(): JSX.Element {
   const { notices, host } = useSyncExternalStore(subscribe, () => snapshot, () => emptySnapshot);
   const [expanded, setExpanded] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  if (!notices.length && minimized) setMinimized(false);
   const id = useId();
   const attach = useCallback((element: HTMLElement | null) => {
     for (const entry of entries.values()) stopTimer(entry);
@@ -216,10 +222,17 @@ export function ToastViewport(): JSX.Element {
   return createPortal(<aside ref={attach} className="toast-viewport" aria-label="Notifications" hidden={!notices.length}
     onPointerEnter={event => { if (event.pointerType !== 'touch') { hovered = true; updateTimers(); } }}
     onPointerLeave={() => { hovered = false; updateTimers(); }}>
-    <ol id={id} className="toast-stack" aria-label="Notification list" tabIndex={0}>
-      {(expanded ? notices : notices.slice(0, 3)).map(item => <ToastItem key={item.notice.id} {...item} />)}
+    {notices.length > 0 && <button type="button" className="toast-toggle" aria-expanded={!minimized} aria-controls={id}
+      aria-label={minimized ? undefined : 'Minimize notifications'} title={minimized ? undefined : 'Minimize notifications'}
+      onClick={() => setMinimized(value => !value)}>{minimized
+        ? `${notices.some(item => item.notice.severity === 'critical') ? 'Important notifications' : 'Notifications'} (${notices.length})`
+        : <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true" focusable="false">
+          <path d="m6 9 6 6 6-6" />
+        </svg>}</button>}
+    <ol id={id} className="toast-stack" aria-label="Notification list" tabIndex={0} hidden={minimized}>
+      {!minimized && (expanded ? notices : notices.slice(0, 3)).map(item => <ToastItem key={item.notice.id} {...item} />)}
     </ol>
-    {notices.length > 3 && <button type="button" className="toast-more" aria-controls={id} aria-expanded={expanded}
+    {!minimized && notices.length > 3 && <button type="button" className="toast-more" aria-controls={id} aria-expanded={expanded}
       onClick={() => setExpanded(value => !value)}>{expanded ? 'Show fewer notifications' : `${notices.length - 3} more notifications`}</button>}
   </aside>, host ?? document.body);
 }

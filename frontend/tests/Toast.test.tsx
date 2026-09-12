@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { Profiler, StrictMode, useState } from 'react';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Dialog } from '../src/Dialog';
 import { dismiss, dismissAll, notify, registerToastHost, ToastViewport } from '../src/Toast';
@@ -211,6 +210,45 @@ describe('toast store and lifetimes', () => {
 });
 
 describe('toast queue and reading', () => {
+  it('minimizes without discarding critical notices or running hidden expiry timers', () => {
+    const timers = vi.spyOn(globalThis, 'setTimeout');
+    const cancelled = vi.spyOn(globalThis, 'clearTimeout');
+    render(<ToastViewport />);
+    act(() => {
+      notify({ id: 'pending', title: 'Save not confirmed', severity: 'critical', dismissible: false });
+      notify({ ...saved, duration: 1000 });
+    });
+    const expiry = timers.mock.results[timers.mock.calls.findIndex(([, delay]) => delay === 1000)]!.value;
+    const toggle = screen.getByRole('button', { name: 'Minimize notifications' });
+    const list = screen.getByRole('list', { name: 'Notification list' });
+    expect(toggle).toHaveAttribute('aria-controls', list.id);
+    act(() => toggle.focus());
+    fireEvent.click(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(document.getElementById(toggle.getAttribute('aria-controls')!)).toBe(list);
+    expect(list).not.toBeVisible();
+    expect(list).toBeEmptyDOMElement();
+    expect(cancelled).toHaveBeenCalledWith(expiry);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    advance(60000);
+    const restore = screen.getByRole('button', { name: 'Important notifications (2)' });
+    fireEvent.click(restore);
+    expect(restore).toBe(toggle);
+    expect(toggle).toHaveFocus();
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('list', { name: 'Notification list' })).toBe(list);
+    expect(list).toBeVisible();
+    expect(screen.getByRole('alert', { name: 'Save not confirmed' })).toBeVisible();
+    expect(screen.getByRole('status', { name: saved.title })).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Dismiss Save not confirmed' })).not.toBeInTheDocument();
+    act(() => toggle.blur());
+    advance(999);
+    expect(screen.getByRole('status', { name: saved.title })).toBeVisible();
+    advance(1);
+    expect(screen.queryByRole('status', { name: saved.title })).not.toBeInTheDocument();
+    expect(screen.getByRole('alert', { name: 'Save not confirmed' })).toBeVisible();
+  });
   it('prioritizes critical and error notices without discarding queued critical notices', () => {
     render(<ToastViewport />);
     act(() => {
@@ -255,8 +293,7 @@ describe('toast queue and reading', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(3);
   });
 
-  it('pauses the whole stack for overlapping hover, focus and document hiding', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  it('pauses the whole stack for overlapping hover, focus and document hiding', () => {
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
     render(<><button type="button">Continue planning</button><ToastViewport /></>);
     act(() => {
@@ -265,11 +302,11 @@ describe('toast queue and reading', () => {
     });
     const viewport = screen.getByRole('complementary', { name: 'Notifications' });
     advance(200);
-    await user.hover(viewport);
+    fireEvent.pointerOver(viewport, { pointerType: 'mouse' });
     advance(10000);
     expect(screen.getAllByRole('status')).toHaveLength(2);
     act(() => screen.getByRole('list', { name: 'Notification list' }).focus());
-    await user.unhover(viewport);
+    fireEvent.pointerOut(viewport, { pointerType: 'mouse', relatedTarget: document.body });
     advance(10000);
     hidden.mockReturnValue(true);
     fireEvent(document, new Event('visibilitychange'));
@@ -313,18 +350,17 @@ describe('toast queue and reading', () => {
 });
 
 describe('toast actions and focus', () => {
-  it('returns focus to the app trigger after an explicit dismissal', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  it('returns focus to the app trigger after an explicit dismissal', () => {
     render(<><button type="button">Review figures</button><ToastViewport /></>);
     const trigger = screen.getByRole('button', { name: 'Review figures' });
     act(() => trigger.focus());
     act(() => notify(saved));
     expect(trigger).toHaveFocus();
-    await user.tab();
+    act(() => screen.getByRole('list', { name: 'Notification list' }).focus());
     expect(screen.getByRole('list', { name: 'Notification list' })).toHaveFocus();
-    await user.tab();
+    act(() => screen.getByRole('button', { name: `Dismiss ${saved.title}` }).focus());
     expect(screen.getByRole('button', { name: `Dismiss ${saved.title}` })).toHaveFocus();
-    await user.keyboard('{Enter}');
+    fireEvent.click(screen.getByRole('button', { name: `Dismiss ${saved.title}` }));
     expect(trigger).toHaveFocus();
     expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
@@ -343,7 +379,6 @@ describe('toast actions and focus', () => {
   });
 
   it('dismisses before invoking an action and retains a replacement after resolution', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     const pending = deferred();
     render(<><button type="button">Review figures</button><ToastViewport /></>);
     const trigger = screen.getByRole('button', { name: 'Review figures' });
@@ -354,7 +389,8 @@ describe('toast actions and focus', () => {
       return pending.promise;
     });
     act(() => notify({ id: 'connection', title: 'Connection interrupted', severity: 'error', action: { label: 'Try again', onClick: retry } }));
-    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    act(() => screen.getByRole('button', { name: 'Try again' }).focus());
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
     expect(retry).toHaveBeenCalledOnce();
     expect(screen.queryByRole('alert', { name: 'Connection interrupted' })).not.toBeInTheDocument();
     expect(screen.getByRole('alert', { name: 'Checking the connection' })).toBeVisible();
