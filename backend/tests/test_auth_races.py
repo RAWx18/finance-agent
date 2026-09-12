@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.auth import COOKIE, FLOW_COOKIE
+from app.auth import COOKIE, FLOW_COOKIE, AuthProblem
 from app.auth_models import Access
 from app.google import TOKEN, digest
 from app.store import Problem
@@ -261,7 +261,7 @@ async def test_voice_ends_and_pending_tools_cannot_mutate_after_revocation(
     application, client, _ = auth_server
     store, calls = application.state.store, application.state.calls
     await client.post("/api/session", json={})
-    response = await client.post("/api/session/call", json={})
+    response = await client.post("/api/session/call", json={"callId": str(uuid4())})
     assert response.status_code == 200
     pipeline = PipelineDouble.instances[-1]
     room = RoomsDouble.instances[-1]
@@ -294,6 +294,120 @@ async def test_voice_ends_and_pending_tools_cannot_mutate_after_revocation(
     assert room.closed and room.deleted == [room.name]
     assert calls.call is None and not store.listeners
     assert not await rows(application, "SELECT * FROM commands")
+
+
+@pytest.mark.parametrize("expire", [False, True])
+@pytest.mark.parametrize("stage", ["preflight", "room", "token", "pipeline", "join", "result"])
+async def test_voice_startup_auth_loss_returns_401_and_closes_resources(
+    auth_server, provider_doubles, monkeypatch, stage, expire
+):
+    application, client, now = auth_server
+    store, calls = application.state.store, application.state.calls
+    await client.post("/api/session", json={})
+    reached, release = asyncio.Event(), asyncio.Event()
+    if stage in {"join", "result"}:
+        check = store.check
+
+        async def paused(access):
+            await check(access)
+            call = calls.call
+            if call and (
+                stage == "result"
+                and call.join.done()
+                and asyncio.current_task() is starting
+                or stage == "join"
+                and asyncio.current_task() is call.task
+                and getattr(call.pipeline, "snapshot", None) is not None
+            ):
+                reached.set()
+                await release.wait()
+
+        monkeypatch.setattr(store, "check", paused)
+    else:
+        target, name = {
+            "preflight": ("app.voice", "check_voice"),
+            "room": (RoomsDouble, "create"),
+            "token": (RoomsDouble, "token"),
+            "pipeline": (PipelineDouble, "start"),
+        }[stage]
+        if stage == "preflight":
+            from app.voice import check_voice
+
+            operation = check_voice
+        else:
+            operation = getattr(target, name)
+
+        async def paused(*args):
+            result = await operation(*args)
+            reached.set()
+            await release.wait()
+            return result
+
+        if isinstance(target, str):
+            monkeypatch.setattr(target + "." + name, paused)
+        else:
+            monkeypatch.setattr(target, name, paused)
+    starting = asyncio.create_task(client.post("/api/session/call", json={"callId": str(uuid4())}))
+    await asyncio.wait_for(reached.wait(), 2)
+    call = calls.call
+    assert isinstance(call.owner, Access)
+    if expire:
+        now[0] += timedelta(hours=24)
+    else:
+        assert (await client.post("/api/auth/logout", json={})).status_code == 204
+    release.set()
+    response = await asyncio.wait_for(starting, 2)
+    assert response.status_code == 401
+    assert response.json() == {
+        "code": "sessionExpired" if expire else "unauthenticated",
+        "message": "Sign in to continue.",
+        "snapshot": None,
+    }
+    assert call.task.done() and call.join.done()
+    if stage != "result":
+        assert isinstance(call.join.exception(), AuthProblem)
+        assert call.join.exception().status == 401
+    assert PipelineDouble.instances[-1].closed
+    assert all(room.closed and room.deleted == [room.name] for room in RoomsDouble.instances)
+    assert not store.listeners and not store.listener_access and calls.call is None
+    assert (await client.get("/api/session/call")).status_code == 401
+    assert not await rows(application, "SELECT * FROM commands")
+
+
+@pytest.mark.parametrize("target", ["router", "tool"])
+async def test_voice_state_reads_keep_locked_auth_guard_after_precheck(
+    auth_server, monkeypatch, target
+):
+    application, client, _ = auth_server
+    store = application.state.store
+    await client.post("/api/session", json={})
+    access = Access(
+        (await client.get("/api/auth/session")).json()["user"]["id"], digest(client.cookies[COOKIE])
+    )
+    check = store.check
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def paused(identity):
+        assert isinstance(identity, Access)
+        await check(identity)
+        reached.set()
+        await release.wait()
+
+    monkeypatch.setattr(store, "check", paused)
+    tools = VoiceTools(store, access, uuid4(), lambda snapshot: None)
+    reading = asyncio.create_task(
+        client.get("/api/session/call") if target == "router" else tools.read_state()
+    )
+    await asyncio.wait_for(reached.wait(), 2)
+    assert (await client.post("/api/auth/logout", json={})).status_code == 204
+    release.set()
+    if target == "router":
+        response = await asyncio.wait_for(reading, 2)
+        assert response.status_code == 401 and "callId" not in response.text
+    else:
+        with pytest.raises(AuthProblem) as error:
+            await asyncio.wait_for(reading, 2)
+        assert error.value.status == 401
 
 
 async def test_account_delete_does_not_touch_another_user_or_their_pending_login(auth_server):
@@ -346,7 +460,8 @@ async def test_cancelled_commit_cannot_leave_revoked_voice_or_streams_live(
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
-    assert (await client.post("/api/session/call", json={})).status_code == 200
+    response = await client.post("/api/session/call", json={"callId": str(uuid4())})
+    assert response.status_code == 200
     call = application.state.calls.call
     access = call.owner
     queue = await store.subscribe(access)
@@ -376,3 +491,29 @@ async def test_cancelled_commit_cannot_leave_revoked_voice_or_streams_live(
     await asyncio.wait_for(call.task, 2)
     assert application.state.calls.call is None
     assert (await client.get("/api/auth/session")).status_code == 401
+
+
+async def test_clean_end_and_logout_preserve_figures_and_receipts(auth_server, provider_doubles):
+    application, client, _ = auth_server
+    await client.post("/api/session", json={})
+    submitted = command(facts("1234.56"))
+    saved = (await client.post("/api/session/commands", json=submitted)).json()
+    receipts = await rows(application, "SELECT * FROM commands")
+    first = {"callId": str(uuid4())}
+    assert (await client.post("/api/session/call", json=first)).status_code == 200
+    ended = await client.request("DELETE", "/api/session/call", json=first)
+    assert ended.json()["cleanupConfirmed"] is True
+    assert (await client.get("/api/session")).json() == saved
+    second = {"callId": str(uuid4())}
+    assert (await client.post("/api/session/call", json=second)).status_code == 200
+    call = application.state.calls.call
+    stale = await client.request("DELETE", "/api/session/call", json=first)
+    assert stale.json()["callId"] == first["callId"] and not call.stop.is_set()
+    assert (await client.get("/api/session/call")).json()["callId"] == second["callId"]
+    assert (await client.post("/api/auth/logout", json={})).status_code == 204
+    assert call.revoked and call.state.cleanup_confirmed
+    assert (await client.post("/api/session/call", json=second)).status_code == 401
+    await sign_in_async(client, application)
+    assert (await client.get("/api/session")).json() == saved
+    assert (await client.post("/api/session/commands", json=submitted)).json() == saved
+    assert await rows(application, "SELECT * FROM commands") == receipts

@@ -1,7 +1,11 @@
 # SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import asyncio
+from datetime import timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 from xml.etree import ElementTree
 
 import aiohttp
@@ -71,9 +75,39 @@ def test_native_services_and_hd_ssml(config):
     assert all(word not in ssml for word in ("mstts", "prosody", "emphasis", "express-as"))
     tts._settings.voice = "label'\"<&"
     assert ElementTree.fromstring(tts._construct_ssml(text))[0].attrib["name"] == "label'\"<&"
-    assert SpeechSynthesis.run_tts is AzureTTSService.run_tts
-    assert SpeechRecognition._disconnect is AzureSTTService._disconnect
-    assert SpeechRecognition._on_handle_recognized is AzureSTTService._on_handle_recognized
+    assert tts._stop_frame_timeout_s > config.voice.tts_total_seconds
+
+
+async def test_synthesis_scopes_callbacks_and_streams_native_audio(monkeypatch):
+    from pipecat.frames.frames import TTSAudioRawFrame
+
+    synthesizer = Mock()
+    monkeypatch.setattr("app.speech.SpeechSynthesizer", Mock(return_value=synthesizer))
+    tts = SpeechSynthesis(api_key="test-only", region="centralindia", sample_rate=24000)
+    tts.get_event_loop = Mock(return_value=asyncio.get_running_loop())
+    tts.add_word_timestamps = AsyncMock()
+
+    def stream(ssml):
+        assert "Reported cash" in ssml
+        synthesizer.synthesizing.connect.call_args.args[0](
+            SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00"))
+        )
+        synthesizer.synthesis_completed.connect.call_args.args[0](
+            SimpleNamespace(result=SimpleNamespace(audio_duration=timedelta(milliseconds=20)))
+        )
+
+    synthesizer.speak_ssml_async.side_effect = stream
+    frames = [item async for item in tts.run_tts("Reported cash", "sentence")]
+    assert len(frames) == 1 and isinstance(frames[0], TTSAudioRawFrame)
+    assert frames[0].audio == b"\x01\x00" and frames[0].context_id == "sentence"
+    synthesizer.stop_speaking_async.assert_not_called()
+    for signal in (
+        synthesizer.synthesizing,
+        synthesizer.synthesis_completed,
+        synthesizer.synthesis_canceled,
+        synthesizer.synthesis_word_boundary,
+    ):
+        signal.disconnect_all.assert_called_once()
 
 
 async def test_phrase_hints_precede_continuous_recognition(config, monkeypatch):
@@ -91,9 +125,8 @@ async def test_phrase_hints_precede_continuous_recognition(config, monkeypatch):
     monkeypatch.setattr("app.speech.PushAudioInputStream", Mock())
     monkeypatch.setattr("app.speech.AudioConfig", Mock())
     await stt._connect()
-    recognizer.recognizing.connect.assert_called_once_with(stt._on_handle_recognizing)
-    recognizer.recognized.connect.assert_called_once_with(stt._on_handle_recognized)
-    recognizer.canceled.connect.assert_called_once_with(stt._on_handle_canceled)
+    for name in ("recognizing", "recognized", "canceled", "session_stopped"):
+        getattr(recognizer, name).connect.assert_called_once()
     assert [call.args[0] for call in grammar.addPhrase.call_args_list] == config.voice.stt_phrases
     names = [call[0] for call in calls.mock_calls]
     assert names.index("grammar.setWeight") < names.index(
@@ -105,6 +138,9 @@ async def test_phrase_hints_precede_continuous_recognition(config, monkeypatch):
     factory.assert_called_once()
     await stt._disconnect()
     recognizer.stop_continuous_recognition_async.assert_called_once()
+    recognizer.stop_continuous_recognition_async.return_value.get.assert_called_once()
+    for name in ("recognizing", "recognized", "canceled", "session_stopped"):
+        getattr(recognizer, name).disconnect_all.assert_called_once()
     assert stt._audio_stream is None and stt._speech_recognizer is None
 
 
@@ -131,7 +167,6 @@ def test_region_rejects_unsafe_hostname_labels(region):
     [
         "azure_openai_api_key",
         "azure_openai_endpoint",
-        "azure_openai_deployment",
         "daily_api_key",
         "azure_speech_key",
         "azure_speech_region",
@@ -177,6 +212,51 @@ async def test_exact_resource_voice_check(config, tmp_path, voice_http):
     response.json.assert_awaited_once()
 
 
+async def test_configured_gender_and_locale_are_verified_without_fallback(
+    config, tmp_path, voice_http
+):
+    _, response = voice_http
+    config = config.model_copy(
+        update={
+            "voice": config.voice.model_copy(
+                update={
+                    "tts_voice": "en-GB-RyanNeural",
+                    "tts_locale": "en-GB",
+                    "tts_gender": "Male",
+                }
+            )
+        }
+    )
+    with pytest.raises(Problem, match="Configured male English voice is unavailable"):
+        await check_voice(config, environment(tmp_path))
+    response.json.return_value = [
+        {
+            "ShortName": "en-GB-RyanNeural",
+            "Locale": "en-GB",
+            "Gender": "Male",
+        }
+    ]
+    await check_voice(config, environment(tmp_path))
+
+
+@pytest.mark.parametrize("field", ["stt_locale", "tts_locale"])
+async def test_unsupported_sdk_locale_blocks_preflight_and_paid_room(
+    store, config, tmp_path, voice_http, monkeypatch, field
+):
+    await store.create("owner")
+    config = config.model_copy(update={"voice": config.voice.model_copy(update={field: "xx-YY"})})
+    rooms = Mock()
+    monkeypatch.setattr("app.voice.DailyRooms", rooms)
+    manager = CallManager(store, config, environment(tmp_path))
+    try:
+        with pytest.raises(Problem, match="speech locale is unsupported"):
+            await manager.start("owner", uuid4())
+        rooms.assert_not_called()
+        voice_http[0].get.assert_not_called()
+    finally:
+        await manager.close()
+
+
 @pytest.mark.parametrize("status", [301, 401, 403, 429, 500])
 async def test_voice_list_http_failures_are_actionable(config, tmp_path, voice_http, status):
     _, response = voice_http
@@ -217,7 +297,7 @@ async def test_preflight_failure_creates_no_room(store, config, tmp_path, voice_
     monkeypatch.setattr("app.voice.DailyRooms", rooms)
     manager = CallManager(store, config, environment(tmp_path))
     with pytest.raises(Problem, match="Configured female English voice is unavailable"):
-        await manager.start("owner")
+        await manager.start("owner", uuid4())
     rooms.assert_not_called()
     assert manager.state("owner").status == "error"
     assert manager.state("owner").message == (

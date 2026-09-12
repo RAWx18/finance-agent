@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from datetime import timedelta
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 from zoneinfo import TZPATH, ZoneInfo, reset_tzpath
 
 import pytest
@@ -193,9 +195,20 @@ def test_static_spa_paths_and_api_never_fall_back(tmp_path, config):
         assert client.get("/", follow_redirects=False).headers["location"] == "/login"
         assert client.get("/login").status_code == 200
         assert client.get("/review").status_code == 404
-        assert (
-            client.get("/app", follow_redirects=False).headers["location"] == "/login?returnTo=/app"
-        )
+        for path in (
+            "/app",
+            "/money",
+            "/money/income",
+            "/money/spending",
+            "/money/debts",
+            "/money/upcoming",
+            "/money/changes",
+            "/account",
+            "/history",
+        ):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 303
+            assert response.headers["location"] == f"/login?returnTo={path}"
         assert client.get("/api/missing").status_code == 401
         assert client.get("/api/session/call").status_code == 401
         for path in (
@@ -205,6 +218,85 @@ def test_static_spa_paths_and_api_never_fall_back(tmp_path, config):
         ):
             assert client.get(path).status_code == 404
         assert "frame-ancestors 'none'" in client.get("/").headers["content-security-policy"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/app",
+        "/money",
+        "/money/income",
+        "/money/spending",
+        "/money/debts",
+        "/money/upcoming",
+        "/money/changes",
+        "/account",
+        "/history",
+    ],
+)
+def test_protected_spa_signin_roundtrip_and_expiry(tmp_path, config, path):
+    static = tmp_path / "dist"
+    static.mkdir()
+    (static / "index.html").write_text("<!doctype html><title>Finance</title>")
+    now = [NOW]
+    application = auth_app(
+        config, Environment(data_dir=tmp_path / "data"), lambda: now[0], static_dir=static
+    )
+    with TestClient(application, base_url=ORIGIN) as client:
+        for headers in ({}, {"Cookie": COOKIE + "=malformed"}):
+            response = client.get(path, headers=headers, follow_redirects=False)
+            assert response.status_code == 303
+            assert response.headers["location"] == f"/login?returnTo={path}"
+        response = client.get(response.headers["location"])
+        assert response.status_code == 200
+        assert response.text == (static / "index.html").read_text()
+        return_to = parse_qs(urlsplit(str(response.url)).query)["returnTo"][0]
+        assert return_to == path
+        response = sign_in(client, return_to=return_to)
+        response = client.get(response.headers["location"], follow_redirects=False)
+        assert response.status_code == 200
+        assert response.text == (static / "index.html").read_text()
+        assert response.headers["cache-control"] == "no-store"
+        assert client.get("/", follow_redirects=False).headers["location"] == "/app"
+        assert client.get("/login", follow_redirects=False).status_code == 200
+        now[0] += timedelta(hours=config.auth.idle_hours + 1)
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/login?returnTo={path}"
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/money/",
+        "/money/unknown",
+        "/money/income/",
+        "/money/income/details",
+        "/money/incomes",
+        "/money//income",
+        "/money/Income",
+        "/Money",
+        "/moneyish",
+        "/money-income",
+        "/figures",
+    ],
+)
+def test_unknown_money_spa_paths_never_serve_html(tmp_path, config, path, authenticated):
+    static = tmp_path / "dist"
+    (static / "money").mkdir(parents=True)
+    (static / "index.html").write_text("<!doctype html><title>Finance</title>")
+    (static / "money" / "unknown").write_text("Not a route")
+    application = auth_app(
+        config, Environment(data_dir=tmp_path / "data"), lambda: NOW, static_dir=static
+    )
+    with TestClient(application, base_url=ORIGIN) as client:
+        if authenticated:
+            sign_in(client)
+        response = client.get(path, follow_redirects=False)
+        assert response.status_code == 404
+        assert response.json()["code"] == "notFound"
+        assert "location" not in response.headers
 
 
 def test_export_labels_cannot_be_html_or_header_injection(client):
@@ -227,6 +319,37 @@ def test_schema_and_import_have_no_database_side_effect(tmp_path, config):
     assert schema["components"]["schemas"]["Command"]["additionalProperties"] is False
     assert "snapshot" in schema["components"]["schemas"]["Error"]["properties"]
     assert set(schema["paths"]["/api/session/call"]) == {"get", "post", "delete"}
+    for method in ("post", "delete"):
+        body = schema["paths"]["/api/session/call"][method]["requestBody"]
+        assert body["required"] is True
+        assert body["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/CallRequest"
+        }
+    request = schema["components"]["schemas"]["CallRequest"]
+    assert request["required"] == ["callId"]
+    assert request["properties"]["callId"]["format"] == "uuid"
+    assert request["additionalProperties"] is False
+    assert {"voiceStartupSeconds", "voiceShutdownSeconds"} <= set(
+        schema["components"]["schemas"]["Settings"]["required"]
+    )
+
+
+def test_call_identity_and_deadline_contract(client, config):
+    client.post("/api/session", json={})
+    for method in ("POST", "DELETE"):
+        for body in ({}, {"callId": "invalid"}, {"callId": str(uuid4()), "extra": True}):
+            assert client.request(method, "/api/session/call", json=body).status_code == 422
+    assert client.delete("/api/session/call").status_code == 415
+    settings = client.get("/api/settings").json()
+    assert settings["voiceStartupSeconds"] == config.voice.startup_seconds
+    assert settings["voiceShutdownSeconds"] == config.voice.shutdown_seconds
+    body = {"callId": str(uuid4())}
+    response = client.request("DELETE", "/api/session/call", json=body)
+    assert response.json() == {
+        **body, "status": "ended", "cleanupConfirmed": True, "message": None,
+    }
+    assert client.request("DELETE", "/api/session/call", json=body).json() == response.json()
+    assert client.post("/api/session/call", json=body).json()["code"] == "callEnded"
 
 
 def test_timezone_works_without_system_zoneinfo():

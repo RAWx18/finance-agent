@@ -2,29 +2,109 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+from collections.abc import AsyncGenerator
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
 from azure.cognitiveservices.speech import (  # type: ignore[import-untyped]
+    CancellationErrorCode,
     PhraseListGrammar,
+    ResultReason,
     SpeechRecognizer,
+    SpeechSynthesizer,
 )
 from azure.cognitiveservices.speech.audio import (  # type: ignore[import-untyped]
     AudioConfig,
     AudioStreamFormat,
     PushAudioInputStream,
 )
+from pipecat.frames.frames import (
+    CancelFrame,
+    ErrorFrame,
+    Frame,
+    InterimTranscriptionFrame,
+    InterruptionFrame,
+    TranscriptionFrame,
+    TTSAudioRawFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.azure.stt import AzureSTTService
 from pipecat.services.azure.tts import AzureTTSService
+from pipecat.services.tts_service import TTSService
+from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.types import assert_given
+
+from .config import VoiceConfig, load_config
+
+
+class SynthesisFailure(Exception):
+    """A failed request that permits an explicit, non-replaying continuation."""
 
 
 class SpeechRecognition(AzureSTTService):
     _speech_recognizer: Any
+    _settings: Any
 
-    def __init__(self, *, phrases: list[str], **kwargs: Any) -> None:
+    def __init__(
+        self, *, phrases: list[str], config: VoiceConfig | None = None, **kwargs: Any
+    ) -> None:
         super().__init__(**kwargs)
         self.phrases = phrases
+        self.config = config or load_config().voice
+        self._recognition_id: object | None = None
+
+    def _receive(self, event: Any, kind: str, identity: object | None) -> None:
+        loop = self.get_event_loop()
+
+        async def deliver() -> None:
+            if identity is None or identity is not self._recognition_id:
+                return
+            if kind in {"canceled", "stopped"}:
+                self._recognition_id = None
+                await self.push_error(error_msg="Speech recognition disconnected.", fatal=True)
+                await self._disconnect()
+                return
+            result = getattr(event, "result", None)
+            text = getattr(result, "text", None)
+            reason = getattr(result, "reason", None)
+            if not isinstance(text, str) or reason not in {
+                ResultReason.RecognizedSpeech,
+                ResultReason.RecognizingSpeech,
+                ResultReason.NoMatch,
+            }:
+                self._recognition_id = None
+                await self.push_error(error_msg="Invalid speech recognition result.", fatal=True)
+                await self._disconnect()
+                return
+            if not text.strip() or reason == ResultReason.NoMatch:
+                return
+            final = kind == "recognized"
+            frame = (TranscriptionFrame if final else InterimTranscriptionFrame)(
+                text=text,
+                user_id=self._user_id,
+                timestamp=time_now_iso8601(),
+                language=self._settings.language,
+                result=event,
+                **({"finalized": True} if final else {}),
+            )
+            if final:
+                await self._handle_transcription(text, True, self._settings.language)
+                await self.emit_stt_usage_metrics()  # type: ignore[no-untyped-call]
+            if identity is self._recognition_id:
+                await self.push_frame(frame)
+
+        def schedule() -> None:
+            if identity is not None and identity is self._recognition_id:
+                self.create_task(deliver(), "recognition-event")
+
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(schedule)
+
+    def _on_handle_recognized(self, event: Any) -> None:
+        self._receive(event, "recognized", self._recognition_id)
+
+    def _on_handle_recognizing(self, event: Any) -> None:
+        self._receive(event, "recognizing", self._recognition_id)
 
     async def _connect(self) -> None:
         if self._audio_stream:
@@ -37,22 +117,195 @@ class SpeechRecognition(AzureSTTService):
                 speech_config=self._speech_config,
                 audio_config=AudioConfig(stream=self._audio_stream),
             )
-            self._speech_recognizer.recognizing.connect(self._on_handle_recognizing)
-            self._speech_recognizer.recognized.connect(self._on_handle_recognized)
-            self._speech_recognizer.canceled.connect(self._on_handle_canceled)
+            identity = self._recognition_id = object()
+            for name, kind in (
+                ("recognizing", "recognizing"),
+                ("recognized", "recognized"),
+                ("canceled", "canceled"),
+                ("session_stopped", "stopped"),
+            ):
+                getattr(self._speech_recognizer, name).connect(
+                    lambda event, kind=kind: self._receive(event, kind, identity)
+                )
             # Vocabulary biases recognition, never authoritative financial state.
             grammar = PhraseListGrammar.from_recognizer(self._speech_recognizer)
             for phrase in self.phrases:
                 grammar.addPhrase(phrase)
             grammar.setWeight(1.0)
-            await asyncio.to_thread(
-                self._speech_recognizer.start_continuous_recognition_async().get
-            )
+            recognizer = self._speech_recognizer
+            async with asyncio.timeout(self.config.startup_seconds):
+                await asyncio.to_thread(
+                    lambda: recognizer.start_continuous_recognition_async().get()
+                )
+        except asyncio.CancelledError:
+            await self._disconnect()
+            raise
         except Exception:
+            await self._disconnect()
             await self.push_error(error_msg="Azure speech recognition could not start.", fatal=True)
+
+    async def _disconnect(self) -> None:
+        self._recognition_id = None
+        recognizer, stream = self._speech_recognizer, self._audio_stream
+        self._speech_recognizer = self._audio_stream = None
+        if recognizer is not None:
+            for name in ("recognizing", "recognized", "canceled", "session_stopped"):
+                getattr(recognizer, name).disconnect_all()
+        try:
+            async with asyncio.timeout(self.config.shutdown_seconds):
+                if recognizer is not None:
+                    await asyncio.to_thread(
+                        lambda: recognizer.stop_continuous_recognition_async().get()
+                    )
+        finally:
+            if stream is not None:
+                stream.close()
 
 
 class SpeechSynthesis(AzureTTSService):
+    def __init__(self, *, config: VoiceConfig | None = None, **kwargs: Any) -> None:
+        self.config = config or load_config().voice
+        # Provider deadlines must expire before Pipecat can retire a pending context.
+        kwargs["stop_frame_timeout_s"] = (
+            self.config.tts_total_seconds + self.config.shutdown_seconds
+        )
+        super().__init__(**kwargs)
+        self._retire_synthesis: Any = None
+        self._native_stop: asyncio.Task[None] | None = None
+
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        # Each SDK request owns its callbacks; late events cannot enter another utterance.
+        synthesizer = SpeechSynthesizer(speech_config=self._speech_config, audio_config=None)
+        self._speech_synthesizer = synthesizer
+        active = True
+        loop = self.get_event_loop()
+        events: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
+
+        def bind(kind: str) -> Any:
+            def deliver(event: Any) -> None:
+                if active:
+                    events.put_nowait((kind, event))
+
+            def receive(event: Any) -> None:
+                if not loop.is_closed():
+                    loop.call_soon_threadsafe(deliver, event)
+
+            return receive
+
+        signals = (
+            (synthesizer.synthesizing, "audio"),
+            (synthesizer.synthesis_completed, "completed"),
+            (synthesizer.synthesis_canceled, "canceled"),
+            (synthesizer.synthesis_word_boundary, "word"),
+        )
+        for signal, kind in signals:
+            signal.connect(bind(kind))
+
+        def retire() -> None:
+            nonlocal active
+            active = False
+            for signal, _ in signals:
+                signal.disconnect_all()
+
+        self._retire_synthesis = retire
+        complete = False
+        audio = False
+        words: list[tuple[str, float]] = []
+        deadline = loop.time() + self.config.tts_first_audio_seconds
+        try:
+            async with asyncio.timeout(self.config.tts_total_seconds):
+                synthesizer.speak_ssml_async(self._construct_ssml(text))
+                await self.start_tts_usage_metrics(text)
+                while active:
+                    async with asyncio.timeout_at(deadline):
+                        kind, event = await events.get()
+                    if kind == "audio":
+                        chunk = event.result.audio_data
+                        if not isinstance(chunk, bytes):
+                            raise ValueError("Invalid synthesis audio")
+                        if not chunk:
+                            continue
+                        audio = True
+                        deadline = loop.time() + self.config.tts_progress_seconds
+                        yield TTSAudioRawFrame(
+                            audio=chunk,
+                            sample_rate=self.sample_rate,
+                            num_channels=1,
+                            context_id=context_id,
+                        )
+                    elif kind == "word":
+                        word, offset = event.text, event.audio_offset / 10_000_000
+                        if not isinstance(word, str) or offset < 0:
+                            raise ValueError("Invalid synthesis word")
+                        if words and self._is_punctuation_only(word):
+                            words[-1] = (words[-1][0] + word, words[-1][1])
+                        elif word:
+                            words.append((word, self._cumulative_audio_offset + offset))
+                    elif kind == "canceled":
+                        code = event.result.cancellation_details.error_code
+                        if code in {
+                            CancellationErrorCode.ConnectionFailure,
+                            CancellationErrorCode.ServiceTimeout,
+                            CancellationErrorCode.ServiceUnavailable,
+                            CancellationErrorCode.TooManyRequests,
+                        }:
+                            raise SynthesisFailure("Speech generation unavailable")
+                        raise RuntimeError("Speech synthesis rejected")
+                    elif kind == "completed":
+                        if not audio:
+                            raise SynthesisFailure("Speech generation produced no audio")
+                        await self.add_word_timestamps(words, context_id)
+                        self._cumulative_audio_offset += event.result.audio_duration.total_seconds()
+                        complete = True
+                        break
+                    if audio and len(words) > 1:
+                        await self.add_word_timestamps(words[:-1], context_id)
+                        words[:] = words[-1:]
+        except (TimeoutError, SynthesisFailure) as error:
+            retire()
+            await self.push_error_frame(
+                ErrorFrame(
+                    error="Speech response unavailable.",
+                    exception=SynthesisFailure(type(error).__name__),
+                )
+            )
+        except Exception as error:
+            retire()
+            await self.push_error_frame(
+                ErrorFrame(error="Speech synthesis failed.", exception=error, fatal=True)
+            )
+        finally:
+            if active:
+                retire()
+            if self._speech_synthesizer is synthesizer:
+                self._speech_synthesizer = None
+                self._retire_synthesis = None
+            if not complete:
+                async def stop() -> None:
+                    async with asyncio.timeout(self.config.shutdown_seconds):
+                        await asyncio.to_thread(lambda: synthesizer.stop_speaking_async().get())
+
+                self._native_stop = asyncio.create_task(stop())
+                await asyncio.shield(self._native_stop)
+
+    async def _handle_interruption(
+        self, frame: InterruptionFrame, direction: FrameDirection
+    ) -> None:
+        if self._retire_synthesis is not None:
+            self._retire_synthesis()
+        # run_tts owns native shutdown; do not stop the same request twice.
+        await TTSService._handle_interruption(self, frame, direction)
+        if self._native_stop is not None:
+            await asyncio.shield(self._native_stop)
+        self._reset_state()  # type: ignore[no-untyped-call]
+
+    async def cancel(self, frame: CancelFrame) -> None:
+        if self._retire_synthesis is not None:
+            self._retire_synthesis()
+        await super().cancel(frame)
+        if self._native_stop is not None:
+            await asyncio.shield(self._native_stop)
+
     def _construct_ssml(self, text: str) -> str:
         locale = quoteattr(str(assert_given(self._settings.language)))
         voice = quoteattr(str(assert_given(self._settings.voice)))

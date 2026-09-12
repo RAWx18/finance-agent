@@ -16,10 +16,9 @@ from pydantic import SecretStr
 
 from app.auth import COOKIE
 from app.config import Environment
-from app.models import CallState, Command, Model
+from app.models import CallState, Command, FactsPatch, Model
 from app.store import Problem
 from app.voice import Call, CallManager, DailyRooms, unavailable_reason
-from app.voice_facts import FactsPatch
 from app.voice_pipeline import VoicePipeline
 from app.voice_tools import ReviewRequest, VoiceTools, tool_parameters
 
@@ -32,7 +31,6 @@ def environment(tmp_path):
         data_dir=tmp_path,
         azure_openai_api_key=SecretStr("test-only-azure"),
         azure_openai_endpoint="https://test-resource.openai.azure.com/",
-        azure_openai_deployment="finance-chat_1.2",
         daily_api_key=SecretStr("test-only-daily"),
         azure_speech_key=SecretStr("test-only-speech"),
         azure_speech_region="centralindia",
@@ -190,7 +188,7 @@ async def test_review_is_deterministic_readonly_and_rejects_stale_revision(store
 
 
 def test_http_setup_guards_contract_and_csp(client):
-    assert client.post("/api/session/call", json={}).status_code == 404
+    assert client.post("/api/session/call", json={"callId": str(uuid4())}).status_code == 404
     settings = client.get("/api/settings").json()
     assert settings["voiceAvailable"] is False
     assert settings["voiceUnavailableReason"] == (
@@ -200,18 +198,20 @@ def test_http_setup_guards_contract_and_csp(client):
     assert client.get("/api/session/call").json() == {
         "callId": None,
         "status": "idle",
+        "cleanupConfirmed": True,
         "message": None,
     }
     assert client.post("/api/session/call", json={"sessionId": str(uuid4())}).status_code == 422
-    response = client.post("/api/session/call", json={})
+    response = client.post("/api/session/call", json={"callId": str(uuid4())})
     assert response.status_code == 503
     assert response.json() == {
         "code": "voiceUnavailable",
         "message": settings["voiceUnavailableReason"],
         "snapshot": None,
     }
-    assert client.delete("/api/session/call").json()["status"] == "idle"
-    assert client.delete("/api/session/call").json()["status"] == "idle"
+    body = {"callId": str(uuid4())}
+    assert client.request("DELETE", "/api/session/call", json=body).json()["status"] == "ended"
+    assert client.request("DELETE", "/api/session/call", json=body).json()["status"] == "ended"
     csp = client.get("/api/settings").headers["content-security-policy"]
     assert "worker-src 'self' blob:" in csp
     assert "wss://*.daily.co" in csp and " wss:;" not in csp
@@ -222,7 +222,7 @@ def test_missing_setup_diagnostics_stay_internal(config, tmp_path, caplog):
     env = Environment(data_dir=tmp_path)
     reason = unavailable_reason(config, env)
     assert reason == (
-        "Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, "
+        "Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, "
         "DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION."
     )
     with TestClient(auth_app(config, env), base_url=ORIGIN) as client:
@@ -232,7 +232,7 @@ def test_missing_setup_diagnostics_stay_internal(config, tmp_path, caplog):
         settings = client.get("/api/settings").json()
         assert caplog.messages == []
         client.post("/api/session", json={})
-        response = client.post("/api/session/call", json={})
+        response = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert response.json()["message"] == settings["voiceUnavailableReason"]
         assert reason not in response.text
         assert caplog.messages == [f"Voice unavailable: {reason}"]
@@ -266,7 +266,7 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
         assert caplog.messages == []
         sign_in(client)
         baseline = client.post("/api/session", json={}).json()
-        result = client.post("/api/session/call", json={})
+        result = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert result.status_code == 503
         assert result.json() == {
             "code": "voiceUnavailable",
@@ -276,12 +276,16 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
         call = application.state.calls.call
         state = call.state.model_copy()
         assert state.status == "error" and state.message == reason
-        for method in (client.get, client.delete, client.get):
-            result = method("/api/session/call")
+        for method in ("GET", "DELETE", "GET"):
+            result = client.request(
+                method, "/api/session/call",
+                **({"json": {"callId": str(call.id)}} if method == "DELETE" else {}),
+            )
             assert result.status_code == 200
             assert result.json() == {
                 "callId": str(call.id),
                 "status": "error",
+                "cleanupConfirmed": True,
                 "message": "Conversations are temporarily unavailable. Please try again shortly.",
             }
             assert call.state == state
@@ -298,7 +302,7 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
         rooms.assert_not_called()
 
 
-@pytest.mark.parametrize("status", ["idle", "connecting", "active", "ended", "error"])
+@pytest.mark.parametrize("status", ["idle", "connecting", "active", "ending", "ended", "error"])
 async def test_call_state_is_a_public_copy(store, config, tmp_path, status):
     manager = CallManager(store, config, environment(tmp_path))
     state = CallState(call_id=uuid4(), status=status, message="Internal diagnostic")
@@ -314,7 +318,9 @@ async def test_call_state_is_a_public_copy(store, config, tmp_path, status):
     public.message = "Consumer mutation"
     assert manager.call.state is state and state.message == "Internal diagnostic"
     assert manager.state("other") == CallState()
-    assert (await manager.end("other")) == CallState()
+    assert (await manager.end("other", state.call_id)) == CallState(
+        call_id=state.call_id, status="ended"
+    )
     assert not manager.call.stop.is_set()
 
 
@@ -343,7 +349,7 @@ def test_http_voice_error_logs_only_known_reasons(config, tmp_path, monkeypatch,
     with TestClient(application, base_url=ORIGIN) as client:
         sign_in(client)
         client.post("/api/session", json={})
-        response = client.post("/api/session/call", json={})
+        response = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert response.status_code == 503
         assert response.json() == {
             "code": "voiceUnavailable",
@@ -364,7 +370,7 @@ def test_http_other_problem_body_is_unchanged(config, tmp_path, monkeypatch, cap
     with TestClient(application, base_url=ORIGIN) as client:
         sign_in(client)
         client.post("/api/session", json={})
-        response = client.post("/api/session/call", json={})
+        response = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert response.status_code == error.status
         assert response.json() == error.body.model_dump(mode="json", by_alias=True)
         assert caplog.messages == []
@@ -446,13 +452,13 @@ async def test_lifecycle_ownership_correction_deletion(store, config, tmp_path, 
     await store.create("owner")
     await store.create("other")
     manager = CallManager(store, config, environment(tmp_path))
-    join = await manager.start("owner")
+    join = await manager.start("owner", uuid4())
     assert set(join.model_dump(by_alias=True)) == {"callId", "url", "token", "expiresAt"}
     assert manager.state("owner").status == "connecting"
     assert manager.state("other").status == "idle"
-    assert (await manager.end("other")).status == "idle"
+    assert (await manager.end("other", uuid4())).status == "ended"
     with pytest.raises(Exception, match="already running"):
-        await manager.start("other")
+        await manager.start("other", uuid4())
     pipeline = PipelineDouble.instances[-1]
     rooms = RoomsDouble.instances[-1]
     assert rooms.tokens[0][2] != rooms.tokens[1][2]
@@ -487,7 +493,7 @@ async def test_partial_setup_failure_releases_room(
         monkeypatch.setattr(PipelineDouble, "fail_start", True)
     manager = CallManager(store, config, environment(tmp_path))
     with pytest.raises(Exception, match="Voice setup failed"):
-        await manager.start("owner")
+        await manager.start("owner", uuid4())
     rooms = RoomsDouble.instances[-1]
     assert rooms.closed and rooms.deleted == [rooms.name]
     assert PipelineDouble.instances[-1].closed
@@ -507,13 +513,15 @@ def test_http_enabled_ownership_shutdown(config, tmp_path, provider_doubles):
         settings = client.get("/api/settings").json()
         assert settings["voiceAvailable"] and settings["voiceUnavailableReason"] is None
         client.post("/api/session", json={})
-        assert client.post("/api/session/call", json={}).status_code == 200
+        assert client.post("/api/session/call", json={"callId": str(uuid4())}).status_code == 200
         cookie = client.cookies.get(COOKIE)
         client.cookies.clear()
         sign_in(client, "google-user-two")
         client.post("/api/session", json={})
         assert client.get("/api/session/call").json()["status"] == "idle"
-        assert client.delete("/api/session/call").json()["status"] == "idle"
+        assert client.request(
+            "DELETE", "/api/session/call", json={"callId": str(uuid4())}
+        ).json()["status"] == "ended"
         client.cookies.clear()
         client.cookies.set(COOKIE, cookie)
         assert client.delete("/api/session").status_code == 200
@@ -524,7 +532,7 @@ async def test_daily_private_scoped_tokens_without_network(config, tmp_path, mon
     rooms = DailyRooms(environment(tmp_path), 2)
     request = AsyncMock(
         side_effect=[
-            {"name": "room", "url": "https://test.daily.co/room"},
+            {"name": "room", "url": "https://test.daily.co/room", "privacy": "private"},
             {"token": "browser"},
         ]
     )
@@ -558,6 +566,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
     from openai import AsyncAzureOpenAI, AsyncOpenAI
     from pipecat.adapters.services.open_ai_adapter import OpenAILLMAdapter
     from pipecat.pipeline.worker import PipelineWorker
+    from pipecat.processors.aggregators.llm_response_universal import LLMUserAggregator
     from pipecat.services.azure.llm import AzureLLMService
     from pipecat.workers.runner import WorkerRunner
 
@@ -584,7 +593,9 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
         assert isinstance(pipeline.worker, PipelineWorker)
         assert isinstance(pipeline.llm, AzureLLMService)
         assert pipeline.llm._use_v1_api is True
-        assert pipeline.llm._settings.model == "finance-chat_1.2"
+        assert pipeline.llm._settings.model == store.config.voice.model
+        assert pipeline.llm._client.timeout == store.config.voice.model_timeout_seconds
+        assert pipeline.llm._client.max_retries == 0
         for client in (pipeline.llm._client,):
             assert isinstance(client, AsyncOpenAI)
             assert not isinstance(client, AsyncAzureOpenAI)
@@ -600,6 +611,16 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
         assert stt.phrases == store.config.voice.stt_phrases
         assert tts._settings.voice == store.config.voice.tts_voice
         assert tts._settings.language == "en-IN" and tts._settings.force_locale
+        user = next(item for item in pipeline.processors if isinstance(item, LLMUserAggregator))
+        assert user._params.vad_analyzer.params.model_dump() == {
+            "confidence": store.config.voice.vad_confidence,
+            "start_secs": store.config.voice.vad_start_seconds,
+            "stop_secs": store.config.voice.vad_stop_seconds,
+            "min_volume": store.config.voice.vad_min_volume,
+        }
+        stop = user._params.user_turn_strategies.stop[0]
+        assert stop.wait_for_transcript
+        assert stop._user_speech_timeout == store.config.voice.speech_timeout_seconds
         expected_tools = {
             "read_state",
             "update_facts",
@@ -607,6 +628,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
             "respond_to_action",
             "preview_adjustments",
             "accept_preview",
+            "reject_preview",
             "discard_preview",
             "clear_accepted",
         }
@@ -628,8 +650,12 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
             assert request.url.scheme == "https"
             assert not request.url.query
             assert request.headers["authorization"] == "Bearer test-only-azure"
+            assert set(request.extensions["timeout"].values()) == {
+                store.config.voice.model_timeout_seconds
+            }
             body = json.loads(request.content)
-            assert body["model"] == "finance-chat_1.2"
+            assert body["model"] == store.config.voice.model
+            assert body["max_completion_tokens"] == store.config.voice.max_completion_tokens
             assert body["store"] is False
             requests.append(request.url.path)
             if request.url.path == "/openai/v1/chat/completions":
@@ -646,7 +672,8 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
         for client in (pipeline.llm._client,):
             await client._client.aclose()
             client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
-        stream = await pipeline.llm.get_chat_completions(pipeline.context)
+        # Probe the SDK wire schema; live turn guards are exercised with pipeline frames.
+        stream = await AzureLLMService.get_chat_completions(pipeline.llm, pipeline.context)
         async with stream:
             assert [chunk async for chunk in stream] == []
         baseline = await store.get("owner")
@@ -715,7 +742,11 @@ async def test_call_deadlines_and_runtime_failure(
             args[-2]()
 
         monkeypatch.setattr(PipelineDouble, "start", start)
-    await manager.start("owner")
+    if terminal == "provider":
+        with pytest.raises(Problem):
+            await manager.start("owner", uuid4())
+    else:
+        await manager.start("owner", uuid4())
     if terminal == "expiry":
         PipelineDouble.instances[-1].ready_event.set()
     if terminal == "shutdown":
@@ -748,9 +779,10 @@ async def test_cancel_during_room_token_setup(
 
     monkeypatch.setattr(RoomsDouble, "token", token)
     manager = CallManager(store, config, environment(tmp_path))
-    start = asyncio.create_task(manager.start("owner"))
+    call_id = uuid4()
+    start = asyncio.create_task(manager.start("owner", call_id))
     await asyncio.wait_for(reached.wait(), 2)
-    await asyncio.wait_for(manager.end("owner"), 2)
+    await asyncio.wait_for(manager.end("owner", call_id), 2)
     with pytest.raises(Exception, match="Voice setup failed"):
         await start
     rooms = RoomsDouble.instances[-1]
@@ -775,7 +807,7 @@ async def test_cancelled_http_start_releases_resources(
 
     monkeypatch.setattr(RoomsDouble, "token", token)
     manager = CallManager(store, config, environment(tmp_path))
-    start = asyncio.create_task(manager.start("owner"))
+    start = asyncio.create_task(manager.start("owner", uuid4()))
     await asyncio.wait_for(reached.wait(), 2)
     start.cancel()
     with suppress(asyncio.CancelledError):

@@ -148,6 +148,7 @@ async def test_external_correction_resumes_speech_without_talking_over_user(user
     pipeline = VoicePipeline()
     pipeline.started.set()
     pipeline.client_ready.set()
+    pipeline.completed_turns = 1
     pipeline.user_speaking = user_speaking
     pipeline.context = Mock()
     pipeline.worker = SimpleNamespace(

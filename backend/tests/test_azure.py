@@ -68,17 +68,18 @@ def test_azure_endpoint_rejects_unsafe_or_dated_destinations(endpoint):
         Environment(azure_openai_endpoint=endpoint)
 
 
-@pytest.mark.parametrize("deployment", ["", "finance-chat_1.2", "A" * 64])
-def test_deployment_is_a_resource_name_not_a_model_enum(deployment):
-    assert Environment(azure_openai_deployment=deployment).azure_openai_deployment == deployment
+@pytest.mark.parametrize("deployment", ["gpt-5.6-terra", "finance-chat_1.2", "A" * 64])
+def test_deployment_is_configured_as_a_resource_name(config, deployment):
+    voice = type(config.voice).model_validate({**config.voice.model_dump(), "model": deployment})
+    assert voice.model == deployment
 
 
 @pytest.mark.parametrize(
-    "deployment", ["A" * 65, "chat/name", "chat name", " ", "chat\n", "chat?x", "£"]
+    "deployment", ["", "A" * 65, "chat/name", "chat name", " ", "chat\n", "chat?x", "£"]
 )
-def test_deployment_rejects_invalid_names(deployment):
+def test_deployment_rejects_invalid_names(config, deployment):
     with pytest.raises(ValidationError):
-        Environment(azure_openai_deployment=deployment)
+        type(config.voice).model_validate({**config.voice.model_dump(), "model": deployment})
 
 
 def test_azure_environment_loads_explicit_names_and_hides_key(monkeypatch):
@@ -98,14 +99,13 @@ def test_azure_environment_loads_explicit_names_and_hides_key(monkeypatch):
     assert Environment.load().missing_azure_openai() == [
         "AZURE_OPENAI_API_KEY",
         "AZURE_OPENAI_ENDPOINT",
-        "AZURE_OPENAI_DEPLOYMENT",
     ]
     monkeypatch.setenv("AZURE_OPENAI_API_KEY", "synthetic-azure-key")
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://test.services.ai.azure.com")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "finance-chat_1.2")
     env = Environment.load()
     assert env.azure_openai_endpoint == "https://test.services.ai.azure.com/openai/v1/"
-    assert env.azure_openai_deployment == "finance-chat_1.2"
+    assert "azure_openai_deployment" not in Environment.model_fields
     assert isinstance(env.azure_openai_api_key, SecretStr)
     assert env.azure_openai_api_key.get_secret_value() == "synthetic-azure-key"
     assert "synthetic-azure-key" not in repr(env) + env.model_dump_json()
@@ -118,9 +118,7 @@ def test_blank_azure_key_is_missing(key):
     assert "AZURE_OPENAI_API_KEY" in env.missing_azure_openai()
 
 
-@pytest.mark.parametrize(
-    "name", ["azure_openai_api_key", "azure_openai_endpoint", "azure_openai_deployment"]
-)
+@pytest.mark.parametrize("name", ["azure_openai_api_key", "azure_openai_endpoint"])
 async def test_missing_azure_setup_blocks_call_and_pipeline_before_provider_construction(
     store,
     config,

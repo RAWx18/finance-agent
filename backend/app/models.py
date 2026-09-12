@@ -810,7 +810,8 @@ class CallJoin(Model):
 
 class CallState(Model):
     call_id: UUID | None = None
-    status: Literal["idle", "connecting", "active", "ended", "error"] = "idle"
+    status: Literal["idle", "connecting", "active", "ending", "ended", "error"] = "idle"
+    cleanup_confirmed: bool = True
     message: str | None = None
 
 

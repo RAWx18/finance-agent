@@ -35,6 +35,7 @@ from .history import ConversationList, History, SavedConversation, transcript
 from .models import (
     AdjustmentOptions,
     CallJoin,
+    CallRequest,
     CallState,
     Command,
     Deleted,
@@ -184,7 +185,10 @@ class Boundary:
                 return
             if mutation:
                 content_type = headers.get("content-type", "").split(";")[0].strip().lower()
-                empty_allowed = scope["method"] == "DELETE" and path != "/api/account"
+                empty_allowed = scope["method"] == "DELETE" and path not in {
+                    "/api/account",
+                    "/api/session/call",
+                }
                 if content_type != "application/json" and not empty_allowed:
                     await reject(415, "contentType", "Use Content-Type: application/json.")
                     return
@@ -238,11 +242,11 @@ def create_app(
     config = config if config is not None else load_config()
     environment = environment if environment is not None else Environment.load()
     store = Store(environment.data_dir / "sessions.sqlite3", config, clock)
+    history = History(store)
     auth = Auth(store, environment, google)
     calls = CallManager(store, config, environment, auth)
     auth.on_revoke = calls.invalidate
     static_dir = (static_dir if static_dir is not None else ROOT / "frontend" / "dist").resolve()
-    history = History(store)
 
     async def cleanup() -> None:
         while True:
@@ -391,10 +395,6 @@ def create_app(
     async def start(request: Request, body: Model) -> Snapshot:
         return await store.create(owner(request))
 
-    @application.get("/api/session", response_model=Snapshot)
-    async def current(request: Request) -> Snapshot:
-        return await store.get(owner(request))
-
     @application.get("/api/history", response_model=ConversationList)
     async def history_list(request: Request, search: str = "") -> ConversationList:
         return await history.list(owner(request), search)
@@ -415,6 +415,10 @@ def create_app(
             headers={"Content-Disposition": f'attachment; filename="{conversation.slug}.txt"'},
         )
 
+    @application.get("/api/session", response_model=Snapshot)
+    async def current(request: Request) -> Snapshot:
+        return await store.get(owner(request))
+
     @application.get("/api/session/options", response_model=AdjustmentOptions)
     async def options(request: Request) -> AdjustmentOptions:
         return await store.options(owner(request))
@@ -426,12 +430,12 @@ def create_app(
         return calls.state(key)
 
     @application.post("/api/session/call", response_model=CallJoin)
-    async def join_call(request: Request, body: Model) -> CallJoin:
-        return await calls.start(owner(request))
+    async def join_call(request: Request, body: CallRequest) -> CallJoin:
+        return await calls.start(owner(request), body.call_id)
 
     @application.delete("/api/session/call", response_model=CallState)
-    async def end_call(request: Request, body: Model | None = None) -> CallState:
-        return await calls.end(owner(request))
+    async def end_call(request: Request, body: CallRequest) -> CallState:
+        return await calls.end(owner(request), body.call_id)
 
     @application.post("/api/session/commands", response_model=Snapshot)
     async def command(request: Request, body: Command) -> Snapshot:
@@ -516,7 +520,9 @@ def create_app(
     @application.delete("/api/session", response_model=Deleted)
     async def delete(request: Request, body: Model | None = None) -> Deleted:
         key = owner(request)
-        await calls.end(key)
+        state = calls.state(key)
+        if state.call_id is not None:
+            await calls.end(key, state.call_id)
         await store.delete(key)
         return Deleted()
 

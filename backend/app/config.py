@@ -153,7 +153,6 @@ class Environment(BaseModel):
     auth_encryption_key: SecretStr | None = Field(default=None, repr=False)
     azure_openai_api_key: SecretStr | None = Field(default=None, repr=False)
     azure_openai_endpoint: str = ""
-    azure_openai_deployment: str = Field(default="", max_length=64, pattern=r"^[A-Za-z0-9_.-]*$")
     daily_api_key: SecretStr | None = Field(default=None, repr=False)
     azure_speech_key: SecretStr | None = Field(default=None, repr=False)
     azure_speech_region: str = Field(
@@ -209,8 +208,6 @@ class Environment(BaseModel):
             missing.append("AZURE_OPENAI_API_KEY")
         if not self.azure_openai_endpoint:
             missing.append("AZURE_OPENAI_ENDPOINT")
-        if not self.azure_openai_deployment:
-            missing.append("AZURE_OPENAI_DEPLOYMENT")
         return missing
 
     @model_validator(mode="after")
@@ -259,7 +256,6 @@ class Environment(BaseModel):
                     "AUTH_ENCRYPTION_KEY",
                     "AZURE_OPENAI_API_KEY",
                     "AZURE_OPENAI_ENDPOINT",
-                    "AZURE_OPENAI_DEPLOYMENT",
                     "DAILY_API_KEY",
                     "AZURE_SPEECH_KEY",
                     "AZURE_SPEECH_REGION",

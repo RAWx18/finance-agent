@@ -13,10 +13,8 @@ import pytest
 from azure.cognitiveservices.speech import ResultReason
 from pipecat.frames.frames import (
     FunctionCallCancelFrame,
-    FunctionCallFromLLM,
     FunctionCallResultFrame,
     InterruptionFrame,
-    LLMRunFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -34,7 +32,7 @@ from .conftest import money
 from .test_voice import environment
 
 
-def tool_reply(name, arguments, call_id):
+def tool_reply(name, arguments, call_id, following=()):
     chunk = {
         "id": "test-completion",
         "object": "chat.completion.chunk",
@@ -58,10 +56,21 @@ def tool_reply(name, arguments, call_id):
             }
         ],
     }
+    content = f"data: {json.dumps(chunk)}\n\n"
+    for index, (name, arguments, call_id) in enumerate(following, 1):
+        chunk["choices"][0]["delta"]["tool_calls"] = [
+            {
+                "index": index,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": json.dumps(arguments)},
+            }
+        ]
+        content += f"data: {json.dumps(chunk)}\n\n"
     return httpx.Response(
         200,
         headers={"content-type": "text/event-stream"},
-        content=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+        content=content + "data: [DONE]\n\n",
     )
 
 
@@ -85,9 +94,14 @@ async def recognize(voice, text, *, final=True):
     await asyncio.to_thread(callback, event)
 
 
+async def complete_turn(voice, text):
+    await recognize(voice, text)
+    # Policy tests await asynchronous callbacks; dedicated turn tests own timing assertions.
+    return await asyncio.wait_for(voice.turns.get(), voice.turn_timeout + 10)
+
+
 @pytest.fixture
-async def voice(store, tmp_path, monkeypatch):
-    await store.create("owner")
+def voice_boundaries(monkeypatch):
     frames = asyncio.Queue()
     requests = asyncio.Queue()
     responses = asyncio.Queue()
@@ -99,9 +113,8 @@ async def voice(store, tmp_path, monkeypatch):
         queue=frames, queue_direction=FrameDirection.DOWNSTREAM
     )
     # Only transport and remote provider boundaries are isolated.
-    monkeypatch.setattr(
-        "pipecat.transports.daily.transport.DailyTransport", Mock(return_value=transport)
-    )
+    transport_factory = Mock(return_value=transport)
+    monkeypatch.setattr("pipecat.transports.daily.transport.DailyTransport", transport_factory)
     monkeypatch.setattr("app.speech.SpeechRecognizer", Mock())
     monkeypatch.setattr("app.speech.PhraseListGrammar.from_recognizer", Mock())
     synthesizer = Mock()
@@ -109,18 +122,44 @@ async def voice(store, tmp_path, monkeypatch):
     monkeypatch.setattr(
         "pipecat.services.azure.tts.SpeechSynthesizer", Mock(return_value=synthesizer)
     )
+    monkeypatch.setattr("app.speech.SpeechSynthesizer", Mock(return_value=synthesizer))
+
+    class PendingStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            await asyncio.Event().wait()
+            yield b""
 
     def respond(request):
         assert request.url.path == "/openai/v1/chat/completions"
-        requests.put_nowait(json.loads(request.content))
+        body = json.loads(request.content)
+        requests.put_nowait(body)
         return (
             responses.get_nowait()
             if not responses.empty()
+            else tool_reply("read_state", {}, str(uuid4()))
+            if body.get("tool_choice") == "required"
             else httpx.Response(
-                200, headers={"content-type": "text/event-stream"}, content="data: [DONE]\n\n"
+                200, headers={"content-type": "text/event-stream"}, stream=PendingStream()
             )
         )
 
+    return SimpleNamespace(
+        frames=frames,
+        requests=requests,
+        responses=responses,
+        transport=transport,
+        transport_factory=transport_factory,
+        synthesizer=synthesizer,
+        respond=respond,
+    )
+
+
+@pytest.fixture
+async def voice(store, tmp_path, voice_boundaries, request):
+    store.config = store.config.model_copy(
+        update={"voice": store.config.voice.model_copy(update=getattr(request, "param", {}))}
+    )
+    await store.create("owner")
     pipeline = VoicePipeline()
     failed = Mock()
     try:
@@ -137,27 +176,39 @@ async def voice(store, tmp_path, monkeypatch):
         await asyncio.wait_for(pipeline.started.wait(), 2)
         client = pipeline.llm._client
         await client._client.aclose()
-        client._client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+        client._client = httpx.AsyncClient(transport=httpx.MockTransport(voice_boundaries.respond))
         user = next(item for item in pipeline.processors if isinstance(item, LLMUserAggregator))
         started = asyncio.Event()
+        turns = asyncio.Queue()
         user.add_event_handler("on_user_turn_started", lambda *_: started.set())
-        yield SimpleNamespace(
-            pipeline=pipeline,
-            frames=frames,
-            requests=requests,
-            responses=responses,
-            started=started,
-            stt=next(item for item in pipeline.processors if isinstance(item, SpeechRecognition)),
+        user.add_event_handler(
+            "on_user_turn_stopped", lambda _, __, message: turns.put_nowait(message)
         )
+        session = SimpleNamespace(
+            pipeline=pipeline,
+            frames=voice_boundaries.frames,
+            requests=voice_boundaries.requests,
+            responses=voice_boundaries.responses,
+            started=started,
+            turns=turns,
+            turn_timeout=store.config.voice.speech_timeout_seconds,
+            stt=next(item for item in pipeline.processors if isinstance(item, SpeechRecognition)),
+            synthesizer=voice_boundaries.synthesizer,
+            failed=failed,
+            expect_failure=False,
+        )
+        yield session
     finally:
         await pipeline.close()
-    failed.assert_not_called()
+    if not session.expect_failure:
+        failed.assert_not_called()
 
 
 async def test_azure_request_disables_parallel_generation_not_tool_cancellation(voice):
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
+    await complete_turn(voice, "Please help me get started.")
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request.get("parallel_tool_calls") is False
+    assert request["tool_choice"] == "required"
     assert voice.pipeline.llm._run_in_parallel is False
     assert all(item.cancel_on_interruption for item in voice.pipeline.llm._functions.values())
     assert {tool["function"]["name"] for tool in request["tools"]} == set(
@@ -250,7 +301,9 @@ async def test_split_correction_rearms_turn_stop_including_transcript_only_turns
                 voice.requests.get(), store.config.voice.speech_timeout_seconds + 0.1
             )
         await voice.pipeline.worker.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
-    request = await asyncio.wait_for(voice.requests.get(), 2)
+    request = await asyncio.wait_for(
+        voice.requests.get(), store.config.voice.speech_timeout_seconds + 1
+    )
     assert [message["content"] for message in request["messages"] if message["role"] == "user"] == [
         "Correction. The amount is unknown."
     ]
@@ -282,7 +335,7 @@ async def test_interrupted_real_tool_runner_can_read_ambiguous_write_outcome(
             "update_facts", {"expectedRevision": 0, "opening": money("100")}, "interrupted-write"
         )
     )
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
+    await complete_turn(voice, "I have one hundred rupees.")
     await asyncio.wait_for(voice.requests.get(), 2)
     await asyncio.wait_for(reached.wait(), 2)
     await voice.pipeline.worker.queue_frame(InterruptionFrame())
@@ -290,7 +343,7 @@ async def test_interrupted_real_tool_runner_can_read_ambiguous_write_outcome(
     assert cancelled.tool_call_id == "interrupted-write"
     monkeypatch.setattr(store, "transaction", transaction)
     voice.responses.put_nowait(tool_reply("read_state", {}, "reconcile"))
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
+    await complete_turn(voice, "Did that save?")
     await asyncio.wait_for(voice.requests.get(), 2)
     result = await next_frame(voice.frames, FunctionCallResultFrame)
     assert result.tool_call_id == "reconcile"
@@ -317,22 +370,15 @@ async def test_real_tool_callbacks_serialize_writes_and_reads(voice, store, monk
     monkeypatch.setattr(store, "transaction", paused_transaction)
     invoke = AsyncMock(wraps=voice.pipeline.tools.invoke)
     monkeypatch.setattr(voice.pipeline.tools, "invoke", invoke)
-    await voice.pipeline.llm.run_function_calls(
-        [
-            FunctionCallFromLLM(
-                function_name="update_facts",
-                tool_call_id="write",
-                arguments={"expectedRevision": 0, "opening": money("100")},
-                context=voice.pipeline.context,
-            ),
-            FunctionCallFromLLM(
-                function_name="read_state",
-                tool_call_id="read",
-                arguments={},
-                context=voice.pipeline.context,
-            ),
-        ]
+    voice.responses.put_nowait(
+        tool_reply(
+            "update_facts",
+            {"expectedRevision": 0, "opening": money("100")},
+            "write",
+            following=[("read_state", {}, "read")],
+        )
     )
+    await complete_turn(voice, "I have one hundred rupees.")
     await asyncio.wait_for(reached.wait(), 2)
     assert invoke.await_count == 1
     release.set()
@@ -365,7 +411,14 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
         refreshed.put_nowait(snapshot)
 
     monkeypatch.setattr(pipeline, "refresh", observed_refresh)
-    interrupt = AsyncMock(wraps=pipeline.interrupt)
+    interrupted = asyncio.Event()
+    interrupt_pipeline = pipeline.interrupt
+
+    async def completed_interrupt():
+        await interrupt_pipeline()
+        interrupted.set()
+
+    interrupt = AsyncMock(side_effect=completed_interrupt)
     monkeypatch.setattr(pipeline, "interrupt", interrupt)
     watcher = asyncio.create_task(manager.watch(call, pipeline, queue))
     try:
@@ -380,7 +433,7 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
         await external.update_facts({"expectedRevision": 1, "opening": money("200")}, "external")
         current = await asyncio.wait_for(refreshed.get(), 2)
         assert current.sequence == 2
-        await next_frame(voice.frames, InterruptionFrame)
+        await asyncio.wait_for(interrupted.wait(), 2)
         interrupt.assert_awaited_once()
         stale = await pipeline.tools.review_plan({"expectedRevision": 1})
         assert stale["stateChanged"] and stale["snapshot"]["revision"] == 2
@@ -391,7 +444,9 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
             await asyncio.wait_for(voice.requests.get(), store.config.voice.speech_timeout_seconds)
         await recognize(voice, "The cash correction is right.")
         await pipeline.worker.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
-        request = await asyncio.wait_for(voice.requests.get(), 2)
+        request = await asyncio.wait_for(
+            voice.requests.get(), store.config.voice.speech_timeout_seconds + 1
+        )
         state = next(
             message["content"]
             for message in request["messages"]
