@@ -261,12 +261,12 @@ async function run(values) {
     if (bargeIn) assert.ok((await media(true)).some(frame => frame.energyTimes.some(at =>
       at >= injection.firstAt && at <= injection.firstAt + injection.firstDurationMs)), 'No real audio overlap');
   };
-  const facts = async amount => {
+  const facts = async (amount, dated = true) => {
     await expect.poll(async () => {
       const snapshot = await api('/api/session');
       return snapshot.facts.opening.amountPaise === amount && snapshot.facts.records.some(record =>
         record.kind === 'essential' && /rent/i.test(record.label) && record.amount.amountPaise === 200000
-        && record.schedule.date === payload.dueDate);
+        && (!dated || record.schedule.date === payload.dueDate));
     }, { timeout: 35000 }).toBe(true);
   };
   try {
@@ -365,14 +365,18 @@ async function run(values) {
         'Inference started before the paused thought finished');
       assert.equal(afterPauses.published_audio, beforePauses.published_audio,
         'Assistant spoke during the paused thought');
-      await facts(600000);
+      await facts(600000, values.phase !== 'demo');
       await spoken(pausedAt);
       assert.equal((await api('/api/session')).revision, 1, 'Multi-fact capture was not atomic');
+      if (values.phase === 'demo') assert.equal((await api('/api/session')).facts.decision.responses
+        .some(response => response.response === 'unavailable' && response.actionId.endsWith(':schedule.date')), false,
+      'Unclear recognition was incorrectly treated as an unavailable answer');
       await checkpoint(stage);
       await quiet(100);
       stage = 'postBotFinishFollowup';
       await play([{ name: 'followup' }]);
       await spoken(Date.now());
+      if (values.phase === 'demo') await facts(600000);
       await checkpoint(stage);
 
       stage = 'audibleBargeInAndCorrection';
@@ -390,6 +394,19 @@ async function run(values) {
     }
     await quiet();
 
+    if (values.phase === 'demo') {
+      const saved = await api('/api/session');
+      const outcome = saved.plan.decisionAssessment.outcome;
+      assert.equal(saved.plan.projectionPartial, false);
+      assert.equal(saved.plan.closingPaise, 450000);
+      assert.equal(outcome.branch, 'fits');
+      assert.equal(outcome.readiness, 'ready');
+      assert.equal(saved.facts.records.length, 1);
+      await expect(page.locator('main')).toContainText('₹6,500.00');
+      report('demoOutcome', { passed: true, closingPaise: saved.plan.closingPaise, outcome,
+        dialogue: (await api('/__test/voice?diagnostics=true')).syntheticDialogue });
+    }
+
     stage = 'thinkingPause';
     const beforeThinking = await api('/__test/voice');
     await page.waitForTimeout(6000);
@@ -402,7 +419,7 @@ async function run(values) {
     for (const counter of ['model_requests', 'model_text', 'tool_calls', 'synthesis_contexts',
       'synthesis_audio', 'published_audio', 'user_starts', 'user_turns']) assert.ok(exercised.metrics[counter] > 0, counter);
 
-    if (values.phase !== 'baseline') {
+    if (values.phase !== 'baseline' && values.phase !== 'demo') {
       stage = 'serverInactivityWaiting';
       const call = await api('/api/session/call');
       const snapshot = await api('/api/session');
@@ -527,7 +544,7 @@ async function main() {
       samples: { type: 'string' }, url: { type: 'string' },
     } }));
     assert.equal(values['allow-billable'], true);
-    assert.ok(['baseline', 'lifecycle', 'recovery'].includes(values.phase));
+    assert.ok(['baseline', 'demo', 'lifecycle', 'recovery'].includes(values.phase));
     assert.ok(values.samples && values.url);
     const url = new URL(values.url);
     assert.equal(url.protocol, 'http:');
@@ -536,7 +553,7 @@ async function main() {
     assert.ok(!url.username && !url.password && !url.search && !url.hash);
   } catch {
     console.error(JSON.stringify({ check: 'arguments', passed: false,
-      usage: '--allow-billable --phase baseline|lifecycle|recovery --samples PATH --url ISOLATED_LOOPBACK_URL' }));
+      usage: '--allow-billable --phase baseline|demo|lifecycle|recovery --samples PATH --url ISOLATED_LOOPBACK_URL' }));
     process.exitCode = 1;
     return;
   }

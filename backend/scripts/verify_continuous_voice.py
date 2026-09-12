@@ -127,6 +127,13 @@ async def verify(phase, initial_wait=False):
                 payload = scenario(
                     (datetime.now(ZoneInfo(config.timezone)) + timedelta(days=3)).date()
                 )
+                if phase == "demo":
+                    payload["samples"]["followup"] = (
+                        "The rent is due in three days. That is my only payment for the next "
+                        "thirty days. I have no income, no other essential expenses, no optional "
+                        "spending, and no loans or credit card payments. Please give me my "
+                        "thirty-day plan using those facts."
+                    )
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=25),
                     headers={
@@ -258,7 +265,7 @@ def main():
         help="Allow real Azure speech/model and Daily billing.",
     )
     parser.add_argument(
-        "--phase", choices=("baseline", "lifecycle", "recovery"), default="lifecycle"
+        "--phase", choices=("baseline", "demo", "lifecycle", "recovery"), default="lifecycle"
     )
     parser.add_argument("--initial-wait", action="store_true")
     arguments = parser.parse_args()
