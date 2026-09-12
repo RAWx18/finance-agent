@@ -4,7 +4,6 @@
   :root { color: #000; background: #fff; font-size: 10pt; }
   body:has(dialog[open]) { overflow: visible !important; }
   .no-print, .skip-link { display: none !important; }
-  .header-note { display: none !important; }
   #root { display: block !important; height: auto !important; }
   .product-main { display: block !important; min-height: 0 !important; }
   dialog.dialog { display: none !important; }
@@ -15,7 +14,7 @@
   main { padding: 0 !important; }
   .card { border-color: #aaa !important; margin-bottom: 1rem; padding: 1rem !important; }
   .scroll-region { max-height: none !important; overflow: visible !important; }
-  .saved-items li, .money-record, .money-event { break-inside: avoid; }
+  .money-record, .money-event { break-inside: avoid; }
   h2, h3 { break-after: avoid; }
   .warning { background: #fff !important; }
   footer { padding: 1rem 0 !important; }

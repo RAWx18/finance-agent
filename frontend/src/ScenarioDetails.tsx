@@ -9,17 +9,8 @@ import { PagedList } from './PagedList';
 import { GapFigure } from './PlanSummary';
 
 type Action = NonNullable<NonNullable<Plan['decisionAssessment']>['actions']>[number];
-export const outcomeLabels = {
-  fits: 'Known commitments look covered', uncertain: 'What still needs checking',
-  gap: 'A cash gap is projected', conflict: 'Reported figures conflict',
-};
-export const actionLabels: Record<string, string> = {
-  clarify: 'Check a reported detail', contactPayee: 'Contact the payee',
-  verifyTerms: 'Verify reported terms', reviewOutcome: 'Review the outcome',
-  previewChange: 'Compare a change', followUp: 'Follow up', seekSupport: 'Seek support',
-  resolveGroup: 'Review shared commitments', confirmReceipt: 'Confirm a receipt', reconcileStatus: 'Check payment status',
-};
 
+/** Explains a suggested action's relevant facts, consequences, and proposed changes. */
 export function ActionDetails({ action, plan, facts }: { action: Action; plan: Plan; facts: Snapshot['facts'] }) {
   const choice = plan.decisionAssessment?.choices?.find(item => item.id === action.choiceId);
   return <>
@@ -50,6 +41,7 @@ export function ActionDetails({ action, plan, facts }: { action: Action; plan: P
   </>;
 }
 
+/** Lists proposed or saved spending assumptions with their consent and payment qualifications. */
 export function Assumptions({ scenario, proposed = false }: { scenario: Scenario; proposed?: boolean }) {
   return <>
     <p><strong>{money(scenario.reducedOutflowPaise)} less planned spending</strong> · Calculated against reported amounts.</p>
@@ -70,6 +62,7 @@ export function Assumptions({ scenario, proposed = false }: { scenario: Scenario
   </>;
 }
 
+/** Compares baseline and assumed cash projections, shortfalls, and reserve impacts. */
 export function PlanComparison({ baseline, assumed, reserve, label, beforeLabel = 'Before · reported figures' }: { baseline: Plan; assumed: Plan; reserve: number; label: string; beforeLabel?: string }) {
   return <div className="plan-comparison" aria-label={label}>
     {[baseline, assumed].map((plan, index) => <section key={index} aria-label={index ? label : beforeLabel}>
@@ -93,6 +86,7 @@ export function PlanComparison({ baseline, assumed, reserve, label, beforeLabel 
   </div>;
 }
 
+/** Requests confirmation before removing all saved planning assumptions. */
 export function RestoreReported({ snapshot, active, locked, onCommand }: {
   snapshot: Snapshot; active: boolean; locked: boolean; onCommand: (operation: Command['operation']) => void;
 }) {
@@ -116,6 +110,7 @@ export function RestoreReported({ snapshot, active, locked, onCommand }: {
   </>;
 }
 
+/** Identifies saved assumptions a proposal would remove and the amounts it would restore. */
 export function RemovedAssumptions({ preview, accepted }: { preview: Scenario; accepted: Snapshot['accepted'] }) {
   if (!preview.removedAssumptionIds?.length) return null;
   return <section aria-label="Assumptions removed by this proposal">
@@ -127,6 +122,7 @@ export function RemovedAssumptions({ preview, accepted }: { preview: Scenario; a
   </section>;
 }
 
+/** Presents a proposal's full impact and explicit acceptance, rejection, or dismissal controls. */
 export function ProposalReview({ snapshot, active, locked, onCommand, headingRef }: {
   snapshot: Snapshot; active: boolean; locked: boolean; onCommand: (operation: Command['operation']) => void;
   headingRef?: Ref<HTMLHeadingElement>;

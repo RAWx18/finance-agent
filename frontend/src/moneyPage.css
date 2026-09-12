@@ -49,9 +49,6 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-event-value { text-align: right; font-variant-numeric: tabular-nums; }
 .money-event-value > .money-meta { display: block; }
 .money-event-value > p { margin-top: .25rem; }
-.money-next-events .money-event { grid-template-columns: minmax(0, 1fr) auto; }
-.money-change-notice { border-top: 1px solid var(--line); margin-top: .6rem; padding-top: .65rem; font-size: .875rem; }
-.money-change-notice a { display: inline-flex; min-height: 44px; align-items: center; }
 .money-list-tools { display: flex; flex-wrap: wrap; gap: .65rem; margin-block: .5rem .75rem; }
 .money-search, .money-filter { display: flex; flex-direction: row; align-items: center; gap: .5rem; }
 .money-search { flex: 1 1 12rem; }
@@ -76,7 +73,6 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-changes { display: grid; gap: .9rem; }
 .money-changes .proposal-review { border: 0; margin: 0; padding: 0; }
 .money-changes .comparison { padding: 1rem; }
-.money-changes .saved-items li { padding-block: .65rem; }
 .money-changes .plan-comparison { gap: .75rem; }
 .money-changes .plan-comparison section { padding: .75rem; }
 .money-edit-fields { display: grid; gap: .85rem; }
@@ -132,7 +128,7 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 @media (max-width: 380px) {
   .money-record-head { flex-wrap: wrap; }
   .money-row-actions { margin-left: auto; }
-  .money-event, .money-next-events .money-event { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
+  .money-event { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
   .money-event-value { text-align: left; }
 }
 @media (max-width: 360px), (max-height: 560px) {
