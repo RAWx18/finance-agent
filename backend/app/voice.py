@@ -123,9 +123,7 @@ class DailyRooms:
             try:
                 return await response.json()
             except (ValueError, aiohttp.ContentTypeError) as error:
-                logger.warning(
-                    "Daily response HTTP %s (%s)", response.status, type(error).__name__
-                )
+                logger.warning("Daily response HTTP %s (%s)", response.status, type(error).__name__)
                 raise Problem(
                     503, "voiceUnavailable", "Daily room service is unavailable."
                 ) from None
@@ -267,10 +265,13 @@ class CallManager:
             return
         # Retain identities beyond the login's maximum lifetime; never evict a live tombstone.
         user = owner.user_id if isinstance(owner, Access) else owner
-        if sum(
-            (access.user_id if isinstance(access, Access) else access) == user
-            for access, _ in self.attempts
-        ) >= self.config.max_commands:
+        if (
+            sum(
+                (access.user_id if isinstance(access, Access) else access) == user
+                for access, _ in self.attempts
+            )
+            >= self.config.max_commands
+        ):
             raise Problem(
                 409, "callLimit", "Call identity capacity reached; try after sign-in expiry."
             )

@@ -64,7 +64,9 @@ class SpeechRecognition(AzureSTTService):
                 return
             if kind in {"canceled", "stopped"}:
                 self._recognition_id = None
-                await self.push_error(error_msg="Speech recognition disconnected.", fatal=True)
+                await self.push_error(
+                    error_msg="Speech recognition disconnected.", force_treat_as_permanent=True
+                )
                 await self._disconnect()
                 return
             result = getattr(event, "result", None)
@@ -76,7 +78,9 @@ class SpeechRecognition(AzureSTTService):
                 ResultReason.NoMatch,
             }:
                 self._recognition_id = None
-                await self.push_error(error_msg="Invalid speech recognition result.", fatal=True)
+                await self.push_error(
+                    error_msg="Invalid speech recognition result.", force_treat_as_permanent=True
+                )
                 await self._disconnect()
                 return
             if not text.strip() or reason == ResultReason.NoMatch:
@@ -139,9 +143,9 @@ class SpeechRecognition(AzureSTTService):
                 grammar.addPhrase(phrase)
             grammar.setWeight(1.0)
             recognizer = self._speech_recognizer
-            self._native_start = asyncio.create_task(asyncio.to_thread(
-                lambda: recognizer.start_continuous_recognition_async().get()
-            ))
+            self._native_start = asyncio.create_task(
+                asyncio.to_thread(lambda: recognizer.start_continuous_recognition_async().get())
+            )
             async with asyncio.timeout(self.config.startup_seconds):
                 await asyncio.shield(self._native_start)
         except asyncio.CancelledError:
@@ -149,7 +153,9 @@ class SpeechRecognition(AzureSTTService):
             raise
         except Exception:
             await self._disconnect()
-            await self.push_error(error_msg="Azure speech recognition could not start.", fatal=True)
+            await self.push_error(
+                error_msg="Azure speech recognition could not start.", force_treat_as_permanent=True
+            )
 
     async def _disconnect(self) -> None:
         self._recognition_id = None
@@ -321,9 +327,9 @@ class SpeechSynthesis(AzureTTSService):
             self._retire_synthesis()
             if self._native_stop is None:
                 synthesizer = self._speech_synthesizer
-                self._native_stop = asyncio.create_task(asyncio.to_thread(
-                    lambda: synthesizer.stop_speaking_async().get()
-                ))
+                self._native_stop = asyncio.create_task(
+                    asyncio.to_thread(lambda: synthesizer.stop_speaking_async().get())
+                )
                 self._native_stop.add_done_callback(
                     lambda task: None if task.cancelled() else task.exception()
                 )

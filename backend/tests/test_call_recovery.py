@@ -167,6 +167,7 @@ async def test_duplicate_start_waits_for_one_join_and_reuses_active_credentials(
 
 async def test_history_hang_cannot_skip_media_cleanup(manager, store, monkeypatch):
     baseline = await store.get("owner")
+
     async def blocked(*args):
         await asyncio.Event().wait()
 
@@ -296,7 +297,8 @@ async def test_setup_system_exit_is_contained_and_primary_reason_survives_cleanu
 
 async def test_primary_provider_problem_survives_teardown_failure(manager, monkeypatch):
     monkeypatch.setattr(
-        RoomsDouble, "token",
+        RoomsDouble,
+        "token",
         AsyncMock(side_effect=Problem(503, "voiceUnavailable", "Daily returned an invalid token.")),
     )
     monkeypatch.setattr(RoomsDouble, "delete", AsyncMock(side_effect=RuntimeError("private")))
@@ -383,17 +385,23 @@ async def test_daily_malformed_room_is_a_sanitized_problem(tmp_path, monkeypatch
 @pytest.mark.parametrize(
     "url",
     [
-        "https://test.daily.co/wrong", "https://evil.example/room",
-        "https://test.daily.co.evil.example/room", "https://.daily.co/room",
-        "https://test.daily.co:bad/room", "https://user:secret@test.daily.co/room",
-        "https://test.daily.co/room?token=secret", "https://test.daily.co/room#secret",
-        "https://test.daily.co/\nroom", "https://[invalid/room",
+        "https://test.daily.co/wrong",
+        "https://evil.example/room",
+        "https://test.daily.co.evil.example/room",
+        "https://.daily.co/room",
+        "https://test.daily.co:bad/room",
+        "https://user:secret@test.daily.co/room",
+        "https://test.daily.co/room?token=secret",
+        "https://test.daily.co/room#secret",
+        "https://test.daily.co/\nroom",
+        "https://[invalid/room",
     ],
 )
 async def test_daily_room_url_matches_private_tenant_and_name(tmp_path, monkeypatch, url):
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(
-        rooms, "request",
+        rooms,
+        "request",
         AsyncMock(return_value={"name": "room", "privacy": "private", "url": url}),
     )
     try:
@@ -407,7 +415,8 @@ async def test_daily_room_url_matches_private_tenant_and_name(tmp_path, monkeypa
 async def test_daily_room_must_confirm_private_access(tmp_path, monkeypatch, privacy):
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(
-        rooms, "request",
+        rooms,
+        "request",
         AsyncMock(
             return_value={"name": "room", "privacy": privacy, "url": "https://test.daily.co/room"}
         ),

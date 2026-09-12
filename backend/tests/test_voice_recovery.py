@@ -33,13 +33,15 @@ from .test_voice_waiting import continue_conversation, next_state
 
 pytestmark = pytest.mark.parametrize(
     "voice",
-    [{
-        "speech_timeout_seconds": 0.3,
-        "model_timeout_seconds": 0.3,
-        "tts_first_audio_seconds": 0.15,
-        "tts_progress_seconds": 0.15,
-        "tts_total_seconds": 0.5,
-    }],
+    [
+        {
+            "speech_timeout_seconds": 0.3,
+            "model_timeout_seconds": 0.3,
+            "tts_first_audio_seconds": 0.15,
+            "tts_progress_seconds": 0.15,
+            "tts_total_seconds": 0.5,
+        }
+    ],
     indirect=True,
 )
 
@@ -99,8 +101,10 @@ async def test_response_failure_continues_once_without_replaying_writes(
     assert identity == (pipeline.context, pipeline.worker, pipeline.task)
     assert pipeline.metrics.get("published_audio", 0) == 0
     assert "Unfinished" not in json.dumps(pipeline.context.get_messages())
-    assert any(message.get("content") == "I have two hundred rupees."
-               for message in pipeline.context.get_messages())
+    assert any(
+        message.get("content") == "I have two hundred rupees."
+        for message in pipeline.context.get_messages()
+    )
     await pipeline.worker.queue_frame(LLMRunFrame())
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(synthesis.requests.get(), 0.05)
@@ -146,11 +150,15 @@ async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts
             SimpleNamespace(result=SimpleNamespace(audio_duration=timedelta()))
         )
     elif cause == "canceled":
-        instance.synthesis_canceled.connect.call_args.args[0](SimpleNamespace(
-            result=SimpleNamespace(cancellation_details=SimpleNamespace(
-                error_code=CancellationErrorCode.ServiceTimeout
-            ))
-        ))
+        instance.synthesis_canceled.connect.call_args.args[0](
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    cancellation_details=SimpleNamespace(
+                        error_code=CancellationErrorCode.ServiceTimeout
+                    )
+                )
+            )
+        )
     state = await next_state(voice)
     assert state["reason"] == "response" and not voice.pipeline.revoked
     assert not voice.pipeline.task.done()
@@ -158,7 +166,10 @@ async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts
     if cause != "progress":
         assert not any(isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)) for frame in observed)
     for name in (
-        "synthesizing", "synthesis_word_boundary", "synthesis_completed", "synthesis_canceled"
+        "synthesizing",
+        "synthesis_word_boundary",
+        "synthesis_completed",
+        "synthesis_canceled",
     ):
         getattr(instance, name).disconnect_all.assert_called()
     instance.stop_speaking_async.assert_called_once()
@@ -218,8 +229,10 @@ async def test_unexpected_framework_failures_revoke_output(voice, store, monkeyp
     voice.failed.side_effect = failed.set
     baseline = await store.get("owner")
     if cause == "task":
+
         async def crash():
             raise RuntimeError("private-worker-body")
+
         task = voice.pipeline.worker.task_manager.create_task(crash(), "failing-worker")
         await task
     elif cause == "processor":
@@ -286,10 +299,13 @@ async def test_overall_synthesis_deadline_is_independent_of_audio_progress(voice
     loop = asyncio.get_running_loop()
     handles = []
     for offset in (0, 0.01, 0.02, 0.03):
-        handles.append(loop.call_later(
-            offset, instance.synthesizing.connect.call_args.args[0],
-            SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)),
-        ))
+        handles.append(
+            loop.call_later(
+                offset,
+                instance.synthesizing.connect.call_args.args[0],
+                SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)),
+            )
+        )
     assert (await next_state(voice))["reason"] == "response"
     for handle in handles:
         handle.cancel()
@@ -302,9 +318,9 @@ async def test_nontransient_model_failures_are_terminal(voice, store, status):
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set
-    voice.responses.put_nowait(httpx.Response(
-        status, json={"error": {"message": "private-provider-body"}}
-    ))
+    voice.responses.put_nowait(
+        httpx.Response(status, json={"error": {"message": "private-provider-body"}})
+    )
     await complete_turn(voice, "Please help me.")
     await asyncio.wait_for(failed.wait(), 2)
     assert voice.pipeline.revoked and not voice.pipeline.waiting

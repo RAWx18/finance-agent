@@ -232,7 +232,8 @@ class VoicePipeline:
                     # Discard the failed turn's assistant/tool chain, not completed user input.
                     last_user = max(
                         (
-                            index for index, message in enumerate(messages)
+                            index
+                            for index, message in enumerate(messages)
                             if isinstance(message, dict) and message.get("role") == "user"
                         ),
                         default=0,
@@ -255,9 +256,8 @@ class VoicePipeline:
                     or isinstance(frame.exception, APIStatusError)
                     and frame.exception.status_code in {408, 500, 502, 503, 504}
                 )
-                and getattr(frame.exception, "code", None) not in {
-                    "insufficient_quota", "billing_hard_limit_reached"
-                }
+                and getattr(frame.exception, "code", None)
+                not in {"insufficient_quota", "billing_hard_limit_reached"}
                 or isinstance(source, SpeechSynthesis)
                 and isinstance(frame.exception, SynthesisFailure)
             )

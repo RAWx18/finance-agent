@@ -330,9 +330,9 @@ async def test_native_stop_blocks_replacement_until_reobserved(
     lifecycle, voice_boundaries, service
 ):
     manager = lifecycle.manager
-    manager.config = manager.config.model_copy(update={
-        "voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.1})
-    })
+    manager.config = manager.config.model_copy(
+        update={"voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.1})}
+    )
     await manager.start("owner", uuid4())
     call = manager.call
     pipeline = call.pipeline

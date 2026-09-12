@@ -154,14 +154,16 @@ async def test_recognizer_failure_is_sanitized(config, monkeypatch):
     stt.push_error = AsyncMock()
     await stt._connect()
     stt.push_error.assert_awaited_once_with(
-        error_msg="Azure speech recognition could not start.", fatal=True
+        error_msg="Azure speech recognition could not start.", force_treat_as_permanent=True
     )
 
 
 @pytest.mark.parametrize("queued", [False, True])
 async def test_native_start_settles_before_stop_after_cancellation(config, monkeypatch, queued):
     stt = SpeechRecognition(
-        api_key="test-only", region="centralindia", phrases=[],
+        api_key="test-only",
+        region="centralindia",
+        phrases=[],
         config=config.voice.model_copy(update={"shutdown_seconds": 0.02}),
     )
     recognizer = Mock()
@@ -186,8 +188,8 @@ async def test_native_start_settles_before_stop_after_cancellation(config, monke
         calls.append("start")
 
     recognizer.start_continuous_recognition_async.return_value.get.side_effect = start
-    recognizer.stop_continuous_recognition_async.return_value.get.side_effect = (
-        lambda: calls.append("stop")
+    recognizer.stop_continuous_recognition_async.return_value.get.side_effect = lambda: (
+        calls.append("stop")
     )
     # A single occupied executor proves cancellation cannot skip a queued native start.
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -231,7 +233,9 @@ async def test_native_start_settles_before_stop_after_cancellation(config, monke
 
 async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monkeypatch):
     stt = SpeechRecognition(
-        api_key="test-only", region="centralindia", phrases=[],
+        api_key="test-only",
+        region="centralindia",
+        phrases=[],
         config=config.voice.model_copy(update={"startup_seconds": 0.02, "shutdown_seconds": 0.02}),
     )
     recognizer = Mock()
