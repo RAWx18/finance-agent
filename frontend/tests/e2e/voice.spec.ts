@@ -17,6 +17,7 @@ let bundle: string;
 let styles: string;
 type Voice = { calls: string[]; blocked: string[]; errors: string[] };
 const test = base.extend<{ voice: Voice }>({
+  /** Isolate voice providers while retaining real financial HTTP, SSE and session cleanup. */
   voice: [async ({ page, context, baseURL }, use) => {
     const origin = new URL(baseURL!).origin;
     expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(origin).hostname);
@@ -88,6 +89,7 @@ const test = base.extend<{ voice: Voice }>({
       } else if ((request.method() === 'GET' && ['/', '/login', '/app', '/history', '/money', '/account', '/auth/callback'].includes(url.pathname))
         || (/^\/(?:api\/)?history(?:\/[^/]+)?$/.test(url.pathname) && request.method() === 'GET')
         || (url.pathname.startsWith('/api/auth/') && ['GET', 'POST'].includes(request.method()))
+        || (url.pathname === '/api/account' && request.method() === 'DELETE')
         || (url.pathname === '/api/session' && ['GET', 'POST', 'DELETE'].includes(request.method()))
         || (url.pathname === '/api/session/commands' && request.method() === 'POST')
         || (['/api/session/events', '/api/session/export'].includes(url.pathname) && request.method() === 'GET')) {
@@ -184,6 +186,7 @@ test('provider double: focused Conversation stays in session through End and rec
   await expect(picture.getByRole('listitem', { name: 'Rent', exact: true }).locator('.card-number')).toHaveText('−₹1,200');
   const content = await cards.allTextContents();
   expect(content.length).toBeGreaterThan(0);
+  /** Verify call transitions retain a focused conversation and unchanged financial cards. */
   const clean = async () => {
     await expect(page.locator('.journey-progress, .review-controls, .review-layout, .post-call')).toHaveCount(0);
     await expect(page.getByRole('navigation', { name: /progress/i })).toHaveCount(0);
@@ -319,12 +322,14 @@ test('provider double: focused Conversation stays in session through End and rec
 
 test('header geometry stays stable through call states and live financial updates', async ({ page }, info) => {
   if (info.project.name === 'desktop') await page.setViewportSize({ width: 1920, height: 1080 });
+  /** Capture header geometry for call-state and financial-update comparisons. */
   const bounds = () => page.locator('.site-header, .site-header .brand, .site-navigation, .site-navigation > a, .profile-trigger').evaluateAll(elements =>
     elements.map(element => {
       const { x, y, width, height } = element.getBoundingClientRect();
       return { x, y, width, height };
     }));
   const initial = await bounds();
+  /** Verify the header stays stable and fills the application without overflow. */
   const unchanged = async () => {
     const current = await bounds();
     expect(current).toHaveLength(initial.length);
@@ -367,6 +372,7 @@ test('header geometry stays stable through call states and live financial update
   await page.screenshot({ path: info.outputPath('header-call-ended.png'), fullPage: true });
 });
 
+/** Return an ISO calendar date offset from the plan's anchor in UTC days. */
 function dateAt(anchor: string, offset: number) {
   const [year, month, day] = anchor.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day + offset)).toISOString().slice(0, 10);
@@ -388,6 +394,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.addInitScript(() => {
       window.recoveryStreams = [];
       const Source = window.EventSource;
+      /** Retain native event streams for simulated recovery failures. */
       window.EventSource = class extends Source {
         constructor(url: string | URL, options?: EventSourceInit) {
           super(url, options); window.recoveryStreams.push(this);
@@ -397,6 +404,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.goto('/app');
   });
 
+  /** Start a provider-double call with live capture and simulated assistant speech. */
   async function speaking(page: Page) {
     await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
     await page.getByRole('button', { name: 'Start talking', exact: true }).click();
@@ -411,6 +419,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect(page.locator('.voice-status')).toHaveText('Speaking');
   }
 
+  /** Verify capture and playback are released and the client disconnects once. */
   async function stopped(page: Page) {
     await expect.poll(() => page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
     expect(await page.locator('audio').evaluate(element => (element as HTMLAudioElement).srcObject)).toBeNull();
@@ -420,7 +429,9 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
   for (const ending of ['ready', 'cancel', 'failure'] as const) test(`connecting ringback emits quiet audio and stops on ${ending}`, async ({ page, voice }) => {
     await page.evaluate(() => {
       const Context = window.AudioContext;
+      /** Monitor native ringback audio during connection attempts. */
       window.AudioContext = class extends Context {
+        /** Expose ringback signal levels without adding audible output. */
         createBufferSource() {
           const source = super.createBufferSource();
           const analyser = this.createAnalyser();
@@ -475,7 +486,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       if (route.request().method() === 'DELETE') await cleanup;
       await route.fallback();
     });
-    await page.evaluate(() => { window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined); });
+    await page.evaluate(() => { /** Simulate a transport disconnect that never completes. */window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined); });
     try {
       const end = page.getByRole('button', { name: 'End conversation', exact: true });
       await end.focus(); await page.keyboard.press('Enter');
@@ -523,8 +534,10 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     const cash = page.getByRole('article', { name: saved.workspace!.cards!.find(card => card.template === 'cash')!.title, exact: true });
     await expect(cash).toContainText('₹321.09');
     await page.evaluate(() => {
+      /** Simulate a transport disconnect that never completes. */
       window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined);
       const fetch = window.fetch;
+      /** Record and reject call cleanup requests to simulate unload network loss. */
       window.fetch = (input, init) => {
         if (String(input).endsWith('/api/session/call') && init?.method === 'DELETE') {
           sessionStorage.setItem('voice-unload-request', JSON.stringify({ keepalive: init.keepalive, body: init.body, cancellable: !!init.signal }));
@@ -898,6 +911,38 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect(page.getByRole('region', { name: 'Conversation messages', exact: true })).toHaveCount(0);
   });
 
+  test('account deletion in another tab stops active SDK audio and lands quietly without recovery', async ({ page, context, baseURL }) => {
+    await speaking(page);
+    const original = (await (await context.request.get('/api/auth/session')).json()).user;
+    const settings = await context.newPage();
+    await settings.goto('/account');
+    await settings.getByRole('button', { name: 'Delete app account', exact: true }).click();
+    await settings.getByLabel('Type DELETE to confirm', { exact: true }).fill('DELETE');
+    const deletion = settings.waitForResponse(response => new URL(response.url()).pathname === '/api/account' && response.request().method() === 'DELETE');
+    await settings.getByRole('button', { name: 'Permanently delete app account', exact: true }).click();
+    expect((await deletion).status()).toBe(200);
+    for (const tab of [page, settings]) {
+      await expect(tab).toHaveURL(`${baseURL}/login`);
+      await expect(tab.getByRole('button', { name: 'Continue with Google', exact: true })).toBeEnabled();
+      await expect(tab.getByRole('button', { name: 'Profile menu', exact: true })).toHaveCount(0);
+      await expect(tab.getByRole('dialog')).toHaveCount(0);
+      await expect(tab.locator('body')).not.toContainText(/Your saved plan is safe|Opening your plan|Please sign in again|have been deleted/);
+    }
+    await expect(page.locator('audio')).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+    expect(await page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
+    await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onUserTranscript!({
+      text: 'Stale deleted-account caption', timestamp: '2026-09-11T04:00:01.000Z', final: true, user_id: 'fixture-user',
+    }));
+    await expect(page.locator('body')).not.toContainText('Stale deleted-account caption');
+    expect((await context.request.get('/api/auth/session')).status()).toBe(401);
+    await settings.close();
+    await signIn(page);
+    expect((await (await context.request.get('/api/auth/session')).json()).user.id).not.toBe(original.id);
+    expect((await context.request.get('/api/session')).status()).toBe(404);
+    expect(await (await context.request.get('/api/history')).json()).toEqual({ conversations: [] });
+  });
+
   test('disconnected microphone releases active playback and offers explicit retry', async ({ page, voice }) => {
     await speaking(page);
     await page.evaluate(() => {
@@ -917,6 +962,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       document.querySelector('audio')!.autoplay = false;
       const play = HTMLMediaElement.prototype.play;
       let blocked = true;
+      /** Reject the first playback attempt to exercise explicit audio recovery. */
       HTMLMediaElement.prototype.play = function () {
         if (blocked) { blocked = false; return Promise.reject(new DOMException('Autoplay blocked', 'NotAllowedError')); }
         return play.call(this);
@@ -980,6 +1026,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.evaluate(() => {
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       let denied = true;
+      /** Defer the first permission denial while allowing a later capture retry. */
       navigator.mediaDevices.getUserMedia = constraints => {
         if (denied) {
           denied = false;
@@ -1049,6 +1096,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     const started = stage === 'device' ? null : page.waitForRequest(request => new URL(request.url()).pathname === '/api/session/call' && request.method() === 'POST');
     if (stage === 'device') await page.evaluate(() => {
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      /** Hold microphone acquisition until the test exercises call cancellation. */
       navigator.mediaDevices.getUserMedia = async constraints => {
         await new Promise<void>(resolve => { window.releaseCapture = resolve; });
         return capture(constraints);
@@ -1098,6 +1146,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
   });
 });
 
+/** Verify an ended call retains the conversation controls and financial pane. */
 async function ended(page: Page) {
   await expect(page.locator('main')).toHaveAttribute('data-view', 'session');
   await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
@@ -1105,12 +1154,14 @@ async function ended(page: Page) {
   await expect(page.locator('.financial-pane')).toBeVisible();
 }
 
+/** Fetch the saved financial snapshot and verify the session remains accessible. */
 async function current(page: Page): Promise<Snapshot> {
   const response = await page.request.get('/api/session', { maxRedirects: 0 });
   expect(response.status()).toBe(200);
   return response.json();
 }
 
+/** Submit a financial command at the supplied revision and return its saved result. */
 async function submit(page: Page, snapshot: Snapshot, operation: Command['operation']): Promise<Snapshot> {
   const command: Command = { commandId: randomUUID(), expectedRevision: snapshot.revision, operation };
   const response = await page.request.post('/api/session/commands', { data: command, maxRedirects: 0 });
@@ -1118,6 +1169,7 @@ async function submit(page: Page, snapshot: Snapshot, operation: Command['operat
   return response.json();
 }
 
+/** Activate a plan control and verify it submits the intended command and revision. */
 async function actOnPlan(page: Page, label: string, snapshot: Snapshot, operation: Command['operation']): Promise<Snapshot> {
   const pending = page.waitForResponse(response => new URL(response.url()).pathname === '/api/session/commands' && response.request().method() === 'POST');
   const action = operation.type === 'respondToAction' ? snapshot.workspace!.actions!.find(action => action.id === operation.actionId) : null;
@@ -1132,6 +1184,7 @@ async function actOnPlan(page: Page, label: string, snapshot: Snapshot, operatio
   return response.json();
 }
 
+/** Complete the simulated connection and verify capture readiness without layout shifts. */
 async function connected(page: Page, count = 1) {
   await expect.poll(() => page.evaluate(() => window.voiceFixture.clients.reduce((sum, client) => sum + client.connections.length, 0))).toBe(count);
   await expect(page.locator('.voice-status')).toHaveText(count === 1 ? 'Connecting' : 'Reconnecting');
@@ -1171,6 +1224,7 @@ async function connected(page: Page, count = 1) {
   return before;
 }
 
+/** Capture conversation geometry and page dimensions for transition comparisons. */
 async function geometry(page: Page) {
   return page.evaluate(() => ({
     scrollY, scrollHeight: document.documentElement.scrollHeight,
@@ -1184,6 +1238,7 @@ async function geometry(page: Page) {
   }));
 }
 
+/** Verify stable call geometry while allowing financial content to grow on mobile. */
 async function stable(page: Page, before: Awaited<ReturnType<typeof geometry>>, state: string, financial = false) {
   const after = await geometry(page);
   const natural = financial && page.viewportSize()!.width <= 700;
@@ -1214,6 +1269,7 @@ async function stable(page: Page, before: Awaited<ReturnType<typeof geometry>>, 
   await expect(page.locator('.conversation :is(details, summary, [aria-expanded])')).toHaveCount(0);
 }
 
+/** Verify modal focus containment, scrolling and background layout stability. */
 async function modal(page: Page, dialog: Locator, title: string, before: Awaited<ReturnType<typeof geometry>>) {
   await expect(dialog).toBeVisible();
   expect(await dialog.evaluate(element => element.matches(':modal'))).toBe(true);
@@ -1235,6 +1291,7 @@ async function modal(page: Page, dialog: Locator, title: string, before: Awaited
   await stable(page, before, `${title} open`, true);
 }
 
+/** Verify notifications stay reachable and interactive near the viewport's lower-right edge. */
 async function toastPlacement(page: Page) {
   const viewport = page.getByRole('complementary', { name: 'Notifications' });
   await expect(viewport).toHaveClass('toast-viewport');
@@ -1259,6 +1316,7 @@ async function toastPlacement(page: Page) {
   expect(size.height - box.y - box.height).toBeLessThanOrEqual(32);
 }
 
+/** Verify active-call controls and financial details remain usable across viewport sizes. */
 async function layout(page: Page) {
   await expect(page.getByRole('heading', { level: 1 })).toHaveAttribute('tabindex', '-1');
   await expect(page.locator('.voice-status')).toBeVisible();
@@ -1678,6 +1736,7 @@ test('provider double: semantic card corrections animate once without replacing 
   await page.addInitScript(() => {
     window.cardAnimations = [];
     const animate = Element.prototype.animate;
+    /** Record native financial-card animations for identity and motion assertions. */
     Element.prototype.animate = function (keyframes, options) {
       const animation = animate.call(this, keyframes, options);
       if (this.matches('.financial-context article')) window.cardAnimations.push({ element: this, animation });
@@ -2189,6 +2248,7 @@ test('provider double: official WebGL Orb renders five states, owned audio unifo
     window.orbProbe = new WeakMap();
     const draw = WebGL2RenderingContext.prototype.drawArrays;
     const pixel = new Uint8Array(4);
+    /** Capture rendered orb frames and audio uniforms for visual-state assertions. */
     WebGL2RenderingContext.prototype.drawArrays = function (mode, first, count) {
       draw.call(this, mode, first, count);
       const canvas = this.canvas;
@@ -2215,6 +2275,7 @@ test('provider double: official WebGL Orb renders five states, owned audio unifo
   await expect(canvas).toHaveCount(1);
   const node = await canvas.elementHandle();
 
+  /** Verify the existing orb canvas visibly renders the requested voice state. */
   async function rendered(state: 'idle' | 'connecting' | 'listening' | 'speaking' | 'muted') {
     await expect(canvas).toHaveAttribute('data-state', state);
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => {
@@ -2228,11 +2289,13 @@ test('provider double: official WebGL Orb renders five states, owned audio unifo
     return (await canvas.evaluate((element: HTMLCanvasElement) => window.orbProbe.get(element)))!;
   }
 
+  /** Wait for the orb's animated parameters to reach their expected targets. */
   async function settled(speed: number, amplitude: number) {
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => window.orbProbe.get(element)?.speed), { timeout: 10000 }).toBeCloseTo(speed, 2);
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => window.orbProbe.get(element)?.amplitude), { timeout: 10000 }).toBeCloseTo(amplitude, 2);
   }
 
+  /** Emit an audio-level sample and verify the orb renders its expected volume. */
   async function sample(source: 'local' | 'remote', value: number, expected = value, participant = 'assistant') {
     let frame: Awaited<ReturnType<typeof rendered>> | undefined;
     await expect.poll(async () => {

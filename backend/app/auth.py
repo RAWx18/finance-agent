@@ -25,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class AuthProblem(Problem):
+    """Authentication failure with a public message and optional retry delay."""
+
     def __init__(self, status: int, code: str, retry_after: int | None = None):
+        """Set the public error message and retry delay for an authentication failure."""
         message = (
             "Sign in to continue."
             if status in {401, 428}
@@ -38,7 +41,10 @@ class AuthProblem(Problem):
 
 
 class Auth:
+    """Google sign-in, session authorization, and account lifecycle management."""
+
     def __init__(self, store: Store, environment: Environment, google: Google | None = None):
+        """Initialize authentication services and register store authorization checks."""
         self.store = store
         self.config = store.config.auth
         self.environment = environment
@@ -55,9 +61,11 @@ class Auth:
         store.authorize_locked = self.guard_locked
 
     def now(self) -> float:
+        """Return the current authentication time as a Unix timestamp."""
         return self.store.clock().timestamp()
 
     async def open(self) -> None:
+        """Prepare authentication storage and open the Google client."""
         await self.store.connection().executescript(
             """
             PRAGMA secure_delete = ON;
@@ -113,10 +121,12 @@ class Auth:
         await self.google.open()
 
     async def close(self) -> None:
+        """Close the Google client and clear request rate counters."""
         await self.google.close()
         self.rates.clear()
 
     def limit(self, kind: str, key: str, maximum: int) -> None:
+        """Count a request and reject it when its rate limit is exceeded."""
         now = self.now()
         bucket = (kind, digest(key))
         start, count = self.rates.get(bucket, (now, 0))
@@ -140,12 +150,15 @@ class Auth:
         self.rates[bucket] = (start, count + 1)
 
     def address(self, request: Request) -> str:
+        """Return the client address or an unknown-address marker."""
         return request.client.host if request.client else "unknown"
 
     def cookie_name(self, name: str) -> str:
+        """Choose the authentication cookie name for the public origin's security level."""
         return "__Host-" + name if self.environment.public_origin.startswith("https:") else name
 
     def cookie(self, request: Request, name: str) -> str | None:
+        """Read an authentication cookie, rejecting oversized or ambiguous values."""
         name = self.cookie_name(name)
         headers = request.headers.getlist("cookie")
         if sum(len(value) for value in headers) > self.config.max_cookie_bytes:
@@ -163,6 +176,7 @@ class Auth:
         return values[0]
 
     async def identify(self, request: Request) -> Access:
+        """Authenticate the request's session cookie and rate-limit invalid credentials."""
         try:
             token = self.cookie(request, COOKIE)
             if token is None:
@@ -183,6 +197,7 @@ class Auth:
             raise
 
     async def row_locked(self, access: Access) -> sqlite3.Row:
+        """Load valid session credentials while the caller holds the store lock."""
         async with self.store.connection().execute(
             "SELECT u.*, s.hash, s.created, s.expires AS absolute_expires, s.idle_expires, "
             "g.access_token, g.refresh_token, g.expires AS token_expires, "
@@ -204,22 +219,26 @@ class Auth:
         return row
 
     def due(self, row: sqlite3.Row) -> bool:
+        """Determine whether Google credentials require revalidation."""
         return bool(
             row["checked"] + self.config.recheck_seconds <= self.now()
             or row["token_expires"] <= self.now()
         )
 
     async def guard_locked(self, access: Access) -> None:
+        """Require a valid, recently checked session while the store lock is held."""
         row = await self.row_locked(access)
         if not self.environment.google_available or self.due(row):
             raise AuthProblem(503, "authUnavailable")
 
     def encrypt(self, value: str) -> str:
+        """Encrypt a credential for storage, requiring an available encryption key."""
         if self.cipher is None:
             raise AuthProblem(503, "authUnavailable")
         return self.cipher.encrypt(value.encode()).decode()
 
     def decrypt(self, value: str) -> str:
+        """Decrypt a stored credential or report authentication unavailability."""
         if self.cipher is None:
             raise AuthProblem(503, "authUnavailable")
         try:
@@ -228,12 +247,14 @@ class Auth:
             raise AuthProblem(503, "authUnavailable") from None
 
     def revoke(self, user_id: str, session_hash: str | None = None) -> None:
+        """Revoke live access for a user's sessions and notify the revocation handler."""
         # Live connections fail closed before the transaction's cancellable commit.
         self.store.revoke(user_id, session_hash)
         if self.on_revoke is not None:
             self.on_revoke(user_id, session_hash)
 
     async def check(self, access: Access) -> None:
+        """Authorize a session, revalidating Google credentials when required."""
         async with self.store.lock:
             row = await self.row_locked(access)
             if not self.environment.google_available:
@@ -303,6 +324,7 @@ class Auth:
             raise AuthProblem(503, "authUnavailable") from None
 
     def session_value(self, row: sqlite3.Row) -> AuthSession:
+        """Build the public user session with its effective expiration time."""
         expires = min(row["absolute_expires"], row["idle_expires"])
         if row["refresh_token"] is None:
             expires = min(expires, row["token_expires"])
@@ -317,6 +339,7 @@ class Auth:
         )
 
     async def session(self, access: Access, *, refresh: bool = False) -> AuthSession:
+        """Return an authorized session, optionally extending its idle expiration."""
         await self.check(access)
         async with self.store.lock:
             await self.guard_locked(access)
@@ -331,6 +354,7 @@ class Auth:
     async def begin(
         self, return_to: ReturnPath, token: str | None, previous_flow: str | None
     ) -> tuple[str, str]:
+        """Start a bound Google login flow and return its URL and browser token."""
         if not self.environment.google_available:
             raise AuthProblem(503, "authUnavailable")
         state, binding, nonce, verifier = (secrets.token_urlsafe(32) for _ in range(4))
@@ -367,11 +391,13 @@ class Auth:
                         current[1] if current else None,
                     ),
                 )
+        # A retained Google grant must not bypass consent when the app has no signed-in session.
         return self.google.authorization_url(
-            state, nonce, verifier, consent=bool(current and not current[2])
+            state, nonce, verifier, consent=current is None or not current[2]
         ), binding
 
     async def consume(self, state: str, binding: str) -> sqlite3.Row:
+        """Claim an unexpired login flow matching its state and browser binding."""
         async with self.store.lock:
             db = self.store.connection()
             async with self.store.transaction():
@@ -392,6 +418,7 @@ class Auth:
                 return row
 
     async def discard(self, binding: str | None) -> None:
+        """Delete the pending login flow for a supplied browser binding."""
         if binding:
             async with self.store.lock, self.store.transaction():
                 await self.store.connection().execute(
@@ -399,6 +426,7 @@ class Auth:
                 )
 
     async def complete(self, flow: sqlite3.Row, grant: Grant) -> tuple[str, ReturnPath]:
+        """Complete a claimed login and return its session token and safe redirect path."""
         token = secrets.token_urlsafe(32)
         revoked: list[tuple[str, str]] = []
         async with self.store.lock:
@@ -507,6 +535,7 @@ class Auth:
         return token, return_to
 
     async def logout(self, token: str | None, binding: str | None) -> None:
+        """Revoke sessions and pending logins associated with the browser credentials."""
         async with self.store.lock:
             db = self.store.connection()
             async with self.store.transaction():
@@ -528,6 +557,7 @@ class Auth:
                     self.revoke(row[0], row[1])
 
     async def rename(self, access: Access, name: str) -> User:
+        """Change the authenticated user's display name and return their profile."""
         await self.check(access)
         async with self.store.lock, self.store.transaction():
             await self.guard_locked(access)
@@ -537,6 +567,7 @@ class Auth:
             return self.session_value(await self.row_locked(access)).user
 
     async def delete(self, access: Access) -> str | None:
+        """Delete a recently authenticated account and return its revocable Google token."""
         await self.check(access)
         async with self.store.lock:
             db = self.store.connection()
@@ -549,10 +580,14 @@ class Auth:
                 await db.execute("DELETE FROM auth_users WHERE id = ?", (access.user_id,))
                 await db.execute("UPDATE auth_generation SET value = value + 1")
                 self.revoke(access.user_id)
-            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            try:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                logger.warning("authDeletionCheckpointFailed")
         return token
 
     async def cleanup(self) -> None:
+        """Delete expired login flows, memories, and sessions, revoking live access."""
         async with self.store.lock:
             db = self.store.connection()
             async with self.store.transaction():

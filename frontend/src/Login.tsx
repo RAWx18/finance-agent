@@ -11,11 +11,13 @@ import { isMoneyRoute } from './moneyRoutes';
 import { isConversationRoute, isHistoryRoute } from './historyRoutes';
 import './login.css';
 
+/** Resolve a permitted post-sign-in destination, defaulting to the conversation page. */
 export function returnPath(value: string | null | undefined): ReturnPath {
   return value && (isMoneyRoute(value) || isHistoryRoute(value) || isConversationRoute(value)) ? value : value === '/account' ? value : '/app';
 }
 
-export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBegin?: () => void }) {
+/** Offer Google sign-in with availability checks and recoverable error feedback. */
+export function GoogleSignIn({ returnTo, onBegin, disabled = false }: { returnTo: ReturnPath; onBegin?: () => void; disabled?: boolean }) {
   const [settings, setSettings] = useState<AuthSettings | null>(null);
   const [error, setError] = useState<{ message: string; source: 'settings' | 'start' } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -42,8 +44,9 @@ export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBe
     recoverFocus.current = false;
   }, [error, settings, busy, checking]);
 
+  /** Begin sign-in and navigate only to a trusted authentication destination. */
   async function signIn() {
-    if (!mounted.current || pending.current || !settings?.googleAvailable) return;
+    if (!mounted.current || pending.current || disabled || !settings?.googleAvailable) return;
     recoverFocus.current = controls.current?.contains(document.activeElement) ?? false;
     pending.current = true;
     const epoch = authEpoch();
@@ -71,7 +74,7 @@ export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBe
   return <div className="google-signin" ref={controls}>
     {error ? <Recovery inline title={error.source === 'settings' ? 'Let’s get you connected.' : 'Let’s try signing in again.'}
       message={error.message} busy={busy || checking}>
-      <button className="primary" disabled={busy || checking} onClick={() => {
+      <button className="primary" disabled={disabled || busy || checking} onClick={() => {
         if (error.source === 'start') { void signIn(); return; }
         recoverFocus.current = true;
         setChecking(true); setAttempt(value => value + 1);
@@ -79,7 +82,7 @@ export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBe
     </Recovery> : <>
     {settings?.googleAvailable === false && <p className="hint">Sign-in is not available yet. Please try again later.</p>}
     {!settings && <p role="status">Getting sign-in ready…</p>}
-    <button className="primary" disabled={!settings?.googleAvailable || busy} onClick={() => void signIn()}>
+    <button className="primary" disabled={disabled || !settings?.googleAvailable || busy} onClick={() => void signIn()}>
       {busy ? 'Opening Google…' : 'Continue with Google'}
     </button>
     {settings?.googleAvailable === false && <button disabled={checking} onClick={() => { setChecking(true); setAttempt(value => value + 1); }}>{checking ? 'Checking…' : 'Check again'}</button>}
@@ -94,6 +97,7 @@ const failures: Record<string, string> = {
   unavailable: 'Sign-in is temporarily unavailable. Please try again shortly.',
 };
 
+/** Present the sign-in page and explain any incomplete authentication attempt. */
 export function Login() {
   const auth = useAuth();
   const location = useLocation();
@@ -122,7 +126,7 @@ export function Login() {
       <section ref={signin} className="login-signin" aria-labelledby="signin-heading">
         <h2 id="signin-heading" className="sr-only">Sign in to Cash flow</h2>
         {auth.phase === 'ready' && <Link className="button" to={returnTo}>Continue to your plan</Link>}
-        <GoogleSignIn returnTo={returnTo} onBegin={() => {
+        <GoogleSignIn returnTo={returnTo} disabled={auth.deleting} onBegin={() => {
           if (location.search && auth.phase !== 'ready') void navigate(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`, { replace: true });
         }} />
         <p className="login-permission"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 5a3 3 0 0 1 6 0v6a3 3 0 0 1-6 0V5Z M5 10v1a7 7 0 0 0 14 0v-1 M12 18v3 M9 21h6" /></svg>

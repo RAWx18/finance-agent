@@ -52,7 +52,10 @@ logger = logging.getLogger(__name__)
 
 
 class CallbackLogFilter(logging.Filter):
+    """Access-log filter that excludes authentication callback URLs."""
+
     def filter(self, record: logging.LogRecord) -> bool:
+        """Exclude log records containing authentication callback URLs."""
         return "/auth/callback" not in record.getMessage()
 
 
@@ -61,13 +64,17 @@ logging.getLogger("uvicorn.access").addFilter(callback_log_filter)
 
 
 class Boundary:
+    """HTTP boundary enforcing request security, authorization, and payload limits."""
+
     def __init__(self, app: ASGIApp, config: Config, environment: Environment, auth: Auth):
+        """Bind the application to its request-security settings and authentication service."""
         self.app = app
         self.config = config
         self.environment = environment
         self.auth = auth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        """Enforce HTTP request restrictions and attach security headers to responses."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -77,6 +84,7 @@ class Boundary:
         }
 
         async def secured_send(message: Message) -> None:
+            """Attach browser security headers before forwarding response messages."""
             if message["type"] == "http.response.start":
                 message.setdefault("headers", []).extend(
                     [
@@ -100,6 +108,7 @@ class Boundary:
             await send(message)
 
         async def reject(status: int, code: str, message: str) -> None:
+            """Send a structured request rejection with security headers."""
             await JSONResponse({"code": code, "message": message}, status_code=status)(
                 scope, receive, secured_send
             )
@@ -221,6 +230,7 @@ class Boundary:
                 delivered = False
 
                 async def body_receive() -> Message:
+                    """Deliver the validated request body once, then receive further messages."""
                     nonlocal delivered
                     if not delivered:
                         delivered = True
@@ -239,6 +249,7 @@ def create_app(
     static_dir: Path | None = None,
     google: Google | None = None,
 ) -> FastAPI:
+    """Build the cashflow application with shared services, routes, and lifecycle hooks."""
     config = config if config is not None else load_config()
     environment = environment if environment is not None else Environment.load()
     store = Store(environment.data_dir / "sessions.sqlite3", config, clock)
@@ -249,6 +260,7 @@ def create_app(
     static_dir = (static_dir if static_dir is not None else ROOT / "frontend" / "dist").resolve()
 
     async def cleanup() -> None:
+        """Periodically expire stored financial and authentication data."""
         while True:
             await asyncio.sleep(config.cleanup_seconds)
             await store.cleanup()
@@ -256,6 +268,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        """Start application services and release them when the application shuts down."""
         if reason := unavailable_reason(config, environment):
             logger.warning("Voice unavailable at startup: %s", reason)
         else:
@@ -303,6 +316,7 @@ def create_app(
 
     @application.exception_handler(Problem)
     async def problem_handler(request: Request, error: Problem) -> JSONResponse:
+        """Render domain failures with public-safe messages and applicable rate limits."""
         if error.body.code == "commandConflict":
             logger.warning("authCommandConflict")
             try:
@@ -343,6 +357,7 @@ def create_app(
 
     @application.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, error: RequestValidationError) -> JSONResponse:
+        """Return a public validation error without exposing submitted field values."""
         return JSONResponse(
             {
                 "code": "validationError",
@@ -353,6 +368,7 @@ def create_app(
 
     @application.exception_handler(HTTPException)
     async def http_handler(request: Request, error: HTTPException) -> JSONResponse:
+        """Return a generic resource or method error with the original HTTP status."""
         return JSONResponse(
             {"code": "httpError", "message": "Resource or method unavailable."},
             status_code=error.status_code,
@@ -360,6 +376,7 @@ def create_app(
 
     @application.exception_handler(sqlite3.Error)
     async def storage_handler(request: Request, error: sqlite3.Error) -> JSONResponse:
+        """Report storage unavailability with safe command-retry guidance."""
         return JSONResponse(
             {
                 "code": "unavailable",
@@ -370,6 +387,7 @@ def create_app(
 
     @application.exception_handler(Exception)
     async def unexpected_handler(request: Request, error: Exception) -> JSONResponse:
+        """Return a generic internal failure without disclosing exception details."""
         return JSONResponse(
             {"code": "internalError", "message": "Request failed; retry the same command ID."},
             status_code=500,
@@ -377,6 +395,7 @@ def create_app(
 
     @application.get("/api/settings", response_model=Settings)
     async def settings() -> Settings:
+        """Return public cashflow limits, local date, and voice availability settings."""
         reason = unavailable_reason(config, environment)
         return Settings(
             assistant_name=config.voice.assistant_name,
@@ -397,18 +416,22 @@ def create_app(
 
     @application.post("/api/session", response_model=Snapshot)
     async def start(request: Request, body: Model) -> Snapshot:
+        """Create a financial session for the authenticated owner."""
         return await store.create(owner(request))
 
     @application.get("/api/history", response_model=ConversationList)
     async def history_list(request: Request, search: str = "") -> ConversationList:
+        """List the owner's saved conversations with optional text search."""
         return await history.list(owner(request), search)
 
     @application.get("/api/history/{slug}", response_model=SavedConversation)
     async def history_detail(request: Request, slug: str) -> SavedConversation:
+        """Return a saved conversation and its transcript messages."""
         return await history.get(owner(request), slug)
 
     @application.post("/api/history/{slug}/continue", response_model=Snapshot)
     async def history_continue(request: Request, slug: str, body: Model) -> Snapshot:
+        """Select a saved conversation for continued financial planning."""
         return await calls.select(owner(request), slug)
 
     @application.get(
@@ -417,6 +440,7 @@ def create_app(
         response_model=str,
     )
     async def history_transcript(request: Request, slug: str) -> PlainTextResponse:
+        """Download a saved conversation as a plain-text transcript."""
         conversation = await history.get(owner(request), slug)
         return PlainTextResponse(
             transcript(conversation),
@@ -425,28 +449,34 @@ def create_app(
 
     @application.get("/api/session", response_model=Snapshot)
     async def current(request: Request) -> Snapshot:
+        """Return the authenticated owner's current financial snapshot."""
         return await store.get(owner(request))
 
     @application.get("/api/session/options", response_model=AdjustmentOptions)
     async def options(request: Request) -> AdjustmentOptions:
+        """Return available adjustments for the current financial session."""
         return await store.options(owner(request))
 
     @application.get("/api/session/call", response_model=CallState)
     async def call_state(request: Request) -> CallState:
+        """Return voice-call status after verifying the owner's financial session."""
         key = owner(request)
         await store.get(key)
         return calls.state(key)
 
     @application.post("/api/session/call", response_model=CallJoin)
     async def join_call(request: Request, body: CallRequest) -> CallJoin:
+        """Start or join the requested voice conversation."""
         return await calls.start(owner(request), body.call_id, body.conversation_slug)
 
     @application.delete("/api/session/call", response_model=CallState)
     async def end_call(request: Request, body: CallRequest) -> CallState:
+        """End the requested voice call and return its resulting state."""
         return await calls.end(owner(request), body.call_id)
 
     @application.post("/api/session/commands", response_model=Snapshot)
     async def command(request: Request, body: Command) -> Snapshot:
+        """Apply a financial command and return the resulting session snapshot."""
         return await store.command(owner(request), body)
 
     @application.get(
@@ -461,11 +491,27 @@ def create_app(
         },
     )
     async def events(request: Request) -> StreamingResponse:
+        """Subscribe the owner to financial snapshots and terminal session events."""
         key = owner(request)
         queue = await store.subscribe(key)
 
         async def stream() -> AsyncIterator[str]:
+            """Yield authorized snapshot events, heartbeats, and terminal session failures."""
             sequence = -1
+
+            async def terminal(value: Error) -> str:
+                """Render a terminal event, distinguishing account deletion from sign-out."""
+                if value.code in {"unauthenticated", "sessionExpired"}:
+                    async with (
+                        store.lock,
+                        store.connection().execute(
+                            "SELECT 1 FROM auth_users WHERE id = ?", (key.user_id,)
+                        ) as cursor,
+                    ):
+                        if await cursor.fetchone() is None:
+                            value = Error(code="accountDeleted", message="Account deleted.")
+                return f"event: {value.code}\ndata: {value.model_dump_json(by_alias=True)}\n\n"
+
             try:
                 while True:
                     try:
@@ -474,10 +520,7 @@ def create_app(
                         try:
                             value = await store.get(key)
                         except Problem as error:
-                            yield (
-                                f"event: {error.body.code}\n"
-                                f"data: {error.body.model_dump_json(by_alias=True)}\n\n"
-                            )
+                            yield await terminal(error.body)
                             return
                         if value.sequence == sequence:
                             yield ": heartbeat\n\n"
@@ -487,17 +530,12 @@ def create_app(
                             await auth.check(key)
                         except Problem as error:
                             value = error.body
-                        yield (
-                            f"event: {value.code}\ndata: {value.model_dump_json(by_alias=True)}\n\n"
-                        )
+                        yield await terminal(value)
                         return
                     try:
                         value = await store.get(key)
                     except Problem as error:
-                        yield (
-                            f"event: {error.body.code}\n"
-                            f"data: {error.body.model_dump_json(by_alias=True)}\n\n"
-                        )
+                        yield await terminal(error.body)
                         return
                     if value.sequence <= sequence:
                         continue
@@ -520,6 +558,7 @@ def create_app(
         responses={200: {"content": {"text/plain": {"schema": {"type": "string"}}}}},
     )
     async def export(request: Request) -> PlainTextResponse:
+        """Download the current cashflow snapshot as a plain-text report."""
         return PlainTextResponse(
             export_text(await store.get(owner(request))),
             headers={"Content-Disposition": 'attachment; filename="cashflow.txt"'},
@@ -527,6 +566,7 @@ def create_app(
 
     @application.delete("/api/session", response_model=Deleted)
     async def delete(request: Request, body: Model | None = None) -> Deleted:
+        """End any active call and delete the owner's financial session."""
         key = owner(request)
         state = calls.state(key)
         if state.call_id is not None:
@@ -536,10 +576,12 @@ def create_app(
 
     @application.get("/health/live", response_model=Health)
     async def live() -> Health:
+        """Report that the application can serve requests."""
         return Health(status="ok")
 
     @application.get("/health/ready", response_model=Health)
     async def ready() -> Health:
+        """Verify that session cleanup and persistent storage are available."""
         if application.state.cleanup_task.done():
             raise Problem(503, "unavailable", "Session cleanup is unavailable.")
         await store.ready()
@@ -547,6 +589,7 @@ def create_app(
 
     @application.get("/{path:path}", response_model=None, include_in_schema=False)
     async def frontend(path: str, request: Request) -> FileResponse | RedirectResponse:
+        """Serve frontend assets and protected pages with sign-in redirects where needed."""
         if path == "api" or path.startswith(("api/", "health/", "auth/")):
             raise Problem(404, "notFound", "Resource not found.")
         protected = is_return_path("/" + path)

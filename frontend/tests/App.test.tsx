@@ -19,6 +19,7 @@ beforeEach(() => {
   vi.spyOn(api, 'save').mockResolvedValue({ ...snapshot(), revision: 1, sequence: 1 });
 });
 const moneyLink = () => within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
+/** Opens a live Money fixture and leaves an exact starting-cash correction unsaved. */
 async function cashDraft(value: string) {
   const router = appRouter('/money'); render(<RouterProvider router={router} />);
   await waitFor(() => expect(Stream.instances).toHaveLength(1)); act(() => Stream.instances[0].emit('snapshot', snapshot()));
@@ -90,6 +91,8 @@ it('does not create a plan on StrictMode mount or pretend unavailable voice work
 it('reopens saved unavailable answers without claiming missing money is zero', async () => {
   vi.mocked(api.current).mockResolvedValue(unconfirmedSnapshot()); render(<App />);
   await screen.findByRole('button', { name: 'Start conversation' });
+  await waitFor(() => expect(Stream.instances).toHaveLength(1));
+  act(() => Stream.instances[0].emit('snapshot', unconfirmedSnapshot()));
   await userEvent.click(moneyLink());
   const picture = await screen.findByRole('region', { name: 'Money content' });
   expect(within(picture).getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Unknown');

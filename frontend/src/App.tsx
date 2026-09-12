@@ -22,6 +22,7 @@ import brandIcon from './brand.svg?no-inline';
 
 type Journey = 'landing' | 'ready' | 'session';
 
+/** Coordinate the signed-in workspace, saved conversations, and navigation safeguards. */
 function Workspace() {
   const location = useLocation();
   const route = useNavigate();
@@ -78,6 +79,7 @@ function Workspace() {
   }, [location.pathname]);
   useEffect(() => () => routeSelection.current?.controller.abort(), []);
 
+  /** Select a saved conversation and request a call on its conversation page. */
   async function continueChat(slug: string, signal: AbortSignal) {
     if (continueBlocked) return;
     const from = location.pathname;
@@ -115,6 +117,7 @@ function Workspace() {
   useEffect(() => {
     if (location.pathname === '/app' && conversationSlug) void route(`/app/${conversationSlug}`, { replace: true });
   }, [location.pathname, conversationSlug, route]);
+  /** Open Money only when no call is running or awaiting cleanup. */
   function openMoney() {
     if (running || voiceBusy) return;
     void route('/money');
@@ -166,12 +169,14 @@ function Workspace() {
     document.getElementById(id)?.focus({ preventScroll: true });
   }, [location.pathname, moneyOpen, accountOpen, historyOpen]);
 
+  /** Show a conversation stage and focus its heading. */
   function navigate(next: Journey) {
     setView(next);
     if (!conversationVisible) void route(conversationSlug ? `/app/${conversationSlug}` : '/app');
     requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
   }
 
+  /** Keep the conversation stage aligned with the voice lifecycle. */
   function voiceChanged(phase: VoicePhase) {
     setVoicePhase(phase);
     if (phase === 'idle') return;
@@ -267,6 +272,7 @@ function Workspace() {
   </>;
 }
 
+/** Render the home link and maintain the page's branded title. */
 function Brand() {
   const { pathname } = useLocation();
   useEffect(() => {
@@ -277,6 +283,7 @@ function Brand() {
   return <Link className="brand" to="/app" aria-label="Cash flow home"><img src={brandIcon} alt="" width="28" height="28" /><span>Cash flow</span></Link>;
 }
 
+/** Present primary navigation and account controls for the current sign-in state. */
 function Header({ voiceBusy = false, hasDraft = false }: { voiceBusy?: boolean; hasDraft?: boolean }) {
   const auth = useAuth();
   const location = useLocation();
@@ -293,6 +300,7 @@ function Header({ voiceBusy = false, hasDraft = false }: { voiceBusy?: boolean; 
   </header></>;
 }
 
+/** Gate workspace routes on authentication and offer sign-in recovery. */
 function AccessRoutes() {
   const auth = useAuth();
   const location = useLocation();
@@ -303,6 +311,7 @@ function AccessRoutes() {
     else dismiss('auth:status');
   }, [auth.phase, auth.message]);
 
+  /** Recheck authentication from the recovery view. */
   async function retry() {
     if (retrying) return;
     setRetrying(true);
@@ -316,6 +325,7 @@ function AccessRoutes() {
     if (location.pathname === '/') return <Navigate to="/app" replace />;
     return <Workspace key={auth.session!.user.id} />;
   }
+  if (auth.phase === 'anonymous' && auth.signedOut && (location.pathname !== '/login' || location.search || location.hash)) return <Navigate replace to="/login" />;
   if (auth.phase === 'anonymous' && location.pathname !== '/login') return <Navigate replace
     to={`/login${returnPath(location.pathname) === '/app' ? '' : `?returnTo=${returnPath(location.pathname)}`}`} />;
   const checking = auth.phase === 'restoring' || auth.phase === 'signingOut';
@@ -334,10 +344,12 @@ function AccessRoutes() {
   </>;
 }
 
+/** Provide authentication, access-controlled routes, and shared notifications. */
 export function App() {
   return <AuthProvider><AccessRoutes /><ToastViewport /></AuthProvider>;
 }
 
+/** Offer a safe return to the plan after a route failure. */
 export function RouteError() {
   return <><a className="skip-link" href="#main">Skip to main content</a><header className="site-header"><Brand /></header>
     <main id="main" className="recovery-page"><Recovery title="Let’s try that again." message="Try opening your plan again. Your saved figures won’t be changed.">

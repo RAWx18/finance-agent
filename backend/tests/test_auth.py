@@ -22,17 +22,20 @@ from .conftest import NOW, ORIGIN, command, facts
 
 
 async def rows(application, sql, parameters=()):
+    """Fetch database rows while holding the application's store lock."""
     store = application.state.store
     async with store.lock, store.connection().execute(sql, parameters) as cursor:
         return list(await cursor.fetchall())
 
 
 def query(client, sql, parameters=()):
+    """Run a locked database query through the synchronous test client's async portal."""
     return client.portal.call(rows, client.app, sql, parameters)
 
 
 @pytest.fixture
 def auth_client(tmp_path, config):
+    """Provide an isolated auth client, synthetic Google provider, and mutable clock."""
     now = [NOW]
     application = auth_app(config, Environment(data_dir=tmp_path), lambda: now[0])
     with TestClient(application, base_url=ORIGIN, headers={"Origin": ORIGIN}) as client:
@@ -40,6 +43,7 @@ def auth_client(tmp_path, config):
 
 
 def begin(client, subject="google-user-one", return_to="/app"):
+    """Start a login flow and provide a synthetic authorization code with its state."""
     response = client.post("/api/auth/login", json={"returnTo": return_to})
     assert response.status_code == 200, response.text
     url = response.json()["url"]
@@ -48,10 +52,12 @@ def begin(client, subject="google-user-one", return_to="/app"):
 
 
 def callback(client, params):
+    """Submit OAuth callback parameters without following the resulting redirect."""
     return client.get("/auth/callback", params=params, follow_redirects=False)
 
 
 def test_missing_google_setup_starts_healthy_without_anonymous_access(tmp_path, config):
+    """Verify missing Google setup preserves health checks but blocks login and anonymous data."""
     with TestClient(
         create_app(config, Environment(data_dir=tmp_path)),
         base_url=ORIGIN,
@@ -89,11 +95,13 @@ def test_missing_google_setup_starts_healthy_without_anonymous_access(tmp_path, 
 
 @pytest.mark.parametrize("key", ["not-a-key", "a" * 44, "é" * 44, KEY + "\n"])
 def test_encryption_key_validation(key):
+    """Verify malformed encryption values are rejected as invalid Fernet keys."""
     with pytest.raises(ValidationError, match="Fernet key"):
         Environment(auth_encryption_key=SecretStr(key))
 
 
 def test_empty_auth_environment_values_leave_login_unavailable(tmp_path, config, monkeypatch):
+    """Verify empty authentication environment values leave a healthy app with login disabled."""
     for key in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "AUTH_ENCRYPTION_KEY"):
         monkeypatch.setenv(key, "")
     environment = Environment.load().model_copy(update={"data_dir": tmp_path})
@@ -103,6 +111,7 @@ def test_empty_auth_environment_values_leave_login_unavailable(tmp_path, config,
 
 
 def test_google_environment_names_and_secrets_are_separate(monkeypatch):
+    """Verify Google environment values load without exposing secrets in repr."""
     for key, value in {
         "GOOGLE_CLIENT_ID": "test-client",
         "GOOGLE_CLIENT_SECRET": "secret-google",
@@ -130,13 +139,14 @@ def test_google_environment_names_and_secrets_are_separate(monkeypatch):
     ],
 )
 def test_oidc_login_cookie_pkce_identity_and_no_finance_side_effect(auth_client, return_to):
+    """Verify OIDC binds PKCE and cookies, encrypts grants, and creates no financial session."""
     client, google, _ = auth_client
     params, initiated = begin(client, return_to=return_to)
     settings = client.get("/api/auth/settings").json()
     assert settings == {"googleAvailable": True, "sessionHours": 168}
     authorization = parse_qs(urlsplit(initiated.json()["url"]).query)
     assert authorization["scope"] == ["openid profile email"]
-    assert authorization["prompt"] == ["select_account"]
+    assert authorization["prompt"] == ["select_account consent"]
     assert authorization["access_type"] == ["offline"]
     assert authorization["redirect_uri"] == [ORIGIN + "/auth/callback"]
     cookie = initiated.headers["set-cookie"]
@@ -207,6 +217,7 @@ def test_oidc_login_cookie_pkce_identity_and_no_finance_side_effect(auth_client,
     ],
 )
 def test_login_return_target_is_a_fixed_allowlist(auth_client, return_to):
+    """Verify unsafe or unsupported return paths fail before creating a login flow."""
     client, google, _ = auth_client
     response = client.post("/api/auth/login", json={"returnTo": return_to})
     assert response.status_code == 422 and response.json()["code"] == "validationError"
@@ -216,6 +227,7 @@ def test_login_return_target_is_a_fixed_allowlist(auth_client, return_to):
 
 @pytest.mark.parametrize("return_to", ["/money/changes", "https://attacker.example/money"])
 def test_callback_return_target_cannot_override_the_stored_money_path(auth_client, return_to):
+    """Verify callback parameters cannot replace the return path stored during login initiation."""
     client, _, _ = auth_client
     params, _ = begin(client, return_to="/money/income")
     response = callback(client, {**params, "returnTo": return_to})
@@ -225,6 +237,7 @@ def test_callback_return_target_cannot_override_the_stored_money_path(auth_clien
 
 
 def test_state_binding_consumption_replay_and_failed_login_preserve_current_login(auth_client):
+    """Verify failed nonce validation consumes the flow without replacing the current login."""
     client, google, _ = auth_client
     sign_in(client)
     current = client.cookies[COOKIE]
@@ -245,6 +258,7 @@ def test_state_binding_consumption_replay_and_failed_login_preserve_current_logi
 
 
 def test_stolen_state_without_browser_binding_cannot_consume_victim_flow(auth_client):
+    """Verify state without its browser binding cannot consume or exchange a victim's flow."""
     client, google, _ = auth_client
     params, _ = begin(client)
     binding = client.cookies[FLOW_COOKIE]
@@ -260,6 +274,7 @@ def test_stolen_state_without_browser_binding_cannot_consume_victim_flow(auth_cl
     "field", ["state", "code", "error", "error_description", "error_uri", "iss"]
 )
 def test_duplicate_callback_parameters_are_rejected_without_token_exchange(auth_client, field):
+    """Verify duplicate OAuth callback fields are rejected before contacting Google."""
     client, google, _ = auth_client
     params, _ = begin(client)
     pairs = [(key, value) for key, value in params.items() if key != field] + [
@@ -272,6 +287,7 @@ def test_duplicate_callback_parameters_are_rejected_without_token_exchange(auth_
 
 
 def test_cancelled_expired_and_provider_failed_callbacks_are_safe(auth_client):
+    """Verify cancelled, expired, and unavailable login callbacks fail without leaking details."""
     client, google, now = auth_client
     params, _ = begin(client)
     response = callback(
@@ -294,6 +310,7 @@ def test_cancelled_expired_and_provider_failed_callbacks_are_safe(auth_client):
 
 
 def test_additional_google_callback_parameters_are_ignored_and_post_is_not_allowed(auth_client):
+    """Verify harmless extra Google callback parameters are ignored and POST is not accepted."""
     client, _, _ = auth_client
     params, _ = begin(client)
     assert client.post("/auth/callback", json=params).status_code in {404, 405}
@@ -307,6 +324,7 @@ def test_additional_google_callback_parameters_are_ignored_and_post_is_not_allow
     "cookie", ["", "broken", "x" * 42, "x" * 44, '"' + "x" * 43 + '"', "x" * 5000]
 )
 def test_malformed_or_long_cookie_is_uniformly_unauthenticated(auth_client, cookie):
+    """Verify malformed session cookies produce the same unauthenticated response."""
     client, _, _ = auth_client
     response = client.get("/api/auth/session", headers={"Cookie": COOKIE + "=" + cookie})
     assert response.status_code == 401
@@ -318,6 +336,7 @@ def test_malformed_or_long_cookie_is_uniformly_unauthenticated(auth_client, cook
 
 
 def test_duplicate_session_cookies_are_not_accepted(auth_client):
+    """Verify duplicate session cookies are rejected within one header or across headers."""
     client, _, _ = auth_client
     sign_in(client)
     token = client.cookies[COOKIE]
@@ -336,6 +355,7 @@ def test_duplicate_session_cookies_are_not_accepted(auth_client):
 def test_login_recovers_invalid_cookies_without_claiming_finances(
     auth_client, subject, names, invalid
 ):
+    """Verify login replaces invalid cookies without assigning another account's financial data."""
     client, google, _ = auth_client
     sign_in(client)
     token = client.cookies[COOKIE]
@@ -412,6 +432,7 @@ def test_login_recovers_invalid_cookies_without_claiming_finances(
 
 
 def test_idle_refresh_preserves_identity_without_extending_absolute_limit(auth_client):
+    """Verify repeated idle refresh retains identity without extending the seven-day login limit."""
     client, google, now = auth_client
     sign_in(client)
     token = client.cookies[COOKIE]
@@ -430,6 +451,7 @@ def test_idle_refresh_preserves_identity_without_extending_absolute_limit(auth_c
 
 
 def test_google_refresh_nonce_survives_a_login_without_a_replacement_refresh_token(auth_client):
+    """Verify login without a replacement refresh token retains the grant's refresh nonce."""
     client, google, now = auth_client
     sign_in(client)
     user = client.get("/api/auth/session").json()["user"]
@@ -444,6 +466,7 @@ def test_google_refresh_nonce_survives_a_login_without_a_replacement_refresh_tok
 
 
 def test_idle_and_access_only_expiry_require_signin(auth_client):
+    """Verify access-only expiry and idle expiry follow the available Google grant lifetime."""
     client, google, now = auth_client
     google.offline = False
     sign_in(client)
@@ -462,6 +485,7 @@ def test_idle_and_access_only_expiry_require_signin(auth_client):
 
 
 def test_access_only_token_cannot_silently_live_for_seven_days(auth_client):
+    """Verify access-only login expires with its token and requires a fresh sign-in."""
     client, google, now = auth_client
     google.offline = False
     sign_in(client)
@@ -473,6 +497,7 @@ def test_access_only_token_cannot_silently_live_for_seven_days(auth_client):
 
 
 def test_custom_name_survives_google_profile_refresh_and_email_changes(auth_client):
+    """Verify a custom display name survives refreshed Google name and email values."""
     client, google, now = auth_client
     sign_in(client)
     original = client.get("/api/auth/session").json()["user"]
@@ -491,6 +516,7 @@ def test_custom_name_survives_google_profile_refresh_and_email_changes(auth_clie
 
 @pytest.mark.parametrize("name", ["", "  ", "x" * 81, "a\nb", "a\x00b", "a\x7fb", "a\u202eb", 123])
 def test_account_name_validation(auth_client, name):
+    """Verify profile edits reject invalid display names and attempts to replace account email."""
     client, _, _ = auth_client
     sign_in(client)
     assert client.patch("/api/account", json={"displayName": name}).status_code == 422
@@ -503,6 +529,7 @@ def test_account_name_validation(auth_client, name):
 
 
 def test_provider_rechecks_fail_closed_and_revocation_invalidates_every_login(auth_client):
+    """Verify failed provider rechecks block data and revocation invalidates every account login."""
     client, google, now = auth_client
     sign_in(client)
     first = client.cookies[COOKIE]
@@ -532,6 +559,7 @@ def test_provider_rechecks_fail_closed_and_revocation_invalidates_every_login(au
 
 @pytest.mark.parametrize("change", ["invalidGrant", "userinfoSubject", "refreshIdSubject"])
 def test_invalid_refresh_and_subject_changes_revoke_login(auth_client, change):
+    """Verify invalid grants or changed Google subjects revoke stored sessions and grants."""
     client, google, now = auth_client
     sign_in(client)
     if change == "invalidGrant":
@@ -549,6 +577,7 @@ def test_invalid_refresh_and_subject_changes_revoke_login(auth_client, change):
 
 
 def test_logout_is_idempotent_current_login_only_and_does_not_delete_finances(auth_client):
+    """Verify logout revokes only the current login, clears flows, and preserves financial data."""
     client, _, _ = auth_client
     sign_in(client)
     first = client.cookies[COOKIE]
@@ -573,6 +602,7 @@ def test_logout_is_idempotent_current_login_only_and_does_not_delete_finances(au
 
 
 def test_users_with_same_email_are_isolated_and_anonymous_data_is_not_claimed(auth_client):
+    """Verify Google subjects isolate finances despite shared email or an anonymous owner cookie."""
     client, google, _ = auth_client
     for subject in ("first", "second"):
         google.accounts[subject] = {"name": "Shared Name", "email": "same@example.com"}
@@ -611,6 +641,7 @@ def test_users_with_same_email_are_isolated_and_anonymous_data_is_not_claimed(au
 
 
 def test_account_delete_requires_confirmation_recent_login_and_erases_all_owned_rows(auth_client):
+    """Verify account erasure requires recent sign-in and explicit consent before deleting data."""
     client, _, now = auth_client
     sign_in(client)
     user = client.get("/api/auth/session").json()["user"]
@@ -655,6 +686,7 @@ def test_account_delete_requires_confirmation_recent_login_and_erases_all_owned_
 
 
 def test_csrf_guards_include_auth_and_account_mutations(auth_client):
+    """Verify authentication and account mutations require trusted same-origin request metadata."""
     client, _, _ = auth_client
     sign_in(client)
     for headers in (
@@ -683,6 +715,7 @@ def test_csrf_guards_include_auth_and_account_mutations(auth_client):
 
 
 def test_login_and_invalid_credential_limits_ignore_forwarded_ip(auth_client):
+    """Verify spoofed forwarded IP values cannot bypass login or invalid-credential rate limits."""
     client, _, now = auth_client
     for index in range(client.app.state.auth.config.login_limit):
         assert (
@@ -714,6 +747,7 @@ def test_login_and_invalid_credential_limits_ignore_forwarded_ip(auth_client):
 
 
 def test_account_mutations_and_login_storage_have_bounded_caps(auth_client, config):
+    """Verify profile mutation rates and retained login counts obey configured caps."""
     client, _, _ = auth_client
     sign_in(client)
     for index in range(config.auth.account_limit):
@@ -730,6 +764,7 @@ def test_account_mutations_and_login_storage_have_bounded_caps(auth_client, conf
 
 
 def test_callback_tokens_are_excluded_from_access_logs():
+    """Verify the access-log filter drops OAuth callbacks but retains health requests."""
     filter = CallbackLogFilter()
     record = logging.LogRecord(
         "uvicorn.access",
@@ -746,6 +781,7 @@ def test_callback_tokens_are_excluded_from_access_logs():
 
 
 def test_login_tokens_are_never_returned_in_session_or_errors(auth_client, caplog):
+    """Verify session responses and captured logs omit application and Google tokens."""
     client, google, _ = auth_client
     sign_in(client)
     response = client.get("/api/auth/session")
@@ -755,6 +791,7 @@ def test_login_tokens_are_never_returned_in_session_or_errors(auth_client, caplo
 
 
 def test_session_and_encrypted_google_grant_survive_process_and_browser_restart(tmp_path, config):
+    """Verify persisted login cookies and encrypted grants restore identity after app restart."""
     now = [NOW]
     environment = Environment(data_dir=tmp_path)
     application = auth_app(config, environment, lambda: now[0])
@@ -775,6 +812,7 @@ def test_session_and_encrypted_google_grant_survive_process_and_browser_restart(
 
 
 def test_https_canonical_origin_uses_host_only_prefixed_cookies(tmp_path, config):
+    """Verify canonical HTTPS origins use secure host-prefixed session cookies without a domain."""
     environment = Environment(
         data_dir=tmp_path, app_env="staging", public_origin="HTTPS://FINANCE.EXAMPLE:443"
     )
@@ -794,12 +832,14 @@ def test_https_canonical_origin_uses_host_only_prefixed_cookies(tmp_path, config
     "name", ["Host", "Origin", "Sec-Fetch-Site", "Content-Type", "Content-Length"]
 )
 def test_duplicate_security_headers_are_rejected(auth_client, name):
+    """Verify duplicate security-relevant headers are rejected as invalid request metadata."""
     client, _, _ = auth_client
     response = client.post("/api/auth/login", json={}, headers=[(name, ORIGIN), (name, ORIGIN)])
     assert response.status_code == 400 and response.json()["code"] == "invalidHeaders"
 
 
 def test_non_ascii_cookie_bytes_fail_as_credentials_not_server_errors(auth_client):
+    """Verify non-ASCII cookies return an uncached authentication failure, not a server error."""
     client, _, _ = auth_client
     response = client.get("/api/auth/session", headers=[(b"cookie", b"financeSession=\xff")])
     assert response.status_code == 401
@@ -808,6 +848,7 @@ def test_non_ascii_cookie_bytes_fail_as_credentials_not_server_errors(auth_clien
 
 @pytest.mark.parametrize("path", ["/api/session", "/api/session/call"])
 def test_delete_body_cannot_smuggle_an_owner_or_exceed_request_limit(auth_client, path, config):
+    """Verify deletion rejects owner fields, unsupported media types, and oversized bodies."""
     client, _, _ = auth_client
     sign_in(client)
     client.post("/api/session", json={})
@@ -824,6 +865,7 @@ def test_delete_body_cannot_smuggle_an_owner_or_exceed_request_limit(auth_client
 
 
 def test_account_deletion_transaction_failure_preserves_every_owned_row(auth_client):
+    """Verify failed erasure transactions preserve the account, grants, sessions, and commands."""
     client, _, _ = auth_client
     sign_in(client)
     client.post("/api/session", json={})
@@ -842,12 +884,14 @@ def test_account_deletion_transaction_failure_preserves_every_owned_row(auth_cli
 
 
 def test_unavailable_google_grant_revocation_does_not_undo_local_erasure(auth_client, monkeypatch):
+    """Verify failed Google revocation does not undo committed local account erasure."""
     client, google, _ = auth_client
     sign_in(client)
     client.post("/api/session", json={})
     attempts = []
 
     async def revoke(token):
+        """Record a revocation attempt and simulate an unavailable Google provider."""
         attempts.append(True)
         raise GoogleUnavailable()
 
@@ -861,6 +905,7 @@ def test_unavailable_google_grant_revocation_does_not_undo_local_erasure(auth_cl
 
 
 def test_flow_and_rate_key_storage_are_bounded_without_eviction_bypass(auth_client):
+    """Verify flow and rate-key caps reject excess entries until expiry instead of evicting them."""
     client, _, now = auth_client
     auth = client.app.state.auth
     auth.config = auth.config.model_copy(update={"max_flows": 2})
@@ -885,6 +930,7 @@ def test_flow_and_rate_key_storage_are_bounded_without_eviction_bypass(auth_clie
 
 
 def test_voice_start_attempts_and_command_conflicts_are_rate_limited(auth_client):
+    """Verify repeated voice-start failures and command conflicts exhaust their rate limits."""
     client, _, _ = auth_client
     sign_in(client)
     client.post("/api/session", json={})
@@ -903,10 +949,12 @@ def test_voice_start_attempts_and_command_conflicts_are_rate_limited(auth_client
 
 
 def test_auth_openapi_types_have_no_dangling_schema_references(auth_client):
+    """Verify authentication schemas resolve references and keep identity fields out of facts."""
     client, _, _ = auth_client
     schema = client.app.openapi()
 
     def check(value):
+        """Recursively resolve local schema references and fail on missing targets."""
         if isinstance(value, dict):
             if "$ref" in value:
                 target = schema
@@ -947,6 +995,7 @@ def test_auth_openapi_types_have_no_dangling_schema_references(auth_client):
 
 
 def test_browser_harness_runs_the_real_callback_without_a_debug_login_route(tmp_path, monkeypatch):
+    """Verify the browser harness authenticates through OAuth callbacks without a debug route."""
     monkeypatch.setenv("PUBLIC_ORIGIN", ORIGIN)
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     with TestClient(browser_app(), base_url=ORIGIN, headers={"Origin": ORIGIN}) as client:

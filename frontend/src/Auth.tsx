@@ -7,18 +7,20 @@ import type { AuthLoss, AuthSession, User } from './api';
 import { dismissAll } from './Toast';
 
 type Phase = 'restoring' | 'ready' | 'anonymous' | 'unavailable' | 'signingOut' | 'logoutUncertain';
-type AuthState = { phase: Phase; session: AuthSession | null; message: string };
+type AuthState = { phase: Phase; session: AuthSession | null; message: string; signedOut?: boolean };
 type AuthValue = AuthState & {
   check: (refresh?: boolean) => Promise<void>;
   logout: () => Promise<void>;
   updateUser: (user: User) => void;
-  deleted: () => void;
+  deleteAccount: () => Promise<void>;
+  deleting: boolean;
 };
 const AuthContext = createContext<AuthValue | null>(null);
 const initialState: AuthState = { phase: 'restoring', session: null, message: '' };
 // Visible sessions revalidate at most five minutes apart, and sooner near cookie expiry.
 const refreshInterval = 5 * 60 * 1000;
 
+/** Own authentication state, account actions, and cross-tab sign-in updates. */
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState(initialState);
   const current = useRef(state);
@@ -26,7 +28,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const mounted = useRef(false);
   const request = useRef<AbortController | null>(null);
   const channel = useRef<BroadcastChannel | null>(null);
+  const deletion = useRef<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
+  /** Apply authentication state and discard private UI data when identity changes. */
   const commit = useCallback((value: AuthState) => {
     if (!mounted.current) return;
     if (current.current.session?.user.id !== value.session?.user.id) {
@@ -37,8 +42,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setState(value);
   }, []);
 
+  /** Verify the current sign-in and reconcile authentication or connection failures. */
   const check = useCallback(async (refresh = false) => {
-    if (request.current || current.current.phase === 'signingOut') return;
+    if (request.current || deletion.current || current.current.phase === 'signingOut') return;
     const controller = new AbortController();
     request.current = controller;
     const version = ++generation.current;
@@ -63,12 +69,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [commit]);
 
-  const clear = useCallback((phase: Phase, message: string) => {
+  /** Clear the local sign-in and invalidate pending authentication checks. */
+  const clear = useCallback((phase: Phase, message: string, signedOut = false) => {
     generation.current++;
     request.current?.abort(); request.current = null;
-    commit({ phase, session: null, message });
+    commit({ phase, session: null, message, signedOut });
   }, [commit]);
 
+  /** Sign out while keeping private data hidden if server confirmation fails. */
   const logout = useCallback(async () => {
     if (current.current.phase === 'signingOut') return;
     clear('signingOut', 'Signing out…');
@@ -84,25 +92,49 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [clear, commit]);
 
+  /** Apply a saved profile for the active account and notify other tabs. */
   const updateUser = useCallback((user: User) => {
-    if (current.current.phase !== 'ready' || current.current.session?.user.id !== user.id) return;
+    if (deletion.current || current.current.phase !== 'ready' || current.current.session?.user.id !== user.id) return;
+    // An in-flight auth refresh may contain the pre-save profile and must not overwrite this result.
     generation.current++;
     request.current?.abort(); request.current = null;
     commit({ ...current.current, session: { ...current.current.session, user } });
     channel.current?.postMessage('profile');
   }, [commit]);
 
-  const deleted = useCallback(() => {
-    clear('anonymous', 'Your app account and its saved figures have been deleted. Your Google account is unchanged.');
-    channel.current?.postMessage('delete');
+  /** Delete the active app account and coordinate its signed-out state across tabs. */
+  const deleteAccount = useCallback(async () => {
+    const user = current.current.session?.user.id;
+    if (!user || deletion.current) return;
+    deletion.current = user;
+    generation.current++;
+    request.current?.abort(); request.current = null;
+    setDeleting(true);
+    try {
+      const result = await api.account.delete('DELETE');
+      if (!result.deleted) throw new Error('Account deletion was not confirmed.');
+      if (!mounted.current || current.current.session && current.current.session.user.id !== user) return;
+      clear('anonymous', '', true);
+      channel.current?.postMessage({ type: 'delete', userId: user });
+    } catch (error) {
+      if (mounted.current && error instanceof ApiError && error.status === 401
+        && (!current.current.session || current.current.session.user.id === user)) clear('anonymous', '', true);
+      throw error;
+    } finally {
+      deletion.current = null;
+      if (mounted.current) setDeleting(false);
+    }
   }, [clear]);
 
   useEffect(() => {
     mounted.current = true;
     void check();
+    /** Reconcile authentication loss without reviving a deleted or signing-out account. */
     const loss = (event: Event) => {
-      if (['signingOut', 'logoutUncertain'].includes(current.current.phase)) return;
       const code = (event as CustomEvent<AuthLoss>).detail;
+      if (code === 'accountDeleted') { clear('anonymous', '', true); return; }
+      if (deletion.current || current.current.signedOut) return;
+      if (['signingOut', 'logoutUncertain'].includes(current.current.phase)) return;
       clear('restoring', code === 'sessionExpired' ? 'Your sign-in has expired. Sign in again to continue.'
         : code === 'authUnavailable' ? '' : 'Please sign in again to continue.');
       void check();
@@ -110,16 +142,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const focus = () => {
       if (!document.hidden && current.current.phase === 'ready') void check(true);
     };
+    /** Revalidate sign-in when the browser restores a cached page. */
     const show = (event: PageTransitionEvent) => {
-      if (!event.persisted || ['signingOut', 'logoutUncertain'].includes(current.current.phase)) return;
+      if (!event.persisted || deletion.current || ['signingOut', 'logoutUncertain'].includes(current.current.phase)) return;
+      if (current.current.signedOut) return;
       clear('restoring', '');
       void check();
     };
     if (typeof BroadcastChannel !== 'undefined') {
       channel.current = new BroadcastChannel('cashflow-auth');
       channel.current.onmessage = (event: MessageEvent<unknown>) => {
+        if (event.data && typeof event.data === 'object' && 'type' in event.data && event.data.type === 'delete'
+          && 'userId' in event.data && (event.data.userId === current.current.session?.user.id || event.data.userId === deletion.current)) {
+          clear('anonymous', '', true); return;
+        }
+        if (deletion.current || current.current.signedOut) return;
         if (['signingOut', 'logoutUncertain'].includes(current.current.phase)) return;
-        if (event.data === 'logout' || event.data === 'delete') {
+        if (event.data === 'logout') {
           // A tab signal hides cached data but only the server can establish authentication.
           clear('restoring', 'Please sign in again to continue.');
           void check();
@@ -148,9 +187,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearTimeout(timer);
   }, [state, check]);
 
-  return <AuthContext.Provider value={{ ...state, check, logout, updateUser, deleted }}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={{ ...state, check, logout, updateUser, deleteAccount, deleting }}>{children}</AuthContext.Provider>;
 }
 
+/** Access authentication state and actions within the authentication provider. */
 export function useAuth() {
   const value = useContext(AuthContext);
   if (!value) throw new Error('Authentication provider is required.');

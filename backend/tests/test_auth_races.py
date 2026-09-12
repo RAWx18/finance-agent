@@ -27,6 +27,7 @@ from .test_voice import provider_doubles as provider_doubles
 
 @pytest.fixture
 async def auth_server(config, tmp_path):
+    """Provide a signed-in asynchronous app client with isolated storage and a mutable clock."""
     now = [NOW]
     application = auth_app(config, environment(tmp_path), lambda: now[0])
     async with application.router.lifespan_context(application):
@@ -40,6 +41,7 @@ async def auth_server(config, tmp_path):
 
 
 async def begin(client, application, subject="google-user-one"):
+    """Initiate login and return synthetic callback parameters for the requested Google subject."""
     response = await client.post("/api/auth/login", json={})
     assert response.status_code == 200
     url = response.json()["url"]
@@ -54,6 +56,7 @@ async def begin(client, application, subject="google-user-one"):
 async def test_authorized_inflight_requests_cannot_write_after_revocation(
     auth_server, monkeypatch, logout, path
 ):
+    """Verify requests authorized before logout or deletion cannot commit writes afterward."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -62,6 +65,7 @@ async def test_authorized_inflight_requests_cannot_write_after_revocation(
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(access):
+        """Pause after authorization so revocation can race with the pending write."""
         await check(access)
         reached.set()
         await release.wait()
@@ -92,6 +96,7 @@ async def test_authorized_inflight_requests_cannot_write_after_revocation(
 async def test_callback_consumed_before_logout_cannot_issue_a_login_afterward(
     auth_server, monkeypatch
 ):
+    """Verify logout invalidates a consumed callback still awaiting its token exchange."""
     application, client, _ = auth_server
     params = await begin(client, application)
     google = application.state.auth.google
@@ -99,6 +104,7 @@ async def test_callback_consumed_before_logout_cannot_issue_a_login_afterward(
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(method, url, **kwargs):
+        """Hold the token exchange until logout has invalidated the pending login."""
         if url == TOKEN:
             reached.set()
             await release.wait()
@@ -121,12 +127,14 @@ async def test_callback_consumed_before_logout_cannot_issue_a_login_afterward(
 async def test_callback_started_before_account_deletion_cannot_recreate_identity(
     auth_server, monkeypatch, anonymous
 ):
+    """Verify an in-flight callback cannot recreate an account deleted during token exchange."""
     application, client, _ = auth_server
     google = application.state.auth.google
     request = google.request
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(method, url, **kwargs):
+        """Hold token exchange while another browser deletes the account."""
         if url == TOKEN:
             reached.set()
             await release.wait()
@@ -159,6 +167,7 @@ async def test_callback_started_before_account_deletion_cannot_recreate_identity
 
 
 async def test_logout_of_prior_cookie_also_revokes_racing_replacement(auth_server):
+    """Verify logout using a prior cookie also revokes its racing replacement login."""
     application, client, _ = auth_server
     token = client.cookies[COOKIE]
     params = await begin(client, application)
@@ -183,6 +192,7 @@ async def test_logout_of_prior_cookie_also_revokes_racing_replacement(auth_serve
 async def test_refresh_network_io_releases_db_and_cannot_commit_after_logout(
     auth_server, monkeypatch
 ):
+    """Verify grant rechecks release the database lock and cannot commit after logout."""
     application, client, now = auth_server
     await client.post("/api/session", json={})
     before = await rows(application, "SELECT version, checked FROM auth_grants")
@@ -191,6 +201,7 @@ async def test_refresh_network_io_releases_db_and_cannot_commit_after_logout(
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(grant):
+        """Hold the provider grant check so logout can complete during network work."""
         reached.set()
         await release.wait()
         return await check(grant)
@@ -212,6 +223,7 @@ async def test_refresh_network_io_releases_db_and_cannot_commit_after_logout(
 async def test_logout_and_account_delete_close_existing_sse_without_financial_delivery(
     live_server, delete
 ):
+    """Verify revocation closes active event streams without delivering financial data."""
     client, store, _ = live_server
     await client.post("/api/session", json={})
     await client.post("/api/session/commands", json=command(facts("12345")))
@@ -227,7 +239,7 @@ async def test_logout_and_account_delete_close_existing_sse_without_financial_de
             assert (await client.post("/api/auth/logout", json={})).status_code == 204
         terminal = await frame(lines)
         assert (
-            "event: unauthenticated" in terminal
+            ("event: accountDeleted" if delete else "event: unauthenticated") in terminal
             and "12345" not in terminal
             and "opening" not in terminal
         )
@@ -240,6 +252,7 @@ async def test_logout_and_account_delete_close_existing_sse_without_financial_de
 
 
 async def test_expired_sse_login_closes_on_heartbeat(live_server):
+    """Verify a stream heartbeat detects expired login and releases its listener."""
     client, store, now = live_server
     await client.post("/api/session", json={})
     async with client.stream("GET", "/api/session/events") as response:
@@ -258,6 +271,7 @@ async def test_expired_sse_login_closes_on_heartbeat(live_server):
 async def test_voice_ends_and_pending_tools_cannot_mutate_after_revocation(
     auth_server, provider_doubles, monkeypatch, delete
 ):
+    """Verify revocation tears down voice resources and blocks pending tool writes."""
     application, client, _ = auth_server
     store, calls = application.state.store, application.state.calls
     await client.post("/api/session", json={})
@@ -272,6 +286,7 @@ async def test_voice_ends_and_pending_tools_cannot_mutate_after_revocation(
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(identity):
+        """Pause an authorized voice-tool write until account access is revoked."""
         await check(identity)
         reached.set()
         await release.wait()
@@ -301,6 +316,7 @@ async def test_voice_ends_and_pending_tools_cannot_mutate_after_revocation(
 async def test_voice_startup_auth_loss_returns_401_and_closes_resources(
     auth_server, provider_doubles, monkeypatch, stage, expire
 ):
+    """Verify authentication loss at every voice startup stage returns 401 and closes resources."""
     application, client, now = auth_server
     store, calls = application.state.store, application.state.calls
     await client.post("/api/session", json={})
@@ -309,6 +325,7 @@ async def test_voice_startup_auth_loss_returns_401_and_closes_resources(
         check = store.check
 
         async def paused(access):
+            """Pause authorization at the selected call-join or response-delivery boundary."""
             await check(access)
             call = calls.call
             if call and (
@@ -338,6 +355,7 @@ async def test_voice_startup_auth_loss_returns_401_and_closes_resources(
             operation = getattr(target, name)
 
         async def paused(*args):
+            """Pause after the selected provider startup operation has completed."""
             result = await operation(*args)
             reached.set()
             await release.wait()
@@ -378,6 +396,7 @@ async def test_voice_startup_auth_loss_returns_401_and_closes_resources(
 async def test_voice_state_reads_keep_locked_auth_guard_after_precheck(
     auth_server, monkeypatch, target
 ):
+    """Verify voice status and tool reads recheck revoked access after their initial precheck."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -388,6 +407,7 @@ async def test_voice_state_reads_keep_locked_auth_guard_after_precheck(
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(identity):
+        """Pause a validated access identity before the protected state read."""
         assert isinstance(identity, Access)
         await check(identity)
         reached.set()
@@ -411,6 +431,7 @@ async def test_voice_state_reads_keep_locked_auth_guard_after_precheck(
 
 
 async def test_account_delete_does_not_touch_another_user_or_their_pending_login(auth_server):
+    """Verify deleting an account preserves another user's finances and pending login flow."""
     application, client, _ = auth_server
     await client.post("/api/session", json={})
     async with httpx.AsyncClient(
@@ -432,6 +453,7 @@ async def test_account_delete_does_not_touch_another_user_or_their_pending_login
 
 
 async def test_one_use_flow_is_atomic_across_concurrent_callbacks(auth_server):
+    """Verify concurrent callbacks consume a one-use flow at most once."""
     application, client, _ = auth_server
     params = await begin(client, application)
     results = await asyncio.gather(
@@ -443,6 +465,7 @@ async def test_one_use_flow_is_atomic_across_concurrent_callbacks(auth_server):
 
 
 async def test_auth_cleanup_keeps_live_finance_and_removes_expired_flows(auth_server):
+    """Verify authentication cleanup removes expired flows without deleting live sessions."""
     application, client, now = auth_server
     await client.post("/api/session", json={})
     await begin(client, application)
@@ -457,6 +480,7 @@ async def test_auth_cleanup_keeps_live_finance_and_removes_expired_flows(auth_se
 async def test_cancelled_commit_cannot_leave_revoked_voice_or_streams_live(
     auth_server, provider_doubles, monkeypatch, delete
 ):
+    """Verify cancellation after revocation commits still shuts down voice and event streams."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -470,6 +494,7 @@ async def test_cancelled_commit_cannot_leave_revoked_voice_or_streams_live(
     commit = store.connection().commit
 
     async def paused_commit():
+        """Pause after committing revocation to expose cancellation before cleanup returns."""
         await commit()
         committed.set()
         await release.wait()
@@ -494,6 +519,7 @@ async def test_cancelled_commit_cannot_leave_revoked_voice_or_streams_live(
 
 
 async def test_clean_end_and_logout_preserve_figures_and_receipts(auth_server, provider_doubles):
+    """Verify clean call ending and logout preserve financial facts and command receipts."""
     application, client, _ = auth_server
     await client.post("/api/session", json={})
     submitted = command(facts("1234.56"))
@@ -501,11 +527,15 @@ async def test_clean_end_and_logout_preserve_figures_and_receipts(auth_server, p
     receipts = await rows(application, "SELECT * FROM commands")
     first = {"callId": str(uuid4())}
     assert (await client.post("/api/session/call", json=first)).status_code == 200
+    current = (await client.get("/api/session")).json()
+    assert current["facts"] == saved["facts"] and current["plan"] == saved["plan"]
     ended = await client.request("DELETE", "/api/session/call", json=first)
     assert ended.json()["cleanupConfirmed"] is True
-    assert (await client.get("/api/session")).json() == saved
+    assert (await client.get("/api/session")).json() == current
     second = {"callId": str(uuid4())}
     assert (await client.post("/api/session/call", json=second)).status_code == 200
+    current = (await client.get("/api/session")).json()
+    assert current["facts"] == saved["facts"] and current["plan"] == saved["plan"]
     call = application.state.calls.call
     stale = await client.request("DELETE", "/api/session/call", json=first)
     assert stale.json()["callId"] == first["callId"] and not call.stop.is_set()
@@ -514,6 +544,7 @@ async def test_clean_end_and_logout_preserve_figures_and_receipts(auth_server, p
     assert call.revoked and call.state.cleanup_confirmed
     assert (await client.post("/api/session/call", json=second)).status_code == 401
     await sign_in_async(client, application)
-    assert (await client.get("/api/session")).json() == saved
-    assert (await client.post("/api/session/commands", json=submitted)).json() == saved
+    assert (await client.get("/api/session")).json() == current
+    retry = await client.post("/api/session/commands", json=submitted)
+    assert retry.status_code == 409 and retry.json()["code"] == "conversationChanged"
     assert await rows(application, "SELECT * FROM commands") == receipts

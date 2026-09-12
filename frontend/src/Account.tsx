@@ -7,6 +7,7 @@ import { Dialog } from './Dialog';
 import { GoogleSignIn } from './Login';
 import { dismiss, notify } from './Toast';
 
+/** Present profile settings and confirmed app-account deletion. */
 export function Account() {
   const auth = useAuth();
   const user = auth.session!.user;
@@ -48,6 +49,7 @@ export function Account() {
       } } });
   }, [deleteFailed, deleting, requiresSignin, busy, confirmation]);
 
+  /** Validate and save the account's display name. */
   async function save() {
     if (!mounted.current || pending.current) return;
     const displayName = name.trim();
@@ -74,16 +76,14 @@ export function Account() {
     }
   }
 
+  /** Submit confirmed account deletion and surface any reauthentication requirement. */
   async function remove() {
     if (!mounted.current || !deleting || pending.current || confirmation !== 'DELETE' || requiresSignin) return;
     pending.current = true;
     setBusy(true); setDeleteFailed(false); dismiss('account:delete');
     const epoch = authEpoch();
     try {
-      const result = await api.account.delete('DELETE');
-      if (!mounted.current || epoch !== authEpoch()) return;
-      if (result.deleted) auth.deleted();
-      else setDeleteFailed(true);
+      await auth.deleteAccount();
     } catch (reason) {
       if (!mounted.current || epoch !== authEpoch()) return;
       if (reason instanceof ApiError && reason.status === 428 && reason.body.code === 'requiresSignin') {
@@ -124,6 +124,7 @@ export function Account() {
     </>}>
       <p>This irreversibly deletes all your app figures, plan and assumptions, signs out every app session, and stops any conversation.</p>
       <p><strong>Your Google account will not be deleted.</strong> Download your plan first if you want a copy.</p>
+      <p>Signing in again creates a new, empty app account. Deleted data cannot be restored.</p>
       {requiresSignin ? <><p className="notice">Sign in again with Google before deleting your app account. You’ll return here to confirm deletion again; signing in does not delete anything.</p>
         {deleting && <GoogleSignIn returnTo="/account" />}</> : <>
         <label htmlFor="delete-confirmation">Type DELETE to confirm</label>

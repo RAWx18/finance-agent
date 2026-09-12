@@ -34,6 +34,7 @@ type Action =
   | { type: 'saved'; snapshot: Snapshot }
   | { type: 'failure'; message: string; uncertain?: boolean; snapshot?: Snapshot | null };
 
+/** Apply a newer snapshot for the active session and describe assumption changes. */
 function receive(state: State, snapshot: Snapshot): State {
   if (!state.snapshot || snapshot.sessionId !== state.snapshot.sessionId || snapshot.sequence <= state.snapshot.sequence) return state;
   const cleared = (state.snapshot.accepted || state.snapshot.preview) && !snapshot.accepted && !snapshot.preview;
@@ -43,6 +44,7 @@ function receive(state: State, snapshot: Snapshot): State {
     : cleared ? 'Planning assumptions and preview cleared. The reported baseline is shown.' : state.messageKind === 'error' ? '' : state.message };
 }
 
+/** Reconcile session lifecycle, saved figures, pending commands, and user feedback. */
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'loaded': return { ...state, settings: action.settings, snapshot: action.snapshot, phase: action.snapshot ? 'ready' : 'empty', busy: false, message: '', messageKind: 'status' };
@@ -69,6 +71,7 @@ export function reducer(state: State, action: Action): State {
         clearAccepted: 'Planning assumptions and preview cleared. The reported baseline is shown.',
         respondToAction: 'Your answer is saved.',
       };
+      // A delayed save acknowledgment must clear the pending command without replacing newer streamed figures.
       return { ...receive(state, action.snapshot), pending: null, busy: false,
         messageKind: 'status',
         message: action.snapshot.sequence < state.snapshot.sequence
@@ -83,6 +86,7 @@ export function reducer(state: State, action: Action): State {
   }
 }
 
+/** Manage the financial session, live updates, conversation selection, and save recovery. */
 export function useSession() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [loadKey, reload] = useReducer((value: number) => value + 1, 0);
@@ -102,6 +106,7 @@ export function useSession() {
     const version = generation.current;
     const epoch = authEpoch();
     const current = () => !controller.signal.aborted && version === generation.current && epoch === authEpoch();
+    /** Restore application settings and the current saved financial session. */
     const load = async () => {
       try {
         const settings = await api.settings(controller.signal);
@@ -156,7 +161,7 @@ export function useSession() {
         dispatch({ type: 'terminal', phase: 'unavailable', message: 'The saved figures could not be read safely. Retry the connection.' });
       }
     });
-    for (const name of ['unauthenticated', 'sessionExpired', 'authUnavailable'] as const) {
+    for (const name of ['unauthenticated', 'sessionExpired', 'authUnavailable', 'accountDeleted'] as const) {
       source.addEventListener(name, () => {
         if (!current()) return;
         source.close(); controller.abort();
@@ -178,6 +183,7 @@ export function useSession() {
     }
     source.onerror = () => {
       if (!current()) { source.close(); return; }
+      // A later stream open or snapshot supersedes this probe, including any delayed terminal error.
       const version = ++recovery;
       dispatch({ type: 'connection', connection: 'reconnecting' });
       // EventSource hides HTTP errors; this one-off check distinguishes a terminal session from a dropped stream.
@@ -197,6 +203,7 @@ export function useSession() {
 
   useEffect(() => () => { generation.current += 1; }, []);
 
+  /** Select a saved conversation and confirm its financial workspace before continuing. */
   const selectConversation = useCallback(async (slug: string, signal: AbortSignal) => {
     if (signal.aborted || lock.current && !selection.current || state.pending) return;
     const prior = selection.current;
@@ -239,6 +246,7 @@ export function useSession() {
     }
   }, [state.pending]);
 
+  /** Start, delete, or save a plan while preserving unconfirmed commands for safe retry. */
   const perform = useCallback(async (action: 'start' | 'delete' | 'save', operation?: Command['operation']) => {
     if (lock.current) return;
     if (state.pending && action !== 'save') return;
@@ -268,6 +276,7 @@ export function useSession() {
         const snapshot = await api.start();
         if (current()) dispatch({ type: 'started', snapshot });
       } else {
+        // Reuse the command ID and expected revision because an unconfirmed save may already have committed.
         command = state.pending ?? {
           commandId: crypto.randomUUID(), expectedRevision: state.snapshot!.revision, operation: operation!,
         };
@@ -293,6 +302,7 @@ export function useSession() {
     }
   }, [state]);
 
+  /** Retry live updates or initial loading without discarding a retained snapshot. */
   function retryConnection() {
     if (state.busy || lock.current) return;
     if (state.snapshot) {

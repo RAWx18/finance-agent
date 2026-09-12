@@ -12,6 +12,7 @@ import { planningSnapshot, settings, Stream } from './fixtures';
 import { projectWorkspace } from './workspace';
 import { moneyRoutes } from '../src/moneyRoutes';
 
+/** Exposes promise settlement controls for authentication and request-race tests. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -19,15 +20,19 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** Models a BroadcastChannel so tests can inject cross-tab account messages. */
 class Channel {
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent<unknown>) => void) | null = null;
   postMessage = vi.fn();
   close = vi.fn();
+  /** Registers the channel instance for test-driven cross-tab events. */
   constructor() { Channel.instances.push(this); }
+  /** Delivers a synthetic broadcast payload to the installed message handler. */
   emit(value: unknown) { this.onmessage?.(new MessageEvent('message', { data: value })); }
 }
 
+/** Renders an app route, optionally under StrictMode, and exposes its memory router. */
 function show(path = '/app', strict = false) {
   const router = appRouter(path);
   const view = render(strict ? <StrictMode><RouterProvider router={router} /></StrictMode> : <RouterProvider router={router} />);
@@ -486,7 +491,7 @@ describe('auth expiry, revalidation and race isolation', () => {
 });
 
 describe('account profile and deliberate deletion', () => {
-  it('ignores a pending deletion after leaving the account page without claiming success', async () => {
+  it('finishes deletion after leaving Settings and navigates directly to the logged-out landing', async () => {
     const pending = deferred<{ deleted: true }>();
     vi.mocked(api.account.delete).mockReturnValue(pending.promise);
     const { router } = show('/account');
@@ -495,8 +500,11 @@ describe('account profile and deliberate deletion', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
     await act(async () => router.navigate('/app'));
     await act(async () => pending.resolve({ deleted: true }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(router.state.location.pathname).toBe('/login');
+    expect(router.state.location.search).toBe('');
     expect(screen.queryByText(/have been deleted/)).not.toBeInTheDocument();
-    expect(Channel.instances[0].postMessage).not.toHaveBeenCalledWith('delete');
+    expect(Channel.instances[0].postMessage).toHaveBeenCalledWith({ type: 'delete', userId: authSession().user.id });
     expect(api.account.delete).toHaveBeenCalledTimes(1);
   });
 
@@ -590,6 +598,7 @@ describe('account profile and deliberate deletion', () => {
     const dialog = screen.getByRole('dialog', { name: 'Delete your app account?' });
     expect(dialog).toHaveTextContent('irreversibly deletes all your app figures, plan and assumptions');
     expect(dialog).toHaveTextContent('stops any conversation'); expect(dialog).toHaveTextContent('Your Google account will not be deleted.');
+    expect(dialog).toHaveTextContent('Signing in again creates a new, empty app account. Deleted data cannot be restored.');
     const remove = within(dialog).getByRole('button', { name: 'Permanently delete app account' });
     expect(remove).toBeDisabled();
     const confirmation = within(dialog).getByRole('textbox', { name: 'Type DELETE to confirm' });
@@ -602,8 +611,94 @@ describe('account profile and deliberate deletion', () => {
     await act(async () => pending.resolve({ deleted: true }));
     await screen.findByRole('button', { name: 'Continue with Google' });
     expect(screen.queryByText('user-one@example.com')).not.toBeInTheDocument();
-    expect(Channel.instances[0].postMessage).toHaveBeenCalledWith('delete');
+    expect(Channel.instances[0].postMessage).toHaveBeenCalledWith({ type: 'delete', userId: authSession().user.id });
     expect(Stream.instances.every(item => item.closed)).toBe(true);
+  });
+
+  it('cannot restore a deleted account from an in-flight refresh or browser history', async () => {
+    const refresh = deferred<AuthSession>();
+    vi.mocked(api.auth.refresh).mockReturnValue(refresh.promise);
+    const { router } = show('/account');
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
+    await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(api.auth.refresh).toHaveBeenCalledOnce());
+    const signal = vi.mocked(api.auth.refresh).mock.calls[0][0]!;
+    vi.mocked(api.auth.session).mockRejectedValue(unauthenticated());
+    await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(signal.aborted).toBe(true);
+    await act(async () => refresh.resolve(authSession()));
+    expect(router.state.location.pathname).toBe('/login');
+    expect(screen.queryByRole('button', { name: 'Profile menu' })).not.toBeInTheDocument();
+    act(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(screen.queryByDisplayValue('Sam')).not.toBeInTheDocument();
+    expect(api.auth.login).not.toHaveBeenCalled();
+  });
+
+  it('handles committed deletion before the HTTP body without recovery or a Settings return path', async () => {
+    const body = deferred<string>();
+    vi.mocked(api.account.delete).mockRestore();
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, text: () => body.promise } as Response);
+    const { router } = show('/account');
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
+    await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
+    vi.mocked(api.auth.session).mockRejectedValue(new TypeError('Auth check must not run after deletion'));
+    act(() => reportAuthLoss('accountDeleted'));
+    const signin = await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(signin).toBeDisabled();
+    expect(router.state.location.pathname).toBe('/login'); expect(router.state.location.search).toBe('');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your saved plan is safe|Opening your plan|Please sign in again|Your sign-in|have been deleted/)).not.toBeInTheDocument();
+    expect(api.auth.session).toHaveBeenCalledTimes(1);
+    expect(Stream.instances.every(stream => stream.closed)).toBe(true);
+    await act(async () => body.resolve('{"deleted":true}'));
+    await waitFor(() => expect(signin).toBeEnabled());
+    expect(Channel.instances[0].postMessage).toHaveBeenCalledWith({ type: 'delete', userId: authSession().user.id });
+    act(() => reportAuthLoss('unauthenticated'));
+    expect(signin).toBeVisible(); expect(api.auth.session).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let a concurrent auth failure discard a successful deletion', async () => {
+    const pending = deferred<{ deleted: true }>();
+    vi.mocked(api.account.delete).mockReturnValue(pending.promise);
+    const { router } = show('/account');
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
+    await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
+    act(() => reportAuthLoss('unauthenticated'));
+    expect(api.auth.session).toHaveBeenCalledTimes(1);
+    await act(async () => pending.resolve({ deleted: true }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(router.state.location.pathname).toBe('/login'); expect(router.state.location.search).toBe('');
+    expect(screen.queryByText(/Your saved plan is safe|Please sign in again|have been deleted/)).not.toBeInTheDocument();
+  });
+
+  it('handles another tab deleting this account quietly without signing out a different account', async () => {
+    const { router } = show('/account');
+    await screen.findByDisplayValue('Sam');
+    act(() => Channel.instances[0].emit({ type: 'delete', userId: 'different-user' }));
+    expect(screen.getByDisplayValue('Sam')).toBeVisible();
+    act(() => Channel.instances[0].emit({ type: 'delete', userId: authSession().user.id }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(router.state.location.pathname).toBe('/login'); expect(router.state.location.search).toBe('');
+    expect(api.auth.session).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/Your saved plan is safe|Please sign in again|have been deleted/)).not.toBeInTheDocument();
+  });
+
+  it('does not retain a revoked login when deletion returns unauthorized', async () => {
+    vi.mocked(api.account.delete).mockRejectedValue(unauthenticated());
+    const { router } = show('/account');
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
+    await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(router.state.location.pathname).toBe('/login'); expect(router.state.location.search).toBe('');
+    expect(screen.queryByDisplayValue('Sam')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Your saved plan is safe|Please sign in again|have been deleted/)).not.toBeInTheDocument();
+    expect(Channel.instances[0].postMessage).not.toHaveBeenCalled();
   });
 
   it('handles requiresSignin without auto-deleting after Google or retaining confirmation', async () => {

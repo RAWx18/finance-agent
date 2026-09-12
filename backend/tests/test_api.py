@@ -20,6 +20,7 @@ from .test_finance import scenario_two
 
 
 def test_real_edit_review_export_and_delete(client):
+    """Verify session creation, fact editing, export, replay, and deletion through the API."""
     assert client.get("/health/live").json() == {"status": "ok"}
     assert client.get("/health/ready").status_code == 200
     settings = client.get("/api/settings").json()
@@ -53,6 +54,7 @@ def test_real_edit_review_export_and_delete(client):
 
 
 def test_stale_draft_and_idempotency_do_not_replace_newer_state(client):
+    """Verify stale commands and replayed requests cannot overwrite newer session facts."""
     client.post("/api/session", json={})
     first = command(facts("10"))
     result = client.post("/api/session/commands", json=first).json()
@@ -70,6 +72,7 @@ def test_stale_draft_and_idempotency_do_not_replace_newer_state(client):
 
 
 def test_sessions_are_cookie_owned_not_session_id(client):
+    """Verify authenticated cookies enforce session ownership regardless of supplied IDs."""
     first = client.post("/api/session", json={}).json()
     token = client.cookies[COOKIE]
     client.post("/api/session/commands", json=command(facts("100")))
@@ -96,11 +99,13 @@ def test_sessions_are_cookie_owned_not_session_id(client):
     ],
 )
 def test_csrf_and_host_rejection(client, headers):
+    """Verify unsafe origins, fetch-site metadata, and hosts cannot mutate sessions."""
     assert client.post("/api/session", json={}, headers=headers).status_code == 403
     assert client.delete("/api/session", headers=headers).status_code == 403
 
 
 def test_json_validation_and_size_boundary(client, config):
+    """Verify invalid media types, oversized bodies, and malformed facts fail without leaks."""
     assert client.post("/api/session", content="{}").status_code == 415
     assert client.post("/api/session", json={"extra": 1}).status_code == 422
     assert (
@@ -126,6 +131,7 @@ def test_json_validation_and_size_boundary(client, config):
 
 
 def test_expiry_anchor_and_restart(tmp_path, config):
+    """Verify day refresh and restart preserve session state until its fixed expiry."""
     now = [NOW]
     environment = Environment(data_dir=tmp_path)
     application = auth_app(config, environment, lambda: now[0])
@@ -162,6 +168,7 @@ def test_expiry_anchor_and_restart(tmp_path, config):
 
 
 def test_secure_cookie_and_config_errors(tmp_path, config):
+    """Verify staging cookies are secure and invalid deployment or finance settings fail."""
     environment = Environment(
         data_dir=tmp_path, app_env="staging", public_origin="https://finance.example"
     )
@@ -184,6 +191,7 @@ def test_secure_cookie_and_config_errors(tmp_path, config):
 
 
 def test_static_spa_paths_and_api_never_fall_back(tmp_path, config):
+    """Verify protected SPA redirects and unknown routes never expose fallback files."""
     static = tmp_path / "dist"
     static.mkdir()
     (static / "index.html").write_text("<!doctype html><title>Finance</title>")
@@ -235,6 +243,7 @@ def test_static_spa_paths_and_api_never_fall_back(tmp_path, config):
     ],
 )
 def test_protected_spa_signin_roundtrip_and_expiry(tmp_path, config, path):
+    """Verify protected pages retain their return path through sign-in and idle expiry."""
     static = tmp_path / "dist"
     static.mkdir()
     (static / "index.html").write_text("<!doctype html><title>Finance</title>")
@@ -283,6 +292,7 @@ def test_protected_spa_signin_roundtrip_and_expiry(tmp_path, config, path):
     ],
 )
 def test_unknown_money_spa_paths_never_serve_html(tmp_path, config, path, authenticated):
+    """Verify unknown money routes return not-found errors regardless of authentication."""
     static = tmp_path / "dist"
     (static / "money").mkdir(parents=True)
     (static / "index.html").write_text("<!doctype html><title>Finance</title>")
@@ -300,6 +310,7 @@ def test_unknown_money_spa_paths_never_serve_html(tmp_path, config, path, authen
 
 
 def test_export_labels_cannot_be_html_or_header_injection(client):
+    """Verify exports containing script-like labels remain non-sniffable text attachments."""
     client.post("/api/session", json={})
     data = facts("0", [record("label", "essential", "1", None, label="<script>alert(1)</script>")])
     assert client.post("/api/session/commands", json=command(data)).status_code == 200
@@ -310,6 +321,7 @@ def test_export_labels_cannot_be_html_or_header_injection(client):
 
 
 def test_schema_and_import_have_no_database_side_effect(tmp_path, config):
+    """Verify app and schema construction avoid storage writes and expose strict contracts."""
     data_dir = tmp_path / "absent"
     application = create_app(config, Environment(data_dir=data_dir))
     assert not data_dir.exists()
@@ -335,6 +347,7 @@ def test_schema_and_import_have_no_database_side_effect(tmp_path, config):
 
 
 def test_call_identity_and_deadline_contract(client, config):
+    """Verify call requests enforce identity, expose deadlines, and retain ended-call state."""
     client.post("/api/session", json={})
     for method in ("POST", "DELETE"):
         for body in ({}, {"callId": "invalid"}, {"callId": str(uuid4()), "extra": True}):
@@ -346,13 +359,17 @@ def test_call_identity_and_deadline_contract(client, config):
     body = {"callId": str(uuid4())}
     response = client.request("DELETE", "/api/session/call", json=body)
     assert response.json() == {
-        **body, "status": "ended", "cleanupConfirmed": True, "message": None,
+        **body,
+        "status": "ended",
+        "cleanupConfirmed": True,
+        "message": None,
     }
     assert client.request("DELETE", "/api/session/call", json=body).json() == response.json()
     assert client.post("/api/session/call", json=body).json()["code"] == "callEnded"
 
 
 def test_timezone_works_without_system_zoneinfo():
+    """Verify Kolkata timezone resolution works without a system zoneinfo search path."""
     reset_tzpath([])
     try:
         assert NOW.astimezone(ZoneInfo.no_cache("Asia/Kolkata")).utcoffset() == timedelta(

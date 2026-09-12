@@ -6,7 +6,6 @@ import { isHistoryRoute } from './historyRoutes';
 export type Snapshot = components['schemas']['Snapshot'];
 export type Settings = components['schemas']['Settings'];
 export type FactsInput = components['schemas']['FactsInput'];
-export type RecordInput = components['schemas']['RecordInput'];
 export type MoneyInput = components['schemas']['MoneyInput'];
 export type Command = components['schemas']['Command'];
 export type ApiEnvelope = components['schemas']['Error'];
@@ -22,15 +21,19 @@ export type AuthSession = components['schemas']['AuthSession'];
 export type AuthSettings = components['schemas']['AuthSettings'];
 export type User = components['schemas']['User'];
 export type ReturnPath = components['schemas']['LoginRequest']['returnTo'];
-export type AuthLoss = 'unauthenticated' | 'sessionExpired' | 'authUnavailable';
+export type AuthLoss = 'unauthenticated' | 'sessionExpired' | 'authUnavailable' | 'accountDeleted';
 
 let generation = 0;
+/** Read the authentication generation used to identify stale asynchronous work. */
 export const authEpoch = () => generation;
+/** Invalidate protected requests belonging to the prior authentication state. */
 export function invalidateRequests() { generation++; }
+/** Notify the authentication provider of a loss reported by the current generation. */
 export function reportAuthLoss(code: AuthLoss, epoch = generation) {
   if (epoch === generation) window.dispatchEvent(new CustomEvent<AuthLoss>('auth:loss', { detail: code }));
 }
 
+/** Represent an API failure with its HTTP status and structured service error. */
 export class ApiError extends Error {
   constructor(public status: number, public body: ApiEnvelope) {
     super(body.message);
@@ -38,6 +41,7 @@ export class ApiError extends Error {
 }
 
 // JSON numbers crossing the boundary must retain every paise and sequence digit.
+/** Reject unsafe numeric values while decoding API responses. */
 export function exactNumbers(_key: string, value: unknown): unknown {
   if (typeof value === 'number' && !Number.isSafeInteger(value)) {
     throw new Error('The saved figures could not be read safely.');
@@ -45,6 +49,7 @@ export function exactNumbers(_key: string, value: unknown): unknown {
   return value;
 }
 
+/** Validate a saved financial snapshot and its workspace references before use. */
 export function readSnapshot(value: unknown): Snapshot {
   const snapshot = value as Snapshot | null;
   if (!snapshot || typeof snapshot.sessionId !== 'string' || !snapshot.sessionId
@@ -92,6 +97,7 @@ export function readSnapshot(value: unknown): Snapshot {
   return snapshot;
 }
 
+/** Validate the conversation settings required by the frontend. */
 export function readSettings(value: unknown): Settings {
   const settings = value as Settings | null;
   if (!settings || typeof settings.assistantName !== 'string' || !settings.assistantName.trim()
@@ -102,6 +108,7 @@ export function readSettings(value: unknown): Settings {
   return settings;
 }
 
+/** Validate the account identity and profile fields used by the frontend. */
 function readUser(value: unknown): User {
   const user = value as User | null;
   if (!user || typeof user.googleName !== 'string' || !['id', 'displayName', 'email'].every(key => {
@@ -111,8 +118,10 @@ function readUser(value: unknown): User {
   return user;
 }
 
+/** Validate a saved-conversation detail response or history listing. */
 function readHistory(value: unknown, detail: boolean) {
   const validDate = (date: unknown) => typeof date === 'string' && Number.isFinite(Date.parse(date));
+  /** Check the identity, timing, and message count of a conversation summary. */
   const summary = (item: ConversationSummary | null) => !!item && typeof item.slug === 'string'
     && isHistoryRoute(`/history/${item.slug}`) && typeof item.title === 'string' && item.title.trim().length > 0
     && validDate(item.startedAt) && validDate(item.expiresAt) && (item.endedAt === null || validDate(item.endedAt))
@@ -133,12 +142,14 @@ function readHistory(value: unknown, detail: boolean) {
   }
 }
 
+/** Send an API request and validate its response within the current authentication context. */
 async function request<T>(path: string, init?: RequestInit, text = false): Promise<T> {
   const epoch = generation;
   const response = await fetch(`/api/${path}`, { ...init, credentials: 'same-origin' });
   const content = await response.text();
   const protectedRequest = !path.startsWith('auth/');
-  if (protectedRequest && epoch !== generation) throw new DOMException('Request no longer current', 'AbortError');
+  // AuthProvider owns deletion completion even when revocation invalidates ordinary requests.
+  if (protectedRequest && !(path === 'account' && init?.method === 'DELETE') && epoch !== generation) throw new DOMException('Request no longer current', 'AbortError');
   if (!response.ok) {
     let body: ApiEnvelope;
     try {
@@ -200,63 +211,86 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
     ? readSnapshot(value) : value) as T;
 }
 
+/** Expose the application's account, conversation, and financial-session API operations. */
 export const api = {
   history: {
+    /** Fetch saved conversations, optionally filtered by search text. */
     list: (search = '', signal?: AbortSignal) => request<components['schemas']['ConversationList']>(
       `history${search ? `?${new URLSearchParams({ search })}` : ''}`, { signal }),
+    /** Fetch a saved conversation and its messages. */
     get: (slug: string, signal?: AbortSignal) => request<SavedConversation>(`history/${encodeURIComponent(slug)}`, { signal }),
+    /** Select a saved conversation's financial workspace without starting a call. */
     continue: async (slug: string, signal?: AbortSignal) => {
       if (!isHistoryRoute(`/history/${slug}`)) throw new Error('Invalid conversation.');
       return request<Snapshot>(`history/${slug}/continue`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal,
       });
     },
+    /** Fetch a saved conversation's plain-text caption export. */
     transcript: (slug: string, signal?: AbortSignal) => request<string>(`history/${encodeURIComponent(slug)}/transcript`, { signal }, true),
   },
   auth: {
+    /** Fetch Google sign-in availability and session settings. */
     settings: (signal?: AbortSignal) => request<AuthSettings>('auth/settings', { signal }),
+    /** Fetch the current authenticated session. */
     session: (signal?: AbortSignal) => request<AuthSession>('auth/session', { signal }),
+    /** Revalidate the current sign-in session. */
     refresh: (signal?: AbortSignal) => request<AuthSession>('auth/refresh', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal,
     }),
+    /** Begin Google sign-in for a permitted return destination. */
     login: (returnTo: ReturnPath) => request<components['schemas']['LoginURL']>('auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnTo }),
     }),
+    /** End the current sign-in session. */
     logout: () => request<void>('auth/logout', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
     }),
   },
   account: {
+    /** Save the account's display name. */
     update: (displayName: string) => request<User>('account', {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName }),
     }),
+    /** Permanently delete the app account after explicit confirmation. */
     delete: (confirmation: 'DELETE') => request<components['schemas']['AccountDeleted']>('account', {
       method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmation }),
     }),
   },
+  /** Fetch the current call's status and cleanup confirmation. */
   call: (signal?: AbortSignal) => request<CallState>('session/call', { signal }),
+  /** Request call credentials for a new or selected saved conversation. */
   startCall: async (callId: string, conversationSlug?: string) => {
     if (conversationSlug !== undefined && !isHistoryRoute(`/history/${conversationSlug}`)) throw new Error('Invalid conversation.');
     return request<CallJoin>('session/call', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callId, conversationSlug }),
     });
   },
+  /** Request termination of the specified owned call. */
   endCall: (callId: string, signal?: AbortSignal) => request<CallState>('session/call', {
     method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callId }), keepalive: true, signal,
   }),
+  /** Fetch and validate application settings. */
   settings: (signal?: AbortSignal) => request<Settings>('settings', { signal }).then(readSettings),
+  /** Fetch the current saved financial snapshot. */
   current: (signal?: AbortSignal) => request<Snapshot>('session', { signal }),
+  /** Fetch eligible planning adjustments for the current saved figures. */
   options: (signal?: AbortSignal) => request<AdjustmentOptions>('session/options', { signal }),
+  /** Create or retrieve the current financial session. */
   start: () => request<Snapshot>('session', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
   }),
+  /** Submit a financial command and return the confirmed snapshot. */
   save: (command: Command) => request<Snapshot>('session/commands', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(command),
   }),
+  /** Fetch a plain-text export of the saved plan. */
   export: () => request<string>('session/export', undefined, true),
+  /** Delete the current plan and its associated conversations. */
   delete: () => request<components['schemas']['Deleted']>('session', { method: 'DELETE' }),
 };
 
+/** Describe a saved-conversation failure with guidance for recovery. */
 export function conversationError(error: unknown): string {
   if (error instanceof ApiError) {
     if ([403, 404, 410].includes(error.status)) return 'This conversation is unavailable. It may have expired or been deleted. Choose another conversation.';
@@ -268,6 +302,7 @@ export function conversationError(error: unknown): string {
   return 'Couldn’t open this conversation. Check your connection, then try Continue talking again.';
 }
 
+/** Describe a financial-session failure with guidance for the attempted operation. */
 export function errorMessage(error: unknown, operation?: Command['operation']['type']): string {
   if (!(error instanceof ApiError)) return 'We could not reach your projection. Check your connection and retry.';
   if (error.body.code === 'invalidStoredState') return 'The service is reachable, but your saved figures could not be read. They have not been deleted.';
