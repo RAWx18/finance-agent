@@ -225,10 +225,19 @@ class Auth:
             or row["token_expires"] <= self.now()
         )
 
+    def overdue(self, row: sqlite3.Row) -> bool:
+        """Determine whether an unverified grant may no longer be served."""
+        # A due recheck that Google could not answer keeps a still-valid token usable briefly.
+        return bool(
+            row["checked"] + self.config.recheck_seconds + self.config.recheck_grace_seconds
+            <= self.now()
+            or row["token_expires"] <= self.now()
+        )
+
     async def guard_locked(self, access: Access) -> None:
         """Require a valid, recently checked session while the store lock is held."""
         row = await self.row_locked(access)
-        if not self.environment.google_available or self.due(row):
+        if not self.environment.google_available or self.overdue(row):
             raise AuthProblem(503, "authUnavailable")
 
     def encrypt(self, value: str) -> str:
@@ -322,7 +331,9 @@ class Auth:
                         await self.guard_locked(access)
         except (GoogleUnavailable, TimeoutError):
             logger.warning("authProviderUnavailable")
-            raise AuthProblem(503, "authUnavailable") from None
+            async with self.store.lock:
+                if self.overdue(await self.row_locked(access)):
+                    raise AuthProblem(503, "authUnavailable") from None
 
     def session_value(self, row: sqlite3.Row) -> AuthSession:
         """Build the public user session with its effective expiration time."""

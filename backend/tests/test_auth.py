@@ -3,7 +3,7 @@
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 from uuid import UUID, uuid4
 
@@ -529,7 +529,7 @@ def test_account_name_validation(auth_client, name):
 
 
 def test_provider_rechecks_fail_closed_and_revocation_invalidates_every_login(auth_client):
-    """Verify failed provider rechecks block data and revocation invalidates every account login."""
+    """Verify failed rechecks block data after the grace and revocation invalidates logins."""
     client, google, now = auth_client
     sign_in(client)
     first = client.cookies[COOKIE]
@@ -541,6 +541,11 @@ def test_provider_rechecks_fail_closed_and_revocation_invalidates_every_login(au
     assert first != second and len(query(client, "SELECT * FROM auth_sessions")) == 2
     now[0] += timedelta(seconds=299)
     google.failure = GoogleUnavailable()
+    assert client.get("/api/session").json() == financial
+    # A transient provider outage at the due recheck keeps a still-valid grant serving briefly.
+    now[0] += timedelta(seconds=1)
+    assert client.get("/api/session").json() == financial
+    now[0] += timedelta(seconds=59)
     assert client.get("/api/session").json() == financial
     now[0] += timedelta(seconds=1)
     response = client.get("/api/session/export")
@@ -555,6 +560,20 @@ def test_provider_rechecks_fail_closed_and_revocation_invalidates_every_login(au
     assert not query(client, "SELECT * FROM auth_grants")
     assert len(query(client, "SELECT * FROM sessions")) == 1
     assert client.get("/api/session", headers={"Cookie": COOKIE + "=" + first}).status_code == 401
+
+
+def test_expired_token_gets_no_provider_outage_grace(auth_client):
+    """Verify an outage grace never serves a grant whose access token has itself expired."""
+    client, google, now = auth_client
+    sign_in(client)
+    client.post("/api/session", json={})
+    expires = query(client, "SELECT expires FROM auth_grants")[0][0]
+    now[0] = datetime.fromtimestamp(expires, UTC)
+    google.failure = GoogleUnavailable()
+    response = client.get("/api/session")
+    assert response.status_code == 503 and response.json()["code"] == "authUnavailable"
+    google.failure = None
+    assert client.get("/api/session").status_code == 200
 
 
 @pytest.mark.parametrize("change", ["invalidGrant", "userinfoSubject", "refreshIdSubject"])

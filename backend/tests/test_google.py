@@ -210,6 +210,7 @@ async def test_real_provider_http_error_mapping(
     config, tmp_path, monkeypatch, status, payload, error
 ):
     """Verify provider HTTP errors map to safe authentication exceptions without leaking bodies."""
+
     async def respond(request):
         """Return the configured synthetic provider payload and HTTP status."""
         return web.json_response(payload, status=status)
@@ -290,6 +291,7 @@ async def test_non_json_userinfo_rejection_invalidates_credentials(
     config, tmp_path, monkeypatch, status
 ):
     """Verify empty non-JSON userinfo authorization failures reject credentials."""
+
     async def rejected(request):
         """Return an empty authorization-failure response with the configured status."""
         return web.Response(status=status, text="")

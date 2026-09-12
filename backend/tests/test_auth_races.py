@@ -12,7 +12,7 @@ import pytest
 
 from app.auth import COOKIE, FLOW_COOKIE, AuthProblem
 from app.auth_models import Access
-from app.google import TOKEN, digest
+from app.google import TOKEN, GoogleUnavailable, digest
 from app.store import Problem
 from app.voice_tools import VoiceTools
 
@@ -462,6 +462,31 @@ async def test_one_use_flow_is_atomic_across_concurrent_callbacks(auth_server):
     assert sum(response.headers["location"] == "/app" for response in results) == 1
     assert not await rows(application, "SELECT * FROM auth_flows")
     assert len(await rows(application, "SELECT * FROM auth_sessions")) <= 1
+
+
+async def test_transient_provider_outage_at_recheck_keeps_voice_tools_working(auth_server):
+    """Verify a voice tool write during a Google outage at recheck time still commits in grace."""
+    application, client, now = auth_server
+    store = application.state.store
+    google = application.state.auth.google
+    await client.post("/api/session", json={})
+    access = Access(
+        (await client.get("/api/auth/session")).json()["user"]["id"], digest(client.cookies[COOKIE])
+    )
+    tools = VoiceTools(store, access, uuid4(), lambda snapshot: None)
+    tools.user_turn = "I have 200 rupees."
+    now[0] += timedelta(seconds=300)
+    google.failure = GoogleUnavailable()
+    result = await tools.invoke(
+        "update_facts", {"expectedRevision": 0, "opening": money("200")}, "during-outage"
+    )
+    assert result["saved"] is True
+    assert (await store.get(access)).facts.opening.amount_paise == 20000
+    now[0] += timedelta(seconds=60)
+    late = await tools.invoke("read_state", {}, "after-grace")
+    assert late["code"] == "authUnavailable"
+    google.failure = None
+    assert "code" not in await tools.invoke("read_state", {}, "recovered")
 
 
 async def test_auth_cleanup_keeps_live_finance_and_removes_expired_flows(auth_server):

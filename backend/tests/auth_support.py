@@ -155,7 +155,10 @@ def browser_app():
         }
     )
     environment = auth_environment(Environment.load())
-    return create_app(config, environment, google=BrowserGoogle(config.auth, environment, utc_now))
+    application = auth_app(
+        config, environment, google=BrowserGoogle(config.auth, environment, utc_now)
+    )
+    return application
 
 
 def auth_environment(environment):
@@ -173,8 +176,18 @@ def auth_environment(environment):
 def auth_app(config, environment, clock=utc_now, static_dir=None, google=None):
     """Build an app with test authentication credentials and an injectable Google double."""
     environment = auth_environment(environment)
+    # Recheck timing tests advance a mutable clock by a fixed five-minute interval.
+    config = config.model_copy(
+        update={
+            "auth": AuthConfig.model_validate(
+                {**config.auth.model_dump(), "recheck_seconds": 300, "recheck_grace_seconds": 60}
+            )
+        }
+    )
     google = google or GoogleDouble(config.auth, environment, clock)
-    return create_app(config, environment, clock, static_dir, google)
+    google.config = config.auth
+    application = create_app(config, environment, clock, static_dir, google)
+    return application
 
 
 def sign_in(client, subject="google-user-one", return_to="/app"):

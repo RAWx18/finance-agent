@@ -44,7 +44,11 @@ user_days = 30
 session_hours = 168
 idle_hours = 24
 oauth_seconds = 300
-recheck_seconds = 300
+# A recheck reaches Google; a provider outage at that moment fails closed, so keep it rarer
+# than a full call (call_seconds) while still detecting revoked grants within the hour.
+recheck_seconds = 1800
+# While Google is unreachable, a still-valid grant keeps serving for this long past a due recheck.
+recheck_grace_seconds = 120
 recent_signin_seconds = 900
 provider_timeout_seconds = 5
 provider_max_bytes = 65536
