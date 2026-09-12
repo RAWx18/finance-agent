@@ -190,7 +190,7 @@ test('provider double: focused Conversation stays in session through End and rec
     await expect(journey.getByText(/^(Review|Take your plan)$/)).toHaveCount(0);
     await expect(journey.getByRole('button', { name: /^(Review saved picture|Finish review|Return to conversation|Continue talking|Download.*)$/ })).toHaveCount(0);
     await expect(journey.getByRole('link', { name: /^(View full plan|Download.*)$/ })).toHaveCount(0);
-    await expect(picture.locator('.plan-summary')).toHaveCount(1);
+    await expect(picture.getByRole('region', { name: 'Financial status', exact: true })).toHaveCount(1);
     await expect(journey.locator('.conversation-pane')).toBeVisible();
     await expect(journey.locator('.financial-pane')).toBeVisible();
     await expect(controls).toBeVisible();

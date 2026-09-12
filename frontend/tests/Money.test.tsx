@@ -89,12 +89,12 @@ it('leads with the early gap even with a positive closing result and gives one s
   await open();
   const attention = screen.getByRole('region', { name: 'What needs attention' });
   expect(within(attention).getByText('₹7,000', { selector: 'strong' })).toBeVisible();
-  expect(attention).toHaveTextContent('short on 13 Sept');
+  expect(attention).toHaveTextContent('First shortfall · 13 Sept');
   expect(attention).toHaveTextContent('Discuss payment options');
   await userEvent.click(within(attention).getByRole('button', { name: 'Discuss payment options' }));
   expect(screen.getByRole('dialog', { name: 'Your next step' })).toHaveTextContent('Contact the provider before the due date.');
   await userEvent.click(screen.getByRole('button', { name: 'Close your next step' }));
-  expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Left at the end₹10,000');
+  expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Closing forecast₹10,000');
   await userEvent.click(screen.getByRole('button', { name: 'View calculation' }));
   const detail = screen.getByRole('dialog', { name: 'Plan details' });
   expect(detail).toHaveTextContent('₹10,000'); expect(detail).toHaveTextContent('₹16,000');
@@ -427,7 +427,7 @@ it('shows unknown opening and undated items without fabricated zero balances', a
   expect(cash).toHaveTextContent('Starting cashUnknown11 Sept');
   const attention = screen.getByRole('region', { name: 'What needs attention' });
   for (const value of within(attention).queryAllByText('₹0.00', { exact: true })) expect(value).not.toBeVisible();
-  expect(within(attention).getByRole('heading', { name: 'Start with the cash you have' })).toBeVisible();
+  expect(within(attention).getByRole('heading', { name: saved.plan.decisionAssessment!.outcome!.summary })).toBeVisible();
   expect(screen.getByRole('button', { name: '1 item needs a date' })).toBeVisible();
 });
 

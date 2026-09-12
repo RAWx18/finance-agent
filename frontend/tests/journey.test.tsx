@@ -110,7 +110,7 @@ describe('App voice and financial journey', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }));
       const picture = screen.getByRole('region', { name: 'Your financial picture' });
       const call = screen.getByRole('region', { name: 'Your conversation' });
-      const summary = picture.querySelector('.plan-summary');
+      const summary = within(picture).getByRole('region', { name: 'Financial status' });
       expect(summary).toBeVisible();
       const absent = () => {
         const removed = /^(Review|Take your plan|Finish review|Review saved picture|Return to conversation|View full plan|Continue talking|Download.*)$/i;
@@ -123,7 +123,7 @@ describe('App voice and financial journey', () => {
         expect(link).toHaveAttribute('href', '/money');
         expect(screen.getByRole('region', { name: 'Your conversation' })).toBe(call);
         expect(call).toBeVisible(); expect(picture).toBeVisible();
-        expect(picture.querySelector('.plan-summary')).toBe(summary);
+        expect(within(picture).getByRole('region', { name: 'Financial status' })).toBe(summary);
         expect(document.querySelector('audio')).toBe(audio);
       };
       expect(screen.getByRole('main')).toHaveAttribute('data-view', 'ready'); absent();
@@ -582,7 +582,7 @@ describe('App voice and financial journey', () => {
     expect(livePicture().getByLabelText('First shortfall')).toHaveTextContent('₹7,000');
     expect(livePicture().getByLabelText('First shortfall')).toHaveTextContent('13 Sept');
     const records = within(screen.getByRole('region', { name: 'Financial picture details' })).getAllByRole('article');
-    expect(records.map(item => item.getAttribute('aria-label'))).toEqual(['Cash & timing', 'Next & commitments']);
+    expect(records.map(item => item.getAttribute('aria-label'))).toEqual(['Cash & timing', 'Commitments & income']);
     const end = screen.getByRole('button', { name: 'End conversation' }); end.focus();
     act(() => sdk.options!.callbacks!.onUserStartedSpeaking!());
     const corrected = structuredClone(saved); corrected.revision = 2; corrected.sequence = 2;

@@ -25,7 +25,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const assessment = plan.decisionAssessment;
   const outcome = assessment?.outcome;
-  const action = snapshot.workspace?.actions?.find(item => item.id === assessment?.nextActionId);
+  const action = snapshot.workspace?.actions?.find(item => item.id === assessment?.nextActionId) ?? snapshot.workspace?.actions?.[0];
   const issues = moneyIssues(snapshot);
   const choice = snapshot.workspace?.choices?.find(item => item.id === action?.choiceId);
   const incomplete = plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete;

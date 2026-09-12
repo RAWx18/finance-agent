@@ -67,6 +67,17 @@ function fundedSnapshot(): Snapshot {
 }
 
 describe('canonical plan summary', () => {
+  it('pairs the first buffer shortfall with its own date, not the later maximum', () => {
+    const saved = fundedSnapshot();
+    saved.facts.reservePaise = 50000;
+    saved.plan.reserveShortfallPaise = 40000;
+    saved.plan.decisionAssessment!.consequences = [{ id: 'reserve', kind: 'reserveBreach', date: '2026-09-12', amountPaise: 10000, eventIds: [] }];
+    render(<PlanSummary snapshot={saved} />);
+    const summary = screen.getByRole('region', { name: 'What needs attention' });
+    expect(summary).toHaveTextContent('₹100 below your ₹500 buffer · 12 Sept');
+    expect(summary).toHaveTextContent('Largest buffer shortfall: ₹400');
+    expect(summary).not.toHaveTextContent('₹400 below your ₹500 buffer · 12 Sept');
+  });
   it('keeps the partial 9000 result beside the named 33000 rent exclusion and supported next step', async () => {
     const saved = partialSnapshot();
     const original = structuredClone(saved);
@@ -138,11 +149,13 @@ describe('canonical plan summary', () => {
     if (state === 'no selection') saved.plan.decisionAssessment!.nextActionId = null;
     render(<PlanSummary snapshot={saved} />);
     const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(summary).not.toHaveTextContent(other.question);
     expect(summary).not.toHaveTextContent('Do not substitute a free-text next step.');
-    if (state === 'listed') expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(selected.question);
+    if (state === 'listed') {
+      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(selected.question);
+      expect(summary).not.toHaveTextContent(other.question);
+    }
     else {
-      expect(within(summary).queryByText('Next step')).not.toBeInTheDocument();
+      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(other.question);
       expect(summary).not.toHaveTextContent(selected.question);
     }
   });

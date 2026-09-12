@@ -9,7 +9,7 @@
 .financial-context .card-update { font-size: .8rem; color: var(--teal); margin-bottom: .4rem; }
 .financial-context .card-update:empty { display: none; }
 .financial-context .companion-card { min-width: 0; padding: .75rem .85rem; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
-.financial-context .companion-card + .companion-card { margin-top: .65rem; }
+.financial-context .context-scroll > * + *, .financial-context .companion-card + .companion-card { margin-top: .6rem; }
 .financial-context .companion-card > h3 { margin: 0 0 .35rem; font-size: .85rem; font-weight: 600; color: var(--muted); }
 .financial-context .companion-card p { margin: .25rem 0; }
 .financial-context .card-caption { display: block; color: var(--muted); font-size: .78rem; font-weight: 500; }
@@ -27,22 +27,35 @@
 .financial-context .card-cash { margin-bottom: .4rem; }
 .financial-context .card-cash .card-number { font-size: clamp(1.65rem, 7cqi, 2.1rem); font-weight: 600; }
 .financial-context .card-cash > .card-meta { display: block; }
-.financial-context .card-shortfall { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 0 .5rem; margin: .55rem 0; padding: .6rem .7rem; border-radius: 8px; border-left: 3px solid #c68a38; background: #fcf4e6; }
-.financial-context .card-shortfall strong { font-size: 1.35rem; font-weight: 650; color: #895019; font-variant-numeric: tabular-nums; }
-.financial-context .card-shortfall .card-meta { grid-column: 1 / -1; }
-.financial-context .card-closing { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .5rem; border-top: 1px solid var(--line); padding-top: .55rem; margin-top: .4rem; }
-.financial-context .card-closing strong { font-size: .95rem; font-variant-numeric: tabular-nums; }
+.financial-context .card-risk { margin-top: .45rem; padding: .5rem .65rem; border-radius: 7px; border-left: 3px solid #c68a38; background: #fcf4e6; }
+.financial-context .card-risk .plan-gap-explanation { font-size: .78rem; }
+.financial-context .card-closing { display: flex; flex-wrap: wrap; align-items: baseline; gap: .2rem .5rem; }
+.financial-context .card-closing h3 { flex: 1 1 auto; margin: 0; font-size: .88rem; font-weight: 600; }
+.financial-context .card-closing strong { font-size: 1.05rem; font-variant-numeric: tabular-nums; }
+.financial-context .financial-status { border: 1px solid var(--line); border-radius: 10px; background: #f6f9f5; padding: .65rem .85rem .2rem; font-size: .8rem; }
+.financial-context .financial-status p { margin: .3rem 0; }
+.financial-context .status-missing { line-height: 1.5; }
+.financial-context .status-missing strong { font-weight: 600; }
+.financial-context .status-detail-body { border-top: 1px solid var(--line); padding-top: .3rem; color: var(--muted); line-height: 1.5; }
+.financial-context .status-detail-body ul { padding-left: 1rem; margin: .4rem 0; }
+.financial-context .status-detail-body li + li { margin-top: .3rem; }
+.financial-context .status-detail-body h4 { margin: .5rem 0 .25rem; color: var(--ink); font-size: .8rem; }
 .financial-context .card-metric, .financial-context .card-secondary { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 .5rem; }
 .financial-context .card-metric > .card-meta { flex-basis: 100%; }
 .financial-context .card-records, .financial-context .card-source-list, .financial-context .card-plan-changes { list-style: none; margin: 0; padding: 0; }
-.financial-context .card-record { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; column-gap: .7rem; min-width: 0; padding: .25rem 0 .35rem; }
-.financial-context .card-record + .card-record { border-top: 1px solid var(--line); padding-top: .55rem; }
+.financial-context .card-record { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: baseline; column-gap: .5rem; min-width: 0; padding: .3rem 0; }
+.financial-context .card-record + .card-record { border-top: 1px solid var(--line); }
+.financial-context .card-record .card-field-value { min-height: 32px; padding-block: .15rem; gap: .1rem .35rem; }
 .financial-context .card-name { grid-column: 1; }
-.financial-context .card-name .card-field-value { font-weight: 600; font-size: .95rem; }
+.financial-context .card-name .card-field-value { font-weight: 600; font-size: .9rem; }
 .financial-context .card-record-amount { grid-column: 2; min-width: 0; }
+.financial-context .card-record-amount > .card-caption { text-align: right; }
+.financial-context .card-record-amount .card-number { font-size: 1rem; }
 .financial-context .card-record-amount > .card-field > .card-field-value { justify-content: flex-end; margin-left: auto; }
 .financial-context .card-record[data-income="true"] > .card-record-amount .card-number { color: var(--teal); }
-.financial-context .card-record > :is(.card-date, .card-secondary, .card-row-status, .card-terms) { grid-column: 1 / -1; }
+.financial-context .card-record > :is(.card-row-meta, .card-row-note, .card-secondary, .card-terms) { grid-column: 1 / -1; }
+.financial-context .card-row-meta { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0 .5rem; min-width: 0; }
+.financial-context .card-row-meta:has(.card-field-editor) { display: block; }
 .financial-context .card-record:has(.card-field-editor) { grid-template-columns: minmax(0, 1fr); }
 .financial-context .card-record:has(.card-field-editor) > * { grid-column: 1; }
 .financial-context .card-record-amount > .card-meta { display: block; }
@@ -53,7 +66,8 @@
 .financial-context .card-row-status:empty { display: none; }
 .financial-context .card-row-status > .card-meta { flex-basis: 100%; }
 .financial-context .card-terms { min-width: 0; font-size: .78rem; }
-.financial-context .card-terms summary { padding-block: .6rem; min-height: 44px; color: var(--teal); cursor: pointer; }
+.financial-context .card-terms summary { padding-block: .3rem; min-height: 32px; color: var(--teal); cursor: pointer; }
+.financial-context .card-terms summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; border-radius: 3px; }
 .financial-context .card-terms[open] { margin-bottom: .35rem; }
 .financial-context .card-term-fields { padding-left: .4rem; border-left: 2px solid var(--line); }
 .financial-context .card-source-list > li + li { border-top: 1px solid var(--line); padding-top: .4rem; }
@@ -87,14 +101,17 @@
 .evidence-list li + li { border-top: 1px solid var(--line); margin-top: .8rem; padding-top: .8rem; }
 .conflict-row { border-left: 3px solid #c1a477; margin-block: .75rem; padding-left: .85rem; }
 .conflict-row ul { padding-left: 1.2rem; font-size: .85rem; }
-@container (max-width: 22rem) {
+@container (max-width: 18rem) {
   .financial-context .companion-card { padding: .65rem; }
   .financial-context .card-cash .card-number { font-size: clamp(1rem, 9cqi, 1.65rem); }
-  .financial-context .card-shortfall { grid-template-columns: minmax(0, 1fr); }
   .financial-context .card-record { grid-template-columns: minmax(0, 1fr); }
   .financial-context .card-record > * { grid-column: 1; }
+  .financial-context .card-record-amount > .card-caption { text-align: left; }
   .financial-context .card-record-amount > .card-field > .card-field-value { justify-content: flex-start; margin-left: 0; }
   .financial-context .card-proposal-actions > button:first-child { flex: 1 1 100%; }
+}
+@media (pointer: coarse) {
+  .financial-context .card-record .card-field-value, .financial-context .card-terms summary { min-height: 44px; }
 }
 @media (max-width: 700px) {
   #root:has(.financial-context) { height: auto; min-height: 100dvh; grid-template-rows: auto 1fr auto; }

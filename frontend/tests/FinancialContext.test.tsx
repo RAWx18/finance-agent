@@ -46,7 +46,7 @@ describe('financial companion', () => {
     const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
     expect(screen.queryByText('Salary')).not.toBeInTheDocument();
     rerender(<FinancialContext {...controls} snapshot={companion(structuredClone(saved))} />);
-    expect(screen.getByRole('article', { name: 'Next & commitments' })).toHaveTextContent('Salary');
+    expect(screen.getByRole('article', { name: 'Commitments & income' })).toHaveTextContent('Salary');
     expect(screen.getAllByRole('article')).toHaveLength(2);
     saved.workspace!.cards = [{ id: 'cash', template: 'cash', title: 'Cash & timing', section: 'facts', state: 'known', resultIds: ['opening'] }];
     rerender(<FinancialContext {...controls} snapshot={{ ...saved }} />);
@@ -88,10 +88,11 @@ describe('financial companion', () => {
     expect(cash).toHaveTextContent('₹6,00,000'); expect(cash).not.toHaveTextContent('₹6,00,000.00');
     expect(cash).toHaveTextContent(`As of ${cardDate(saved.anchorDate)} · Reported, not a bank feed`);
     expect(screen.getAllByLabelText('First shortfall')).toHaveLength(1);
-    const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
-    expect(within(summary).getByLabelText('First shortfall')).toHaveTextContent('₹8,000First shortfall · 13 Sept');
-    expect(within(cash).queryByLabelText('First shortfall')).not.toBeInTheDocument();
+    const summary = screen.getByRole('region', { name: 'Financial status' });
+    expect(within(summary).getByRole('heading')).toHaveTextContent('Projected end');
+    expect(within(cash).getByLabelText('First shortfall')).toHaveTextContent('₹8,000First shortfall · 13 Sept');
+    expect(screen.queryByText(saved.plan.decisionAssessment!.outcome!.summary)).not.toBeInTheDocument();
+    expect(screen.queryByText(saved.plan.decisionAssessment!.outcome!.nextStep)).not.toBeInTheDocument();
     expect(screen.getAllByLabelText('Projected closing cash')).toHaveLength(1);
     expect(within(screen.getByLabelText('Projected closing cash')).queryByRole('button')).not.toBeInTheDocument();
     expect(within(screen.getByLabelText('First shortfall')).queryByRole('button')).not.toBeInTheDocument();
@@ -106,7 +107,7 @@ describe('financial companion', () => {
     expect(screen.getByRole('button', { name: 'Edit Rent amount' })).toHaveTextContent('₹0');
     expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('₹25,000.25');
     expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('Est.');
-    expect(screen.getByRole('button', { name: 'Edit Salary series start' })).toHaveTextContent('Expected Unknown');
+    expect(screen.getByRole('button', { name: 'Edit Salary series start' })).toHaveTextContent('Arrival date needed');
   });
 
   it.each(['amount', 'date', 'name'] as const)('sends only the inline %s correction with human provenance', async field => {
@@ -158,13 +159,17 @@ describe('financial companion', () => {
     expect(screen.getByLabelText('Rent series start', { selector: 'input' })).toHaveValue('2026-08-01');
   });
 
-  it('keeps debt required, target and outstanding values in their own editable fields', () => {
+  it('leads with the known debt requirement and keeps the target and balance editable', async () => {
     const saved = picture(); saved.facts.records[0] = { ...saved.facts.records[0], kind: 'debt', debtType: 'card', target: { amountPaise: null, status: 'unknown' }, outstanding: { amountPaise: 8000000, status: 'exact' } };
     render(<FinancialContext {...controls} snapshot={saved} />);
     expect(screen.getByRole('button', { name: 'Edit Rent target' })).toHaveTextContent('Unknown');
     expect(screen.getByRole('button', { name: 'Edit Rent required amount' })).toHaveTextContent('₹12,000');
+    const row = screen.getByRole('listitem', { name: 'Rent' });
+    expect(row.querySelector('.card-record-amount')).toHaveTextContent('Minimum payment−₹12,000');
+    expect(row).not.toHaveTextContent('includes minimum');
+    await userEvent.click(within(row).getByText('Details', { selector: 'summary' }));
     expect(screen.getByRole('button', { name: 'Edit Rent outstanding' })).toHaveTextContent('₹80,000');
-    expect(screen.getByRole('listitem', { name: 'Rent' })).toHaveTextContent('Target · includes minimum');
+    expect(row).toHaveTextContent('Intended payment');
   });
 
   it('uses the selected event scheduleIndex for an inline foreign occurrence correction', async () => {
@@ -184,6 +189,40 @@ describe('financial companion', () => {
     fireEvent.change(input, { target: { value: '225.75' } }); await userEvent.click(screen.getByRole('button', { name: 'Save Salary occurrence 2 amount' }));
     expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0, records: [{ id: 'salary', delete: false, distinct: false, schedule: { amounts: [saved.facts.records[1].schedule.amounts[0], { amount: '225.75', status: 'estimate', conversion }] } }] } });
     expect(screen.getByLabelText('Salary calculated net INR')).toHaveTextContent('₹16,670.63');
+  });
+
+  it('keeps an absent loan intention editable without replacing the known requirement', async () => {
+    const saved = picture(); saved.facts.records[0] = { ...saved.facts.records[0], kind: 'debt', debtType: 'loan', target: null };
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const row = screen.getByRole('listitem', { name: 'Rent' });
+    expect(row.querySelector('.card-record-amount')).toHaveTextContent('Required payment−₹12,000');
+    expect(row).not.toHaveTextContent('Minimum');
+    await userEvent.click(within(row).getByRole('button', { name: 'Edit Rent target' }));
+    await userEvent.selectOptions(screen.getByLabelText('Rent target certainty'), 'exact');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Rent target' }), '15000');
+    await userEvent.click(screen.getByRole('button', { name: 'Save Rent target' }));
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0,
+      records: [{ id: 'rent', delete: false, distinct: false, target: { amount: '15000', status: 'exact' } }] } });
+    expect(screen.getByRole('button', { name: 'Edit Rent required amount' })).toHaveTextContent('₹12,000');
+  });
+
+  it('preserves later payment risk and pairs a reserve date with its own amount, not the maximum', () => {
+    const saved = picture();
+    saved.facts.reservePaise = 500000;
+    saved.plan.reserveShortfallPaise = 200000;
+    saved.workspace!.results!.find(result => result.id === 'reserveShortfall')!.amountPaise = 200000;
+    saved.plan.timingRisks = [{ date: saved.plan.firstGap!.date, exposurePaise: saved.plan.firstGap!.amountPaise, remainingGapPaise: 0 }];
+    saved.plan.decisionAssessment!.consequences!.push(
+      { id: 'later', kind: 'cashExposure', amountPaise: 50000, date: '2026-09-20', eventIds: [] },
+      { id: 'reserve', kind: 'reserveBreach', amountPaise: 100000, date: '2026-09-14', eventIds: [] },
+    );
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(within(cash).getByLabelText('Timing risk')).toHaveTextContent('₹7,000');
+    expect(cash).toHaveTextContent('Later payment risk · ₹500 · 20 Sept');
+    expect(cash).toHaveTextContent('Largest shortfall · ₹16,000 · 18 Sept');
+    expect(cash).toHaveTextContent('Buffer at risk · ₹1,000 below reserve · 14 Sept. Largest buffer shortfall: ₹2,000.');
+    expect(cash).not.toHaveTextContent('₹2,000 below reserve · 14 Sept');
   });
 
   it('preserves MoneyPage changeNotes formatting and the earlier-gap qualification', () => {

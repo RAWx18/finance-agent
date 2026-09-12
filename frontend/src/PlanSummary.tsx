@@ -9,9 +9,7 @@ import './planSummary.css';
 export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: string }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const result = snapshot.workspace?.results?.find(item => item.id === id);
-  const estimated = result?.state === 'estimated' || snapshot.facts.opening.status === 'estimate'
-    || plan.events.some(event => event.included && (event.amountStatus === 'estimate'
-      || snapshot.facts.records.find(record => record.id === event.recordId)?.schedule.certainty === 'estimate'));
+  const estimated = result?.state === 'estimated';
   const qualifications = result?.qualifications ?? [];
   const state = snapshot.facts.conflicts?.length || result?.state === 'conflicting' ? 'Conflicting figures'
     : result?.state === 'missing' ? 'Unknown' : plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete ? 'Incomplete forecast'
@@ -38,7 +36,7 @@ export function PlanSummary({ snapshot, stale = false, children }: { snapshot: S
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const assessment = plan.decisionAssessment;
   const outcome = assessment?.outcome;
-  const action = snapshot.workspace?.actions?.find(item => item.id === assessment?.nextActionId);
+  const action = snapshot.workspace?.actions?.find(item => item.id === assessment?.nextActionId) ?? snapshot.workspace?.actions?.[0];
   const meaningful = snapshot.facts.opening.amountPaise !== null || snapshot.facts.records.length > 0 || !!snapshot.facts.conflicts?.length;
   if (!meaningful || !outcome) return null;
   const ready = !stale && outcome.branch === 'fits' && outcome.readiness === 'ready' && !plan.projectionPartial
@@ -48,7 +46,7 @@ export function PlanSummary({ snapshot, stale = false, children }: { snapshot: S
     <h3>{outcome.summary}</h3>
     <GapFigure plan={plan} />
     {plan.firstGap && <ResultQualification snapshot={snapshot} id="firstGap" />}
-    {!!plan.reserveShortfallPaise && <p className="plan-reserve">Cash buffer at risk: {cardMoney(plan.reserveShortfallPaise)} below your {cardMoney(snapshot.facts.reservePaise)} buffer{reserve?.date && <> · {cardDate(reserve.date)}</>}. Separate from payment shortfalls.</p>}
+    {!!plan.reserveShortfallPaise && <p className="plan-reserve">Cash buffer at risk: {cardMoney(reserve?.amountPaise ?? plan.reserveShortfallPaise)} below your {cardMoney(snapshot.facts.reservePaise)} buffer{reserve?.date && <> · {cardDate(reserve.date)}</>}.{reserve && reserve.amountPaise !== plan.reserveShortfallPaise && <> Largest buffer shortfall: {cardMoney(plan.reserveShortfallPaise)}.</>} Separate from payment shortfalls.</p>}
     {!plan.firstGap && <ResultQualification snapshot={snapshot} id="closing" />}
     {action && <p className="plan-next"><strong>Next step</strong> {action.question}{action.beforeDate && <span className="plan-deadline">Before {cardDate(action.beforeDate)}</span>}</p>}
     {!!outcome.conditions && <details className="plan-conditions"><summary>What this depends on</summary><p>{outcome.conditions}</p><p>{outcome.revisit}</p></details>}

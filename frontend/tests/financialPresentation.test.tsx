@@ -44,14 +44,14 @@ it.each([false, true])('preserves reserve risk on the overview and print (cash g
   if (!cashGap) { saved.plan.decisionAssessment!.nextActionId = null; saved.workspace!.actions = []; }
   render(<MemoryRouter><MoneyOverview snapshot={saved} blocked={false} onEdit={vi.fn()} onChecks={vi.fn()} onCommand={vi.fn()} /><MoneyPrint snapshot={saved} /></MemoryRouter>);
   const overview = screen.getByRole('region', { name: 'What needs attention' });
-  expect(overview).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer · 13 Sept. Separate from payment shortfalls.');
+  expect(overview).toHaveTextContent('Cash buffer at risk: ₹1,000 below your ₹5,000 buffer · 13 Sept. Largest buffer shortfall: ₹2,000. Separate from payment shortfalls.');
   expect(overview).not.toHaveTextContent('Some details still need checking');
   expect(within(overview).getByRole('heading', { name: saved.plan.decisionAssessment!.outcome.summary })).toBeVisible();
   if (cashGap) expect(within(overview).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 13 Sept');
   else expect(within(overview).queryByLabelText('First shortfall')).not.toBeInTheDocument();
   const printed = document.querySelector('.money-print')!;
-  expect(printed.querySelector('.plan-reserve')).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer · 13 Sept. Separate from payment shortfalls.');
-  expect(printed.querySelector('.plan-reserve')).not.toHaveTextContent('₹1,000 below');
+  expect(printed.querySelector('.plan-reserve')).toHaveTextContent('Cash buffer at risk: ₹1,000 below your ₹5,000 buffer · 13 Sept. Largest buffer shortfall: ₹2,000. Separate from payment shortfalls.');
+  expect(printed.querySelector('.plan-reserve')).not.toHaveTextContent('₹2,000 below your ₹5,000 buffer · 13 Sept');
   expect(printed).not.toHaveTextContent('No gap in the dated figures');
 });
 
@@ -78,10 +78,11 @@ it('keeps estimated minimum-only and automatic-debit qualifiers in the live time
   card.amount.status = 'estimate'; card.target = { amountPaise: null, status: 'unknown' }; card.autoDebit = true;
   saved.plan.events = saved.plan.events.filter(item => item.recordId === card.id).map(item => ({ ...item, amountPaise: card.amount.amountPaise, amountBasis: 'requiredOnly', amountStatus: 'estimate', requiredPaise: card.amount.amountPaise, requiredStatus: 'estimate', autoDebit: true }));
   render(<FinancialContext snapshot={projectWorkspace(saved)} locked={false} stale={false} proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
-  const row = within(screen.getByRole('article', { name: 'Next & commitments' })).getByRole('listitem', { name: card.label });
+  const row = within(screen.getByRole('article', { name: 'Commitments & income' })).getByRole('listitem', { name: card.label });
   expect(within(row).getByRole('button', { name: `Edit ${card.label} required amount` })).toHaveTextContent('Est.');
   expect(within(row).getByRole('button', { name: `Edit ${card.label} target` })).toHaveTextContent('Unknown');
-  expect(row).toHaveTextContent('Minimum only · Target unknown');
+  expect(row.querySelector('.card-record-amount')).toHaveTextContent('Minimum payment−₹2,000');
+  expect(row.querySelector('.card-secondary')).toHaveTextContent('Intended paymentUnknown');
   expect(row).toHaveTextContent('Auto-debit');
 });
 
@@ -155,9 +156,10 @@ it('labels estimated calculations in the live card and its explanation', async (
   result.qualifications = ['Uses estimated Rent (INR 12000.00).'];
   saved.facts.records[0].amount.status = 'estimate'; saved.plan.events[0].amountStatus = 'estimate';
   const { unmount } = render(<FinancialContext snapshot={saved} locked={false} stale={false} proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
-  const closing = within(screen.getByRole('article', { name: 'Cash & timing' })).getByLabelText('Projected closing cash');
-  expect(closing).toHaveTextContent('Incomplete forecast · Includes estimates · Not a spending allowance');
-  expect(closing).toHaveTextContent('Uses estimated Rent (INR 12000.00).');
+  const status = screen.getByRole('region', { name: 'Financial status' });
+  expect(within(status).getByLabelText('Projected closing cash')).toHaveTextContent('Includes estimates');
+  expect(status).toHaveTextContent('Plan is incomplete · Not a spending allowance');
+  expect(status).not.toHaveTextContent('Uses estimated Rent (INR 12000.00).');
   unmount();
   render(<ResultDetails snapshot={saved} result={result} />);
   await userEvent.click(screen.getByRole('button', { name: 'Why this result?' }));

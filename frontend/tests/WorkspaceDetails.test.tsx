@@ -113,7 +113,7 @@ it.each(['reliable', 'uncertain'] as const)('shows excluded receipts as compact 
   const row = screen.getByRole('listitem', { name: 'Salary' });
   expect(within(row).getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('₹10,000Est.');
   expect(row).toHaveTextContent(reliability === 'reliable' ? 'Not counted on' : 'Not counted on · Receipt unconfirmed');
-  expect(screen.getAllByRole('article').map(card => card.getAttribute('aria-label'))).toEqual(['Cash & timing', 'Next & commitments']);
+  expect(screen.getAllByRole('article').map(card => card.getAttribute('aria-label'))).toEqual(['Cash & timing', 'Commitments & income']);
   expect(screen.queryByText(/Why this result|Information that changes|Payments and later receipts/)).not.toBeInTheDocument();
 });
 

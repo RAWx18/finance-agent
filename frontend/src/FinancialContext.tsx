@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useId, useState } from 'react';
+import { Fragment, useId, useState } from 'react';
 import type { Command, Plan, Snapshot } from './api';
 import type { components } from './contracts';
 import { CardField, ChangedValue } from './CardField';
@@ -8,7 +8,8 @@ import { CardProposal } from './CardProposal';
 import { cardDate, cardMoney, cardStatus, fieldConflict, fieldDraft, sourceAmount } from './cardFields';
 import type { CardTarget } from './cardFields';
 import { dateLabel, lastDate, money, recurrenceLabels } from './money';
-import { PlanSummary, ResultQualification } from './PlanSummary';
+import { FinancialStatus } from './FinancialStatus';
+import { GapFigure } from './PlanSummary';
 import { fieldLabels, resultLabels } from './WorkspaceDetails';
 import type { Fact, WorkspaceCard } from './WorkspaceDetails';
 import './financialCards.css';
@@ -52,15 +53,19 @@ function AmountField({ target, label, prefix = '', suffix = '', reported = false
   const conflict = fieldConflict(editing.snapshot, target);
   return <CardField {...editing} target={target} label={label}>
     <span className="card-number"><ChangedValue value={`${draft.status === 'unknown' ? '' : prefix}${sourceAmount(draft.source!)}${suffix}`} /></span>
-    {(conflict || reported || draft.status !== 'exact') && <span className="card-badge" data-tone={conflict || draft.status !== 'exact' ? 'caution' : undefined}>{conflict ? 'Conflicting' : cardStatus[draft.status]}</span>}
+    {(conflict || reported || draft.status === 'estimate') && <span className="card-badge" data-tone={conflict || draft.status !== 'exact' ? 'caution' : undefined}>{conflict ? 'Conflicting' : cardStatus[draft.status]}</span>}
   </CardField>;
 }
 
 function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
   const { snapshot } = editing;
+  const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const results = snapshot.workspace?.results?.filter(result => card.resultIds?.includes(result.id));
   const reserve = results?.find(result => result.id === 'reserveShortfall');
-  const closing = results?.find(result => result.id === 'closing');
+  const gap = results?.find(result => result.id === 'firstGap');
+  const reserveRisk = plan.decisionAssessment?.consequences?.find(item => item.kind === 'reserveBreach');
+  const laterRisk = plan.timingRisks?.some(item => item.date === plan.firstGap?.date)
+    ? plan.decisionAssessment?.consequences?.find(item => item.kind === 'cashExposure' && item.date && plan.firstGap && item.date > plan.firstGap.date) : undefined;
   return <>
     <div className="card-cash"><span className="card-caption">Cash at plan start</span>
       <AmountField {...editing} target={{ field: 'opening' }} label="Cash at plan start" reported />
@@ -68,10 +73,12 @@ function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
     </div>
     {snapshot.facts.reservePaise > 0 && <div className="card-metric"><span className="card-caption">Keep aside</span>
       <AmountField {...editing} target={{ field: 'reserve' }} label="Reserve floor" />
-      {reserve?.amountPaise != null && reserve.amountPaise > 0 && <span className="card-meta card-caution">Below reserve by <ChangedValue value={cardMoney(reserve.amountPaise)} /> · Calculated</span>}
+      {reserve?.amountPaise != null && reserve.amountPaise > 0 && <span className="card-meta card-caution">Buffer at risk · <ChangedValue value={cardMoney(reserveRisk?.amountPaise ?? reserve.amountPaise)} /> below reserve{reserveRisk?.date && ` · ${cardDate(reserveRisk.date)}`}.{reserveRisk?.amountPaise != null && reserveRisk.amountPaise !== reserve.amountPaise && ` Largest buffer shortfall: ${cardMoney(reserve.amountPaise)}.`} Separate from payment shortfalls.</span>}
     </div>}
-    {closing && <div className="card-closing" aria-label="Projected closing cash"><span className="card-caption">Closing · {cardDate(lastDate(snapshot.endDateExclusive))}</span>
-      <strong><ChangedValue value={cardMoney(closing.amountPaise)} /></strong><ResultQualification snapshot={snapshot} id="closing" />
+    {plan.firstGap && <div className="card-risk"><GapFigure plan={plan} />
+      {gap && ['estimated', 'conflicting', 'uncertain', 'unresolved'].includes(gap.state) && <span className="card-meta">{gap.state === 'estimated' ? 'Includes estimates' : 'Figures need checking'}</span>}
+      {plan.peakGapPaise != null && plan.peakGapPaise > plan.firstGap.amountPaise && <p className="card-meta">Largest shortfall · {cardMoney(plan.peakGapPaise)}{plan.peakGapDate && ` · ${cardDate(plan.peakGapDate)}`}</p>}
+      {laterRisk && <p className="card-meta">Later payment risk · {cardMoney(laterRisk.amountPaise)}{laterRisk.date && ` · ${cardDate(laterRisk.date)}`}</p>}
     </div>}
   </>;
 }
@@ -79,7 +86,7 @@ function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
 function SourceTerms({ target, record, ...editing }: Editing & { target: CardTarget; record: Fact }) {
   const conversion = fieldDraft(editing.snapshot, target).source?.conversion;
   if (!conversion || fieldConflict(editing.snapshot, target)) return null;
-  return <details className="card-terms"><summary>{conversion.currency} conversion terms</summary><div className="card-term-fields">
+  return <div className="card-term-fields"><span className="card-caption">{conversion.currency} conversion terms</span>
     <CardField {...editing} target={{ ...target, term: 'rate' }} label={`${record.label} exchange rate`}>
       <span>Rate {conversion.rate == null ? 'Unknown' : `₹${conversion.rate} / ${conversion.currency}`}</span><span className="card-badge">{cardStatus[conversion.rateStatus]}</span>
     </CardField>
@@ -89,7 +96,7 @@ function SourceTerms({ target, record, ...editing }: Editing & { target: CardTar
     <CardField {...editing} target={{ ...target, term: 'rateDate' }} label={`${record.label} rate date`}>
       <span>Rate as of {conversion.rateDate ? cardDate(conversion.rateDate) : 'Unknown'}</span>
     </CardField>
-  </div></details>;
+  </div>;
 }
 
 function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?: Plan['events'][number] }) {
@@ -98,47 +105,53 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
   const budget = record.schedule.recurrence === 'monthlyBudget';
   const debt = record.kind === 'debt';
   const index = variable ? event?.scheduleIndex ?? undefined : undefined;
-  const target: CardTarget = { recordId: record.id, field: debt && record.target && !variable ? 'target' : 'amount', ...(index !== undefined ? { index } : {}) };
+  const target: CardTarget = { recordId: record.id, field: debt && record.target?.amountPaise != null && !variable ? 'target' : 'amount', ...(index !== undefined ? { index } : {}) };
+  const converted = target.field === 'target' ? record.target : record.amount;
   const source = variable && index === undefined ? null : fieldDraft(snapshot, target).source;
   const date = budget ? record.schedule.date : event ? event.overdue ? event.originalDueDate : event.date : record.schedule.date;
   const dateFieldLabel = `${record.label} ${record.schedule.recurrence === 'once' ? 'date' : 'series start'}`;
   const dateConflict = fieldConflict(snapshot, { recordId: record.id, field: 'schedule.date' });
   const assumed = (snapshot.accepted?.adjustments ?? []).find(item => item.eventId === event?.id);
-  const issue = snapshot.workspace?.issues?.find(item => item.recordIds.includes(record.id) && ['missing', 'conflict', 'uncertain'].includes(item.kind));
+  const issue = snapshot.workspace?.issues?.find(item => item.recordIds.includes(record.id) && ['conflict', 'uncertain'].includes(item.kind));
+  const series = record.schedule.endDate || record.schedule.count || record.schedule.recurrence !== 'once' && record.schedule.date !== date;
   return <li className="card-record" aria-label={record.label} data-income={record.kind === 'income'}>
     <CardField {...editing} target={{ recordId: record.id, field: 'label' }} label={`${record.label} name`} className="card-name"><ChangedValue value={record.label} /></CardField>
     {source ? <div className="card-record-amount">
-      {debt && <span className="card-caption">{target.field === 'target' ? 'Target · includes minimum' : record.debtType === 'card' ? 'Minimum' : 'Required'}</span>}
+      {debt && <span className="card-caption">{target.field === 'target' ? 'Intended payment' : record.debtType === 'card' ? 'Minimum payment' : 'Required payment'}</span>}
       <AmountField {...editing} target={target} label={`${record.label} ${target.field === 'target' ? 'target' : debt ? 'required amount' : index !== undefined ? `occurrence ${index + 1} amount` : 'amount'}`} prefix={record.kind === 'income' ? '+' : '−'} suffix={budget ? '/month' : ''} />
       {budget && <span className="card-meta">Daily forecast · not a payment due</span>}
       {index !== undefined && <span className="card-meta">Occurrence {index + 1} of {record.schedule.amounts!.length}</span>}
-      {source.conversion && <span className="card-net" aria-label={`${record.label} calculated net INR`}>Net INR <strong><ChangedValue value={cardMoney(index === undefined ? record.amount.amountPaise : event?.amountPaise ?? null)} /></strong><span className="card-meta">Calculated{(index === undefined ? record.amount.status : event?.amountStatus) === 'estimate' ? ' · Est.' : ''}</span></span>}
-      <SourceTerms {...editing} target={target} record={record} />
-    </div> : <details className="card-terms"><summary>Amounts by occurrence</summary><ol className="card-source-list">{record.schedule.amounts!.map((_, index) => <li key={index}>
-      <span className="card-caption">Occurrence {index + 1}</span><AmountField {...editing} target={{ recordId: record.id, field: 'amount', index }} label={`${record.label} occurrence ${index + 1} amount`} />
-      <SourceTerms {...editing} target={{ recordId: record.id, field: 'amount', index }} record={record} />
-    </li>)}</ol></details>}
+      {source.conversion && <span className="card-net" aria-label={`${record.label} calculated net INR`}>Net INR <strong><ChangedValue value={cardMoney(index === undefined ? converted?.amountPaise ?? null : event?.amountPaise ?? null)} /></strong><span className="card-meta">Calculated{(index === undefined ? converted?.status : event?.amountStatus) === 'estimate' ? ' · Est.' : ''}</span></span>}
+    </div> : <div className="card-record-amount card-meta">Varies by occurrence</div>}
+    <div className="card-row-meta">
     <CardField {...editing} target={{ recordId: record.id, field: 'schedule.date' }} label={dateFieldLabel} className="card-date">
-      <span><ChangedValue value={`${budget ? 'Starts' : event?.overdue ? 'Overdue' : record.kind === 'income' ? 'Expected' : 'Due'} ${date ? cardDate(date) : 'Unknown'}`} /></span>
-      {(dateConflict || record.schedule.certainty !== 'exact') && <span className="card-badge" data-tone="caution">{dateConflict ? 'Conflicting' : cardStatus[record.schedule.certainty]}</span>}
+      <span><ChangedValue value={date ? `${budget ? 'Starts' : event?.overdue ? 'Originally due' : record.kind === 'income' ? 'Expected' : 'Due'} ${cardDate(date)}` : record.kind === 'income' ? 'Arrival date needed' : 'Due date needed'} /></span>
+      {(dateConflict || date && record.schedule.certainty !== 'exact') && <span className="card-badge" data-tone="caution">{dateConflict ? 'Conflicting' : cardStatus[record.schedule.certainty]}</span>}
       {record.schedule.recurrence !== 'once' && !budget && <span className="card-meta">{recurrenceLabels[record.schedule.recurrence]}</span>}
     </CardField>
-    {debt && record.target && !variable && <div className="card-secondary"><span className="card-caption">{record.debtType === 'card' ? 'Minimum' : 'Required'}</span>
-      <AmountField {...editing} target={{ recordId: record.id, field: 'amount' }} label={`${record.label} required amount`} /></div>}
-    {debt && record.outstanding && <div className="card-secondary"><span className="card-caption">Outstanding</span>
-      <AmountField {...editing} target={{ recordId: record.id, field: 'outstanding' }} label={`${record.label} outstanding`} /></div>}
     <div className="card-row-status">
       {record.autoDebit && <span className="card-badge">Auto-debit</span>}
       {record.kind === 'income' && (record.reliability !== 'reliable' || event && !event.included) && <span className="card-badge" data-tone="caution">Not counted on{record.reliability !== 'reliable' ? ' · Receipt unconfirmed' : ''}</span>}
-      {event?.amountBasis === 'requiredOnly' && <span className="card-meta">Minimum only · Target unknown</span>}
-      {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-badge">Committed</span>}
-      {debt && !record.target && <span className="card-meta">Target not supplied</span>}
-      {assumed && <span className="card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</span>}
+      {event?.overdue && <span className="card-meta">Payment status unconfirmed</span>}
+      {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-meta">Committed</span>}
     </div>
-    {issue?.reason && <details className="card-terms"><summary>Why this needs checking</summary><p>{issue.reason}</p></details>}
-    {(record.schedule.endDate || record.schedule.count || record.schedule.recurrence !== 'once' && record.schedule.date !== date) && <details className="card-terms"><summary>Series terms</summary><p className="card-meta">
+    </div>
+    {debt && !variable && <div className="card-secondary"><span className="card-caption">{target.field === 'amount' ? 'Intended payment' : record.debtType === 'card' ? 'Minimum payment' : 'Required payment'}</span>
+      <AmountField {...editing} target={{ recordId: record.id, field: target.field === 'amount' ? 'target' : 'amount' }} label={`${record.label} ${target.field === 'amount' ? 'target' : 'required amount'}`} /></div>}
+    {assumed && <p className="card-row-note card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</p>}
+    {(source?.conversion || !source || debt && record.outstanding || issue?.reason || series) && <details className="card-terms card-record-details"><summary>Details</summary>
+      {!source && <ol className="card-source-list">{record.schedule.amounts!.map((_, index) => <li key={index}>
+      <span className="card-caption">Occurrence {index + 1}</span><AmountField {...editing} target={{ recordId: record.id, field: 'amount', index }} label={`${record.label} occurrence ${index + 1} amount`} />
+      <SourceTerms {...editing} target={{ recordId: record.id, field: 'amount', index }} record={record} />
+    </li>)}</ol>}
+    {source?.conversion && <SourceTerms {...editing} target={target} record={record} />}
+    {debt && record.outstanding && <div className="card-secondary"><span className="card-caption">Outstanding</span>
+      <AmountField {...editing} target={{ recordId: record.id, field: 'outstanding' }} label={`${record.label} outstanding`} /></div>}
+    {issue?.reason && <p className="card-meta">{issue.reason}</p>}
+    {series && <p className="card-meta">
       Series starts {record.schedule.date ? cardDate(record.schedule.date) : 'Unknown'}{record.schedule.endDate && <> · Through {cardDate(record.schedule.endDate)}</>}{record.schedule.count && <> · {record.schedule.count} {budget ? 'months' : 'occurrences'}</>}
-    </p></details>}
+    </p>}
+    </details>}
   </li>;
 }
 
@@ -175,8 +188,9 @@ function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActi
       const issue = snapshot.workspace?.issues?.find(issue => card.issueIds?.includes(issue.id));
       if (!issue || issue.recordIds.length > 0 && issue.recordIds.every(id => visibleIds.includes(id)) || ['opening', 'reserve'].includes(issue.field) && cards.some(card => card.template === 'cash')) return null;
     }
-    return <article key={card.id} className={`companion-card companion-${card.template}`} aria-label={card.title}>
-      <h3>{card.title}</h3>
+    const title = card.template === 'timeline' ? 'Commitments & income' : card.title;
+    return <Fragment key={card.id}><article className={`companion-card companion-${card.template}`} aria-label={title}>
+      <h3>{title}</h3>
       {card.template === 'cash' && <CashCard {...editing} card={card} />}
       {card.template === 'timeline' && <><ol id={listId} className="card-records" aria-label="Next commitments"
         onFocusCapture={() => { if (!focusedIds) setFocusedIds(visibleIds); }}
@@ -186,7 +200,7 @@ function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActi
       })}</ol>{(card.recordIds?.length ?? 0) > 4 && <button className="card-expand" aria-expanded={expanded} aria-controls={listId} onClick={() => { setFocusedIds(null); setExpanded(!expanded); }}>{expanded ? 'Show fewer commitments' : `Show ${card.recordIds!.length - 4} more`}</button>}</>}
       {card.template === 'questions' && <UncertaintyCard {...editing} card={card} />}
       {card.template === 'proposal' && <CardProposal {...editing} active={proposalActive} />}
-    </article>;
+    </article>{(card.template === 'timeline' || card.template === 'cash' && !timeline) && <FinancialStatus snapshot={snapshot} />}</Fragment>;
   })}</>;
 }
 
@@ -203,7 +217,6 @@ export function FinancialContext({ snapshot, stale, locked, onCommand, proposalA
     </header>
     <div className="card-update" role="status" aria-live="polite" aria-atomic="true">{stale ? 'Updates paused · showing saved figures' : decision ? changeStates[decision.state] : notes.length ? `Saved · ${notes.join(' · ')}` : ''}</div>
     <div className="context-scroll" tabIndex={0} role="region" aria-label="Financial picture details">
-      {snapshot && !!snapshot.workspace?.cards?.length && <PlanSummary snapshot={snapshot} stale={stale} />}
       {!snapshot?.workspace?.cards?.length ? <p className="context-empty">Figures appear as you talk</p>
         : <CompanionCards key={snapshot.sessionId} snapshot={snapshot} blocked={locked || stale} onCommand={onCommand} proposalActive={proposalActive} />}
     </div>
