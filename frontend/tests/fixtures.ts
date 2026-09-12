@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { AdjustmentOptions, Scenario, Settings, Snapshot } from '../src/api';
+import { projectWorkspace } from './workspace';
 
 export const settings: Settings = {
+  assistantName: 'Isha',
   currency: 'INR', timezone: 'Asia/Kolkata', today: '2026-09-11', horizonDays: 30,
   retentionHours: 24, maxRecords: 200, maxMoneyPaise: 1000000000000, maxRequestBytes: 131072,
   recurrence: ['once', 'weekly', 'fortnightly', 'monthly'], voiceAvailable: false,
-  voiceUnavailableReason: 'Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT, DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION.', openingBasis: 'Enter available cash and only unpaid or future items.',
+  voiceStartupSeconds: 45, voiceShutdownSeconds: 10,
+  voiceUnavailableReason: 'Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION.', openingBasis: 'Enter available cash and only unpaid or future items.',
 };
 
 export function snapshot(): Snapshot {
@@ -14,9 +17,10 @@ export function snapshot(): Snapshot {
     sessionId: '51e107ab-efc3-4c40-ac5b-9b7f3a1678a0', revision: 0, sequence: 0,
     createdAt: '2026-09-11T04:00:00Z', asOf: '2026-09-11T04:00:00Z', expiresAt: '2026-09-12T04:00:00Z',
     anchorDate: '2026-09-11', endDateExclusive: '2026-10-11', currency: 'INR',
+    workspace: { cards: [], questions: [], issues: [], results: [], contributions: [], actions: [], choices: [], change: null },
     facts: { opening: { amountPaise: null, status: 'unknown' }, reservePaise: 0,
       coverage: { income: 'notDiscussed', essential: 'notDiscussed', debt: 'notDiscussed', optional: 'notDiscussed' }, records: [],
-      decision: { intent: 'plan30Days', concern: null, focusRecordIds: [], responsePreference: 'standard' }, providerResponses: [] },
+      decision: { intent: 'plan30Days', concern: null, focusRecordIds: [], responsePreference: 'standard' }, providerResponses: [], conflicts: [] },
     invalidatedAssumptions: [],
     plan: { evaluatedOn: '2026-09-11', projectionPartial: true, reliableIncomePaise: 0, uncertainIncomePaise: 0,
       outflowPaise: 0, closingPaise: null, troughPaise: null, firstGap: null, peakGapPaise: null,
@@ -48,7 +52,10 @@ export class Stream extends EventTarget {
   closed = false;
   constructor(public url: string) { super(); Stream.instances.push(this); }
   close() { this.closed = true; }
-  emit(name: string, value: unknown) { this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(value) })); }
+  emit(name: string, value: unknown) {
+    this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(name === 'snapshot' && value && typeof value === 'object' && 'facts' in value && value.facts
+      ? projectWorkspace(structuredClone(value as Snapshot)) : value) }));
+  }
 }
 
 export const adjustmentOptions: AdjustmentOptions = { revision: 0, today: '2026-09-11', options: [
@@ -80,8 +87,15 @@ export function planningSnapshot(): Snapshot {
         riskIds: ['cash:2026-09-13'], choiceIds: [], nextActionId: 'contact:rent:2026-09-13', uncertain: ['provider:rent:2026-09-13'],
         revisit: 'Recalculate after a receipt correction, changed obligation or provider response; accepted assumptions are not completed actions.' },
     } };
-  saved.facts.records = [{ id: 'rent', label: 'Rent', kind: 'essential', amount: { status: 'exact', amountPaise: 1200000 }, schedule: { date: '2026-09-13', recurrence: 'once' }, autoDebit: false, controllability: 'committed' }];
-  return saved;
+  saved.facts.records = [{ id: 'rent', label: 'Rent', kind: 'essential', amount: { status: 'exact', amountPaise: 1200000 }, schedule: { date: '2026-09-13', recurrence: 'once', certainty: 'exact' }, autoDebit: false, controllability: 'committed' }];
+  saved.plan.events = [{ id: 'rent:2026-09-13', recordId: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-13', originalDueDate: '2026-09-13', amountPaise: 1200000, amountBasis: 'reported', included: true, overdue: false, autoDebit: false, balancePaise: -700000 }];
+  return projectWorkspace(saved);
+}
+
+export function questionSnapshot(): Snapshot {
+  const saved = snapshot();
+  saved.facts.coverage.income = 'unknown';
+  return projectWorkspace(saved);
 }
 
 export function scenario(id = 'preview-one'): Scenario {
@@ -103,7 +117,7 @@ export function unconfirmedSnapshot(): Snapshot {
     nextQuestionId: 'coverage', nextActionId: 'clarify:coverage',
     outcome: { ...saved.plan.decisionAssessment!.outcome!, nextStep: question, nextActionId: 'clarify:coverage', uncertain: ['opening', 'coverage'] },
   };
-  return saved;
+  return projectWorkspace(saved);
 }
 
 export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceOptional'): Snapshot {
@@ -112,7 +126,7 @@ export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceO
   saved.facts.records.push({ id: option.recordId, label: option.label, kind: kind === 'reduceOptional' ? 'optional' : 'debt',
     amount: { status: 'exact', amountPaise: kind === 'reduceOptional' ? option.originalPaise : option.minimumPaise },
     target: kind === 'cardMinimum' ? { status: 'exact', amountPaise: option.originalPaise } : null,
-    debtType: kind === 'cardMinimum' ? 'card' : null, schedule: { date: option.date, recurrence: 'once' },
+    debtType: kind === 'cardMinimum' ? 'card' : null, schedule: { date: option.date, recurrence: 'once', certainty: 'exact' },
     autoDebit: false, controllability: 'controllable' });
   saved.plan.events.push({ id: option.eventId, recordId: option.recordId, label: option.label,
     kind: kind === 'reduceOptional' ? 'optional' : 'debt', date: option.date, originalDueDate: option.date,
@@ -126,5 +140,5 @@ export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceO
       question: `Would you like to compare a reduction to ${option.label}?`, recordIds: [option.recordId], beforeDate: option.date,
       consequenceIds: [], ifDeclinedConsequenceIds: [] }], nextActionId: 'preview-spending',
   };
-  return saved;
+  return projectWorkspace(saved);
 }

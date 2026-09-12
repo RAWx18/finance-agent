@@ -2,9 +2,25 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
 import { api, ApiError, authEpoch, errorMessage, invalidateRequests } from '../src/api';
-import { snapshot } from './fixtures';
+import { settings, snapshot } from './fixtures';
 
 describe('same-origin API contract', () => {
+  it.each(['voiceStartupSeconds', 'voiceShutdownSeconds'] as const)('rejects missing or invalid %s instead of inventing a deadline', async field => {
+    for (const value of [undefined, null, 0, -1, '45', Infinity]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...settings, [field]: value }))));
+      await expect(api.settings()).rejects.toThrow('Conversation settings could not be read safely.');
+    }
+  });
+  it('reads the configured assistant name from server settings without a local identity default', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...settings, assistantName: 'Maya' }))));
+    await expect(api.settings()).resolves.toEqual({ ...settings, assistantName: 'Maya' });
+  });
+
+  it.each([undefined, null, '', '  ', 12, 'Maya\n', 'Maya\u007f'])('rejects invalid assistant identity %j instead of substituting a name', async assistantName => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...settings, assistantName }))));
+    await expect(api.settings()).rejects.toThrow('Conversation settings could not be read safely.');
+  });
+
   it('distinguishes unreadable saved data from a network outage without leaking details', () => {
     const message = errorMessage(new ApiError(500, { code: 'invalidStoredState', message: 'private stored value' }));
     expect(message).toContain('The service is reachable');
@@ -17,6 +33,7 @@ describe('same-origin API contract', () => {
     expect(errorMessage(error, 'respondToAction')).not.toContain('private proposal diagnostic');
     expect(errorMessage(error, 'acceptPreview')).toContain('no longer available to accept');
     expect(errorMessage(error, 'discardPreview')).toBe('This preview is no longer available to reject. Review the current proposal before trying again.');
+    expect(errorMessage(error, 'rejectPreview')).toBe('This preview is no longer available to reject. Review the current proposal before trying again.');
   });
   it.each([[422, 'invalidActionResponse'], [409, 'staleRevision']] as const)('explains an unsupported or stale answer (%s %s) as a changed next step', (status, code) => {
     const message = errorMessage(new ApiError(status, { code, message: 'private action diagnostic' }), 'respondToAction');
@@ -26,16 +43,20 @@ describe('same-origin API contract', () => {
   it('keeps draft and spending-choice revision guidance separate from action responses', () => {
     const error = new ApiError(409, { code: 'staleRevision', message: 'private revision diagnostic' });
     expect(errorMessage(error, 'replaceFacts')).toContain('Your draft is still here');
+    expect(errorMessage(error, 'updateFacts')).toBe('Saved figures changed elsewhere. Review the current figures before retrying your corrections.');
     expect(errorMessage(error, 'previewAdjustments')).toContain('refresh your choices before comparing again');
     expect(errorMessage(new ApiError(422, { code: 'validationError', message: 'private input' }), 'replaceFacts')).toContain('Check amounts, dates');
   });
   it('uses cookie-owned call endpoints and allows termination during page teardown', async () => {
     const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
     vi.stubGlobal('fetch', fetch);
-    await api.call(); await api.startCall(); await api.endCall();
+    const callId = crypto.randomUUID();
+    const body = JSON.stringify({ callId });
+    const controller = new AbortController();
+    await api.call(); await api.startCall(callId); await api.endCall(callId, controller.signal);
     expect(fetch).toHaveBeenNthCalledWith(1, '/api/session/call', { credentials: 'same-origin', signal: undefined });
-    expect(fetch).toHaveBeenNthCalledWith(2, '/api/session/call', { credentials: 'same-origin', method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    expect(fetch).toHaveBeenNthCalledWith(3, '/api/session/call', { credentials: 'same-origin', method: 'DELETE', keepalive: true });
+    expect(fetch).toHaveBeenNthCalledWith(2, '/api/session/call', { credentials: 'same-origin', method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    expect(fetch).toHaveBeenNthCalledWith(3, '/api/session/call', { credentials: 'same-origin', method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body, keepalive: true, signal: controller.signal });
   });
   it('establishes ownership only through explicit JSON POST with same-origin credentials', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(snapshot())));
@@ -50,8 +71,12 @@ describe('same-origin API contract', () => {
   });
 
   it('uses the cookie-backed authentication and account contracts including empty logout responses', async () => {
-    const fetch = vi.fn().mockImplementation(async (path: string) => path === '/api/auth/logout'
-      ? new Response(null, { status: 204 }) : new Response('{}'));
+    const user = { id: 'user-one', displayName: 'Sam', googleName: 'Sam Google', email: 'sam@example.com' };
+    const fetch = vi.fn().mockImplementation(async (path: string, init: RequestInit) => path === '/api/auth/logout'
+      ? new Response(null, { status: 204 }) : new Response(JSON.stringify(path === '/api/auth/settings'
+        ? { googleAvailable: true, sessionHours: 168 } : path === '/api/auth/login' ? { url: 'https://accounts.google.com/o/oauth2/v2/auth' }
+          : path === '/api/account' ? init.method === 'DELETE' ? { deleted: true } : user
+            : { user, expiresAt: new Date(Date.now() + 3600000).toISOString() })));
     vi.stubGlobal('fetch', fetch);
     await api.auth.settings(); await api.auth.session(); await api.auth.refresh(); await api.auth.login('/figures');
     await expect(api.auth.logout()).resolves.toBeUndefined();
@@ -64,6 +89,39 @@ describe('same-origin API contract', () => {
     expect(fetch.mock.calls[3][1]).toMatchObject({ method: 'POST', body: '{"returnTo":"/figures"}' });
     expect(fetch.mock.calls[5][1]).toMatchObject({ method: 'PATCH', body: '{"displayName":"Sam"}' });
     expect(fetch.mock.calls[6][1]).toMatchObject({ method: 'DELETE', body: '{"confirmation":"DELETE"}' });
+  });
+
+  it('restores a valid Google identity when Google omits the optional profile name', async () => {
+    const user = { id: 'user-one', displayName: 'Google user', googleName: '', email: 'sam@example.com' };
+    const session = { user, expiresAt: new Date(Date.now() + 3600000).toISOString() };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async path => new Response(JSON.stringify(path === '/api/account' ? user : session))));
+    await expect(api.auth.session()).resolves.toEqual(session);
+    await expect(api.auth.refresh()).resolves.toEqual(session);
+    await expect(api.account.update('Google user')).resolves.toEqual(user);
+  });
+
+  it.each([{ googleName: null }, { googleName: 123 }, { id: '' }, { displayName: '' }, { email: '' }])('still rejects invalid identity fields %j', async fields => {
+    const user = { id: 'user-one', displayName: 'Sam', googleName: '', email: 'sam@example.com', ...fields };
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ user, expiresAt: '2099-01-01T00:00:00Z' }))));
+    await expect(api.auth.session()).rejects.toThrow('The account could not be read safely.');
+  });
+
+  it.each([null, {}, { user: null, expiresAt: 'invalid' },
+    { user: { id: 'user', displayName: 'Sam', googleName: 'Sam', email: 123 }, expiresAt: '2099-01-01T00:00:00Z' },
+    { user: { id: 'user', displayName: 'Sam', googleName: 'Sam', email: 'sam@example.com' }, expiresAt: '2000-01-01T00:00:00Z' },
+  ])('rejects malformed or expired authentication responses: %j', async value => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify(value))));
+    await expect(api.auth.session()).rejects.toThrow();
+    await expect(api.auth.refresh()).rejects.toThrow();
+  });
+
+  it('rejects malformed availability, login, profile, deletion and logout confirmations', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response('{}')));
+    await expect(api.auth.settings()).rejects.toThrow();
+    await expect(api.auth.login('/app')).rejects.toThrow();
+    await expect(api.account.update('Sam')).rejects.toThrow();
+    await expect(api.account.delete('DELETE')).rejects.toThrow();
+    await expect(api.auth.logout()).rejects.toThrow();
   });
 
   it.each([[401, 'unauthenticated'], [401, 'sessionExpired'], [503, 'authUnavailable']] as const)('notifies auth loss while retaining the original %s %s envelope', async (status, code) => {

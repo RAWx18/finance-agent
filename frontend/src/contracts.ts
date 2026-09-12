@@ -142,6 +142,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History List */
+        get: operations["history_list_api_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/history/{slug}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History Detail */
+        get: operations["history_detail_api_history__slug__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/history/{slug}/transcript": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History Transcript */
+        get: operations["history_transcript_api_history__slug__transcript_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/session/options": {
         parameters: {
             query?: never;
@@ -469,6 +520,14 @@ export interface components {
              */
             expiresAt: string;
         };
+        /** CallRequest */
+        CallRequest: {
+            /**
+             * Callid
+             * Format: uuid
+             */
+            callId: string;
+        };
         /** CallState */
         CallState: {
             /** Callid */
@@ -478,9 +537,32 @@ export interface components {
              * @default idle
              * @enum {string}
              */
-            status: "idle" | "connecting" | "active" | "ended" | "error";
+            status: "idle" | "connecting" | "active" | "ending" | "ended" | "error";
+            /**
+             * Cleanupconfirmed
+             * @default true
+             */
+            cleanupConfirmed: boolean;
             /** Message */
             message?: string | null;
+        };
+        /** ChangeItem */
+        ChangeItem: {
+            /** Id */
+            id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "created" | "updated" | "deleted" | "resolved" | "merged" | "proposed" | "accepted" | "rejected" | "invalidated" | "discarded";
+            /** Fields */
+            fields?: components["schemas"]["FieldChange"][];
+            /** Recordids */
+            recordIds?: string[];
+            /** Resultids */
+            resultIds?: string[];
+            /** Cardids */
+            cardIds?: string[];
         };
         /** Choice */
         Choice: {
@@ -534,7 +616,47 @@ export interface components {
             /** Expectedrevision */
             expectedRevision: number;
             /** Operation */
-            operation: components["schemas"]["ReplaceFacts"] | components["schemas"]["PreviewAdjustments"] | components["schemas"]["AcceptPreview"] | components["schemas"]["DiscardPreview"] | components["schemas"]["ClearAccepted"] | components["schemas"]["RespondToAction"];
+            operation: components["schemas"]["ReplaceFacts"] | components["schemas"]["UpdateFacts"] | components["schemas"]["PreviewAdjustments"] | components["schemas"]["AcceptPreview"] | components["schemas"]["DiscardPreview"] | components["schemas"]["RejectPreview"] | components["schemas"]["ClearAccepted"] | components["schemas"]["RespondToAction"];
+        };
+        /** ConflictInput */
+        ConflictInput: {
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "opening" | "amount" | "target" | "outstanding" | "schedule.date";
+            /** Values */
+            values: components["schemas"]["ConflictValueInput"][];
+            /** Recordid */
+            recordId?: string | null;
+        };
+        /** ConflictValue */
+        ConflictValue: {
+            /** Id */
+            id: string;
+            /** Amountpaise */
+            amountPaise?: number | null;
+            /** Date */
+            date?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "exact" | "estimate";
+        };
+        /** ConflictValueInput */
+        ConflictValueInput: {
+            /** Id */
+            id: string;
+            /** Amount */
+            amount?: string | null;
+            /** Date */
+            date?: string | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "exact" | "estimate";
         };
         /** Consequence */
         Consequence: {
@@ -570,6 +692,72 @@ export interface components {
             /** Amountpaise */
             amountPaise: number | null;
         };
+        /** Contribution */
+        Contribution: {
+            /** Id */
+            id: string;
+            /** Recordid */
+            recordId: string | null;
+            /** Eventid */
+            eventId: string | null;
+            /** Amountpaise */
+            amountPaise: number | null;
+            /** Balancepaise */
+            balancePaise?: number | null;
+            /** Date */
+            date?: string | null;
+            /** Included */
+            included: boolean;
+            /** Reason */
+            reason: string;
+            /** References */
+            references: string[];
+        };
+        /** ConversationList */
+        ConversationList: {
+            /** Conversations */
+            conversations: components["schemas"]["ConversationSummary"][];
+        };
+        /** ConversationMessage */
+        ConversationMessage: {
+            /** Id */
+            id: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Text */
+            text: string;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /** Interrupted */
+            interrupted: boolean;
+        };
+        /** ConversationSummary */
+        ConversationSummary: {
+            /** Slug */
+            slug: string;
+            /** Title */
+            title: string;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+            /** Endedat */
+            endedAt: string | null;
+            /**
+             * Expiresat
+             * Format: date-time
+             */
+            expiresAt: string;
+            /** Messagecount */
+            messageCount: number;
+        };
         /** Coverage */
         Coverage: {
             /**
@@ -597,6 +785,17 @@ export interface components {
              */
             debt: "notDiscussed" | "reported" | "reviewed" | "none" | "unknown";
         };
+        /** CoveragePatch */
+        CoveragePatch: {
+            /** Income */
+            income?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
+            /** Essential */
+            essential?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
+            /** Optional */
+            optional?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
+            /** Debt */
+            debt?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
+        };
         /** Decision */
         Decision: {
             /**
@@ -609,6 +808,8 @@ export interface components {
             concern?: string | null;
             /** Focusrecordids */
             focusRecordIds?: string[];
+            /** Ambiguousrecordids */
+            ambiguousRecordIds?: string[];
             /**
              * Responsepreference
              * @default standard
@@ -635,6 +836,19 @@ export interface components {
             /** Nextactionid */
             nextActionId?: string | null;
             outcome?: components["schemas"]["Outcome"] | null;
+        };
+        /** DecisionPatch */
+        DecisionPatch: {
+            /** Intent */
+            intent?: ("plan30Days" | "specificDecision") | null;
+            /** Concern */
+            concern?: string | null;
+            /** Focusrecordids */
+            focusRecordIds?: string[] | null;
+            /** Ambiguousrecordids */
+            ambiguousRecordIds?: string[] | null;
+            /** Responsepreference */
+            responsePreference?: ("standard" | "brief") | null;
         };
         /** Deleted */
         Deleted: {
@@ -706,6 +920,20 @@ export interface components {
             /** Balancepaise */
             balancePaise: number | null;
         };
+        /** FactConflict */
+        FactConflict: {
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "opening" | "amount" | "target" | "outstanding" | "schedule.date";
+            /** Values */
+            values: components["schemas"]["ConflictValue"][];
+            /** Recordid */
+            recordId?: string | null;
+            /** Id */
+            id: string;
+        };
         /** Facts */
         Facts: {
             opening: components["schemas"]["Money"];
@@ -717,6 +945,8 @@ export interface components {
             decision?: components["schemas"]["Decision"];
             /** Providerresponses */
             providerResponses?: components["schemas"]["ProviderResponse"][];
+            /** Conflicts */
+            readonly conflicts?: components["schemas"]["FactConflict"][];
         };
         /** FactsInput */
         FactsInput: {
@@ -732,6 +962,37 @@ export interface components {
             decision?: components["schemas"]["Decision"];
             /** Providerresponses */
             providerResponses?: components["schemas"]["ProviderResponseInput"][];
+            /** Conflicts */
+            readonly conflicts?: components["schemas"]["FactConflict"][];
+        };
+        /** FactsPatch */
+        FactsPatch: {
+            /** Expectedrevision */
+            expectedRevision: number;
+            opening?: components["schemas"]["MoneyInput"] | null;
+            /** Reserve */
+            reserve?: string | null;
+            coverage?: components["schemas"]["CoveragePatch"] | null;
+            /** Records */
+            records?: components["schemas"]["RecordPatch"][];
+            decision?: components["schemas"]["DecisionPatch"] | null;
+            /** Providerresponses */
+            providerResponses?: components["schemas"]["ProviderResponseInput"][];
+            /** Removeproviderresponseids */
+            removeProviderResponseIds?: string[];
+            /** Conflicts */
+            conflicts?: components["schemas"]["ConflictInput"][];
+            /** Resolutions */
+            resolutions?: components["schemas"]["ResolveConflict"][];
+            /** Merges */
+            merges?: components["schemas"]["MergeRecords"][];
+        };
+        /** FieldChange */
+        FieldChange: {
+            /** Reference */
+            reference: string;
+            before: components["schemas"]["JsonValue"];
+            after: components["schemas"]["JsonValue"];
         };
         /** Gap */
         Gap: {
@@ -787,19 +1048,30 @@ export interface components {
             /** Date */
             date?: string | null;
         };
+        JsonValue: unknown;
         /** LoginRequest */
         LoginRequest: {
             /**
              * Returnto
              * @default /app
-             * @enum {string}
              */
-            returnTo: "/app" | "/figures" | "/account";
+            returnTo: ("/app" | "/money" | "/money/income" | "/money/spending" | "/money/debts" | "/money/upcoming" | "/money/changes" | "/account" | "/history") | string;
         };
         /** LoginURL */
         LoginURL: {
             /** Url */
             url: string;
+        };
+        /** MergeRecords */
+        MergeRecords: {
+            /** Sourceid */
+            sourceId: string;
+            /** Targetid */
+            targetId: string;
+            /** Confirmed */
+            confirmed: boolean;
+            /** Reason */
+            reason: string;
         };
         /** Model */
         Model: Record<string, never>;
@@ -993,6 +1265,16 @@ export interface components {
             target?: components["schemas"]["Money"] | null;
             outstanding?: components["schemas"]["Money"] | null;
         };
+        /** RecordConflictInput */
+        RecordConflictInput: {
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "amount" | "target" | "outstanding" | "schedule.date";
+            /** Values */
+            values: components["schemas"]["ConflictValueInput"][];
+        };
         /** RecordInput */
         RecordInput: {
             /** Id */
@@ -1020,6 +1302,62 @@ export interface components {
             target?: components["schemas"]["MoneyInput"] | null;
             outstanding?: components["schemas"]["MoneyInput"] | null;
         };
+        /** RecordPatch */
+        RecordPatch: {
+            /** Id */
+            id?: string | null;
+            /**
+             * Delete
+             * @default false
+             */
+            delete: boolean;
+            /**
+             * Distinct
+             * @default false
+             */
+            distinct: boolean;
+            /** Kind */
+            kind?: ("income" | "essential" | "optional" | "debt") | null;
+            /** Label */
+            label?: string | null;
+            amount?: components["schemas"]["MoneyInput"] | null;
+            schedule?: components["schemas"]["SchedulePatch"] | null;
+            /** Reliability */
+            reliability?: ("reliable" | "uncertain" | "unknown") | null;
+            /** Debttype */
+            debtType?: ("loan" | "card" | "informal" | "unknown") | null;
+            /** Autodebit */
+            autoDebit?: boolean | null;
+            /** Controllability */
+            controllability?: ("unknown" | "controllable" | "committed") | null;
+            target?: components["schemas"]["MoneyInput"] | null;
+            outstanding?: components["schemas"]["MoneyInput"] | null;
+            /** Conflicts */
+            conflicts?: components["schemas"]["RecordConflictInput"][];
+        };
+        /** RejectPreview */
+        RejectPreview: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "rejectPreview";
+            /**
+             * Previewid
+             * Format: uuid
+             */
+            previewId: string;
+        };
+        /** RejectedProposal */
+        RejectedProposal: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Adjustments */
+            adjustments: components["schemas"]["Adjustment"][];
+        };
         /** ReplaceFacts */
         ReplaceFacts: {
             /**
@@ -1028,6 +1366,12 @@ export interface components {
              */
             type: "replaceFacts";
             facts: components["schemas"]["FactsInput"];
+        };
+        /** ResolveConflict */
+        ResolveConflict: {
+            /** Conflictid */
+            conflictId: string;
+            value: components["schemas"]["ConflictValueInput"];
         };
         /** RespondToAction */
         RespondToAction: {
@@ -1043,6 +1387,29 @@ export interface components {
              * @enum {string}
              */
             response: "unavailable" | "declined";
+        };
+        /** SavedConversation */
+        SavedConversation: {
+            /** Slug */
+            slug: string;
+            /** Title */
+            title: string;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+            /** Endedat */
+            endedAt: string | null;
+            /**
+             * Expiresat
+             * Format: date-time
+             */
+            expiresAt: string;
+            /** Messagecount */
+            messageCount: number;
+            /** Messages */
+            messages: components["schemas"]["ConversationMessage"][];
         };
         /** Scenario */
         Scenario: {
@@ -1076,9 +1443,26 @@ export interface components {
              * @enum {string}
              */
             recurrence: "once" | "weekly" | "fortnightly" | "monthly";
+            /**
+             * Certainty
+             * @default exact
+             * @enum {string}
+             */
+            certainty: "exact" | "estimate" | "unknown";
+        };
+        /** SchedulePatch */
+        SchedulePatch: {
+            /** Date */
+            date?: string | null;
+            /** Recurrence */
+            recurrence?: ("once" | "weekly" | "fortnightly" | "monthly") | null;
+            /** Certainty */
+            certainty?: ("exact" | "estimate" | "unknown") | null;
         };
         /** Settings */
         Settings: {
+            /** Assistantname */
+            assistantName: string;
             /**
              * Currency
              * @constant
@@ -1106,6 +1490,10 @@ export interface components {
             maxRequestBytes: number;
             /** Recurrence */
             recurrence: string[];
+            /** Voicestartupseconds */
+            voiceStartupSeconds: number;
+            /** Voiceshutdownseconds */
+            voiceShutdownSeconds: number;
             /**
              * Voiceavailable
              * @default false
@@ -1167,6 +1555,10 @@ export interface components {
             accepted?: components["schemas"]["Scenario"] | null;
             /** Invalidatedassumptions */
             invalidatedAssumptions?: components["schemas"]["InvalidatedAssumption"][];
+            readonly workspace?: components["schemas"]["Workspace"];
+            readonly latestChange?: components["schemas"]["WorkspaceChange"] | null;
+            /** Rejectedproposals */
+            readonly rejectedProposals?: components["schemas"]["RejectedProposal"][];
         };
         /** Uncertainty */
         Uncertainty: {
@@ -1210,6 +1602,15 @@ export interface components {
              */
             recurrence: "once" | "weekly" | "fortnightly" | "monthly";
         };
+        /** UpdateFacts */
+        UpdateFacts: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "updateFacts";
+            changes: components["schemas"]["FactsPatch"];
+        };
         /** User */
         User: {
             /**
@@ -1223,6 +1624,156 @@ export interface components {
             googleName: string;
             /** Email */
             email: string;
+        };
+        /** Workspace */
+        Workspace: {
+            /** Cards */
+            cards?: components["schemas"]["WorkspaceCard"][];
+            /** Questions */
+            questions?: components["schemas"]["WorkspaceQuestion"][];
+            /** Issues */
+            issues?: components["schemas"]["Uncertainty"][];
+            /** Results */
+            results?: components["schemas"]["WorkspaceResult"][];
+            /** Contributions */
+            contributions?: components["schemas"]["Contribution"][];
+            /** Actions */
+            actions?: components["schemas"]["Action"][];
+            /** Choices */
+            choices?: components["schemas"]["Choice"][];
+            change?: components["schemas"]["WorkspaceChange"] | null;
+        };
+        /** WorkspaceCard */
+        WorkspaceCard: {
+            /** Id */
+            id: string;
+            /**
+             * Template
+             * @enum {string}
+             */
+            template: "cash" | "income" | "essential" | "optional" | "loans" | "creditCards" | "questions" | "timeline" | "gap" | "proposal" | "assumptions" | "invalidation" | "outcome";
+            /**
+             * Section
+             * @enum {string}
+             */
+            section: "facts" | "issues" | "timeline" | "decisions" | "outcome";
+            /** Title */
+            title: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "known" | "estimated" | "uncertain" | "missing" | "conflicting" | "proposed" | "accepted" | "unresolved";
+            /** Rows */
+            rows?: components["schemas"]["WorkspaceRow"][];
+            /** Recordids */
+            recordIds?: string[];
+            /** Eventids */
+            eventIds?: string[];
+            /** Issueids */
+            issueIds?: string[];
+            /** Resultids */
+            resultIds?: string[];
+            /** Dependencies */
+            dependencies?: string[];
+        };
+        /** WorkspaceChange */
+        WorkspaceChange: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Revision */
+            revision: number;
+            /** Items */
+            items: components["schemas"]["ChangeItem"][];
+        };
+        /** WorkspaceQuestion */
+        WorkspaceQuestion: {
+            /** Id */
+            id: string;
+            /** Actionid */
+            actionId: string | null;
+            /** Fields */
+            fields: string[];
+            /** Recordids */
+            recordIds: string[];
+            /** Why */
+            why: string;
+            /** Resolves */
+            resolves: string[];
+            /** Changes */
+            changes: string[];
+            /** Blocks */
+            blocks: string[];
+            /** Beforedate */
+            beforeDate: string | null;
+            /** Priority */
+            priority: number;
+        };
+        /** WorkspaceResult */
+        WorkspaceResult: {
+            /** Id */
+            id: string;
+            /**
+             * Fromdate
+             * Format: date
+             */
+            fromDate: string;
+            /**
+             * Untildateexclusive
+             * Format: date
+             */
+            untilDateExclusive: string;
+            /** Amountpaise */
+            amountPaise: number | null;
+            /** Date */
+            date?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "known" | "estimated" | "uncertain" | "missing" | "conflicting" | "proposed" | "accepted" | "unresolved";
+            /** Rule */
+            rule: string;
+            /** Resultids */
+            resultIds?: string[];
+            /** Contributionids */
+            contributionIds: string[];
+            /** Excludedids */
+            excludedIds: string[];
+            /** Excludedreasons */
+            excludedReasons?: {
+                [key: string]: string;
+            };
+            /** Eventids */
+            eventIds: string[];
+            /** Witnesseventids */
+            witnessEventIds?: string[];
+            /** Recordids */
+            recordIds: string[];
+            /** Issueids */
+            issueIds: string[];
+            /** Dependencies */
+            dependencies: string[];
+            /** Assumptions */
+            assumptions: string[];
+        };
+        /** WorkspaceRow */
+        WorkspaceRow: {
+            /** Field */
+            field: string;
+            /** Label */
+            label: string;
+            value: components["schemas"]["JsonValue"];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "known" | "estimated" | "uncertain" | "missing" | "conflicting" | "proposed" | "accepted" | "unresolved";
+            /** References */
+            references?: string[];
         };
     };
     responses: never;
@@ -2766,6 +3317,423 @@ export interface operations {
             };
         };
     };
+    history_list_api_history_get: {
+        parameters: {
+            query?: {
+                search?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationList"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Precondition Required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    history_detail_api_history__slug__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SavedConversation"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Precondition Required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    history_transcript_api_history__slug__transcript_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Precondition Required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     options_api_session_options_get: {
         parameters: {
             query?: never;
@@ -3049,7 +4017,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Model"];
+                "application/json": components["schemas"]["CallRequest"];
             };
         };
         responses: {
@@ -3188,9 +4156,9 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
-                "application/json": components["schemas"]["Model"] | null;
+                "application/json": components["schemas"]["CallRequest"];
             };
         };
         responses: {
