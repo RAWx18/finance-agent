@@ -81,9 +81,11 @@ def test_variable_amount_status_is_per_occurrence(kind, config):
     assert plan.projection_partial and not plan.budget_basis.dated_projection_complete
     assert not plan.events[2].included
     if kind == "income":
-        assert plan.reliable_income_paise == 10000
-        assert plan.uncertain_income_paise == 20000
-        assert plan.income_comparisons[0].metrics.reliable_income_paise == 30000
+        # Reliable estimated occurrences count; the comparison shows the plan without them.
+        assert plan.reliable_income_paise == 30000
+        assert plan.uncertain_income_paise == 0
+        assert plan.income_comparisons[0].id == "income:withoutAssumed"
+        assert plan.income_comparisons[0].metrics.reliable_income_paise == 10000
     else:
         assert plan.outflow_paise == 30000
     if kind == "debt":
@@ -181,11 +183,10 @@ def test_budget_kind_guards(kind):
         scheduled("optional", "monthlyBudget", amounts=[money("1")]),
         variable("debt") | {"target": money("5000")},
         variable() | {"amount": money("1000")},
-        variable("optional", [foreign()]),
     ],
 )
 def test_ambiguous_or_incompatible_amounts_are_rejected(item):
-    """Verify ambiguous scalar, variable, budget, target, and currency combinations are rejected."""
+    """Verify ambiguous scalar, variable, budget and target combinations are rejected."""
     with pytest.raises(ValueError):
         project(facts("0", [item]))
 

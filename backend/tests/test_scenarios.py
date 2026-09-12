@@ -57,7 +57,9 @@ def test_options_are_read_only_baseline_owned_and_schema_is_additive(client):
     assert actual["options"][0].pop("acceptanceReady") is True
     assert len(actual["options"][0].pop("dependencyKey")) == 64
     assert actual == {
+        "sessionId": baseline["sessionId"],
         "revision": 1,
+        "sequence": baseline["sequence"],
         "today": "2026-09-11",
         "options": [
             {
@@ -223,7 +225,9 @@ def test_day_rollover_rejects_acceptance_without_expiring_the_cash_basis(tmp_pat
         )
         now[0] += timedelta(hours=18)
         assert client.get("/api/session/options").json() == {
+            "sessionId": preview["sessionId"],
             "revision": 1,
+            "sequence": preview["sequence"] + 1,
             "today": "2026-09-12",
             "options": [],
         }

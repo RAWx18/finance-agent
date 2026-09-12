@@ -319,8 +319,8 @@ async def test_date_conflict_and_money_conflict_resolve_independently(store):
 
 
 @pytest.mark.parametrize("kind", ["income", "essential"])
-async def test_approximate_dates_qualify_outflows_and_never_assure_receipts(store, kind):
-    """Verify estimated dates qualify projections and exclude receipts from reliable income."""
+async def test_approximate_dates_qualify_outflows_and_label_receipts(store, kind):
+    """Verify estimated dates qualify projections and keep a without-receipt comparison."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -341,11 +341,15 @@ async def test_approximate_dates_qualify_outflows_and_never_assure_receipts(stor
     )
     assert snapshot.plan.projection_partial
     assert snapshot.plan.decision_assessment.outcome.readiness == "qualified"
-    assert snapshot.plan.events[0].included is (kind == "essential")
-    assert snapshot.plan.reliable_income_paise == 0
+    assert snapshot.plan.events[0].included
+    assert snapshot.plan.uncertain_income_paise == 0
     if kind == "income":
-        assert snapshot.plan.uncertain_income_paise == 20000
-        assert snapshot.plan.income_comparisons
+        assert snapshot.plan.reliable_income_paise == 20000
+        assert [item.id for item in snapshot.plan.income_comparisons] == ["income:withoutAssumed"]
+        assert snapshot.plan.decision_assessment.outcome.secondary.startswith("Even without item")
+    else:
+        assert snapshot.plan.reliable_income_paise == 0
+        assert not snapshot.plan.income_comparisons
     exact = await store.command(
         "owner",
         update(
@@ -353,6 +357,7 @@ async def test_approximate_dates_qualify_outflows_and_never_assure_receipts(stor
         ),
     )
     assert exact.plan.events[0].included
+    assert not exact.plan.income_comparisons
 
 
 async def test_merge_needs_compatible_duplicate_confirmation_and_preserves_debt_fields(store):
@@ -448,7 +453,8 @@ async def test_empty_intake_no_placeholder_cards_cash_only_is_qualified_and_cove
     empty = await store.create("owner")
     assert empty.workspace.cards == []
     snapshot = await store.command("owner", update(0, opening=money("5000")))
-    assert [card.id for card in snapshot.workspace.cards] == ["cash"]
+    assert [card.id for card in snapshot.workspace.cards] == ["cash", "questions"]
+    assert any("coverage.income" in question.fields for question in snapshot.workspace.questions)
     assert snapshot.plan.decision_assessment.outcome.readiness == "qualified"
     assert len(snapshot.workspace.questions) <= 3
     assert len(snapshot.workspace.actions) <= store.config.workspace_max_actions
@@ -1149,8 +1155,9 @@ async def test_nested_new_partial_conflict_is_atomic_and_preserves_certainty(sto
     assert resolved.facts.records[0].amount.status == "estimate"
     assert resolved.facts.records[0].amount.amount_paise == 5000001
     assert resolved.facts.records[0].schedule.date == date(2026, 9, 21)
-    assert resolved.plan.reliable_income_paise == 0
-    assert resolved.plan.uncertain_income_paise == 5000001
+    assert resolved.plan.events[1].amount_status == "estimate"
+    assert resolved.plan.reliable_income_paise == 5000001
+    assert resolved.plan.uncertain_income_paise == 0
     assert await store.get("owner") == resolved
 
 

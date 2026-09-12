@@ -34,6 +34,7 @@ from .auth_routes import owner
 from .auth_routes import router as auth_router
 from .config import ROOT, Config, Environment, load_config
 from .diagnostics import diagnostic_sink, record_event, request_id
+from .exchange import ExchangeRates
 from .finance import export_text
 from .google import Google
 from .history import ConversationList, History, SavedConversation, transcript
@@ -387,7 +388,18 @@ def create_app(
     """Build the cashflow application with shared services, routes, and lifecycle hooks."""
     config = config if config is not None else load_config()
     environment = environment if environment is not None else Environment.load()
-    store = Store(environment.data_dir / "sessions.sqlite3", config, clock)
+    store = Store(
+        environment.data_dir / "sessions.sqlite3",
+        config,
+        clock,
+        rates=ExchangeRates(
+            environment.data_dir / "exchange.sqlite3",
+            config.exchange,
+            config.timezone,
+            config.currency,
+            clock,
+        ),
+    )
     history = History(store)
     auth = Auth(store, environment, google)
     calls = CallManager(store, config, environment, auth)

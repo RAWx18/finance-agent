@@ -167,8 +167,8 @@ def test_pattern_end_date_clips_inclusively(end, expected):
     assert plan.outflow_paise == expected * 3000000
 
 
-def test_month_end_salary_is_only_in_conditional_receipt_comparison():
-    """Verify month-end salary remains uncertain income counted only in conditional comparisons."""
+def test_month_end_salary_counts_with_assumed_timing_and_a_without_salary_comparison():
+    """Verify reliable month-end salary funds dated rent while the headline names the assumption."""
     plan = project(
         facts(
             "1000",
@@ -179,12 +179,24 @@ def test_month_end_salary_is_only_in_conditional_receipt_comparison():
         )
     )
     salary = next(event for event in plan.events if event.record_id == "salary")
-    assert salary.date == date(2026, 9, 30) and not salary.included
+    assert salary.date == date(2026, 9, 30) and salary.included
     assert salary.amount_status == "exact" and "month-end" in salary.date_assumption
-    assert plan.reliable_income_paise == 0 and plan.uncertain_income_paise == 3000000
-    assert plan.closing_paise == -1900000
-    assert plan.income_comparisons[0].metrics.closing_paise == 1100000
-    assert plan.income_comparisons[1].metrics.closing_paise == -1900000
+    assert plan.reliable_income_paise == 3000000 and plan.uncertain_income_paise == 0
+    assert plan.closing_paise == 1100000 and plan.first_gap is None
+    without = plan.income_comparisons[0]
+    assert without.id == "income:withoutAssumed"
+    assert without.conditions[0].arrival == "notByHorizon"
+    assert without.metrics.closing_paise == -1900000
+    assert without.metrics.first_gap.date == date(2026, 10, 1)
+    outcome = plan.decision_assessment.outcome
+    assert outcome.headline.startswith("Your dated payments fit")
+    assert "salary is counted on its usual day" in outcome.top_caveat
+    assert outcome.secondary == "Without salary, rent on 2026-10-01 would be INR 19000.00 short."
+    assert next_action(plan).kind == "confirmReceipt"
+    assert (
+        "Check it has actually arrived before paying rent on 2026-10-01"
+        in next_action(plan).question
+    )
     assert not any(
         item.id == "salary:schedule.date" for item in plan.decision_assessment.uncertainties
     )

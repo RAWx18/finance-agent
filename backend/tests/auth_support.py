@@ -12,6 +12,7 @@ from joserfc.jwk import RSAKey
 from pydantic import SecretStr
 
 from app.config import AuthConfig, Environment, load_config
+from app.exchange import ExchangeRate, ExchangeRates
 from app.google import ISSUER, JWKS, REVOKE, TOKEN, USERINFO, Google, GoogleRejected
 from app.main import create_app
 from app.store import utc_now
@@ -143,6 +144,24 @@ class BrowserGoogle(GoogleDouble):
         )
 
 
+class ExchangeDouble(ExchangeRates):
+    """Keep cache and storage real while currency observations stay deterministic and offline."""
+
+    quotes: dict[str, str]
+
+    async def fetch(self, source):
+        rate = self.quotes.get(source)
+        if rate is None:
+            return None
+        return ExchangeRate(
+            base=source,
+            quote=self.currency,
+            rate=rate,
+            date=self.clock().astimezone(self.timezone).date(),
+            fetched_at=self.clock(),
+        )
+
+
 def browser_app():
     """Build an authenticated browser-test app with synthetic Google and shared-IP limits."""
     config = load_config()
@@ -158,6 +177,7 @@ def browser_app():
     application = auth_app(
         config, environment, google=BrowserGoogle(config.auth, environment, utc_now)
     )
+    application.state.store.rates.quotes["USD"] = "80"
     return application
 
 
@@ -187,6 +207,15 @@ def auth_app(config, environment, clock=utc_now, static_dir=None, google=None):
     google = google or GoogleDouble(config.auth, environment, clock)
     google.config = config.auth
     application = create_app(config, environment, clock, static_dir, google)
+    rates = ExchangeDouble(
+        environment.data_dir / "exchange.sqlite3",
+        config.exchange,
+        config.timezone,
+        config.currency,
+        clock,
+    )
+    rates.quotes = {}
+    application.state.store.rates = rates
     return application
 
 

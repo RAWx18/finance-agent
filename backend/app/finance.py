@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from .amounts import money_value
 from .config import Config
 from .decisions import assess
+from .exchange import ExchangeRate, apply_rates
 from .facts import facts_input
 from .models import (
     Adjustment,
@@ -32,6 +33,7 @@ from .models import (
     UndatedImpact,
     UndatedItem,
     UnresolvedAmount,
+    direct_money,
 )
 
 
@@ -54,7 +56,7 @@ def money(value: MoneyInput, config: Config) -> Money:
     )
 
 
-def normalize(source: FactsInput, config: Config) -> Facts:
+def normalize(source: FactsInput, config: Config, *, validate_targets: bool = True) -> Facts:
     """Validate financial input relationships and normalize stored money values."""
     if len(source.records) > config.max_records:
         raise ValueError("Too many financial records")
@@ -89,7 +91,8 @@ def normalize(source: FactsInput, config: Config) -> Facts:
             else None,
         )
         if (
-            record.target is not None
+            validate_targets
+            and record.target is not None
             and record.target.amount_paise is not None
             and record.amount.amount_paise is not None
             and record.target.amount_paise < record.amount.amount_paise
@@ -112,6 +115,21 @@ def normalize(source: FactsInput, config: Config) -> Facts:
             for item in source.provider_responses
         ],
     )
+
+
+def projection_facts(
+    facts: Facts, config: Config, exchange_rates: dict[str, ExchangeRate] | None
+) -> Facts:
+    """Derive an isolated valuation using only the projection's observed exchange rates."""
+    source = facts_input(facts).model_dump()
+    if exchange_rates is not None:
+        source = apply_rates(source, exchange_rates, capture=False)
+    normalized = normalize(FactsInput.model_validate(source), config, validate_targets=False)
+    for response, stored in zip(
+        normalized.provider_responses, facts.provider_responses, strict=True
+    ):
+        response.dependency_key = stored.dependency_key
+    return normalized
 
 
 def debt_balance_conflict(record: Record) -> bool:
@@ -225,12 +243,10 @@ def calculate(
     *,
     adjustments: list[Adjustment] | None = None,
     today: date | None = None,
+    exchange_rates: dict[str, ExchangeRate] | None = None,
 ) -> Plan:
     """Project cashflow, conditional scenarios, and decisions from reported financial facts."""
-    # Source terms are authoritative, including after persisted-cache or in-memory corrections.
-    normalized = normalize(facts_input(facts), config)
-    facts.records = normalized.records
-    facts.opening = normalized.opening
+    facts = projection_facts(facts, config, exchange_rates)
     records_by_id = {record.id: record for record in facts.records}
     if len(facts.conflicts) > config.max_records * 4 + 1 or len(
         {item.id for item in facts.conflicts}
@@ -248,8 +264,18 @@ def calculate(
             raise ValueError("Conflict field does not exist on this record")
         for value in conflict.values:
             if value.source is not None:
-                if conflict.field != "amount" or record is None or record.kind != "income":
-                    raise ValueError("Only income amount conflicts can use currency conversion")
+                value.source = MoneyInput.model_validate(
+                    direct_money(
+                        value.source,
+                        (
+                            "valuation"
+                            if conflict.field == "outstanding"
+                            else "receipt"
+                            if record is None or record.kind == "income"
+                            else "payment"
+                        ),
+                    )
+                )
                 value.amount_paise, _ = money_value(value.source, config.max_money_paise)
         if any(
             item.amount_paise is not None and item.amount_paise > config.max_money_paise
@@ -288,6 +314,35 @@ def calculate(
         issue("unknownOpening", "Confirm available cash; balances cannot be calculated yet.")
     if facts.opening.status == "estimate":
         issue("estimate", "Opening cash is a reported estimate, not independently verified.")
+    if (
+        facts.opening.source
+        and facts.opening.source.conversion
+        and facts.opening.source.conversion.provider == "frankfurter"
+    ):
+        issue(
+            "referenceRate",
+            "Opening INR uses a Frankfurter reference-rate estimate, not a bank quote.",
+        )
+    quoted: list[tuple[Record | None, list[Money | None]]] = [
+        (None, [facts.opening]),
+        *((record, [record.amount, record.target, record.outstanding]) for record in facts.records),
+        *((None, [response.payment, response.cost]) for response in facts.provider_responses),
+    ]
+    for record, values in quoted:
+        for quote in values:
+            if (
+                quote is not None
+                and quote.source is not None
+                and quote.source.conversion is not None
+                and quote.amount_paise is None
+            ):
+                partial = True
+                issue(
+                    "unknownConversion",
+                    "INR conversion is unavailable; confirm missing source or conversion terms. "
+                    "Unknown INR is excluded from totals.",
+                    record,
+                )
     for kind, status in facts.coverage.model_dump().items():
         if status not in {"reviewed", "none"}:
             partial = True
@@ -296,6 +351,54 @@ def calculate(
             )
     for record in facts.records:
         selected = record.target if record.target is not None else record.amount
+        required_floor = (
+            record.target is not None
+            and selected.amount_paise is not None
+            and record.amount.amount_paise is not None
+            and selected.amount_paise < record.amount.amount_paise
+        )
+        if required_floor:
+            partial = True
+            issue(
+                "targetBelowRequired",
+                "The selected target is below the current required/minimum payment. "
+                "The projection includes the required exposure without changing the selected "
+                "target; confirm the payment and conversion terms before relying on the plan.",
+                record,
+            )
+            selected = record.amount
+        if any(
+            value is not None
+            and value.source is not None
+            and value.source.conversion is not None
+            and value.source.conversion.provider == "frankfurter"
+            for value in (record.amount, record.target, record.outstanding)
+        ) or any(
+            value.conversion is not None and value.conversion.provider == "frankfurter"
+            for value in record.schedule.amounts
+        ):
+            issue(
+                "referenceRate",
+                "Frankfurter reference-rate estimate, not a bank quote."
+                + (
+                    " Unknown transaction fees are excluded from the estimate "
+                    "and remain unconfirmed."
+                    if any(
+                        value.conversion is not None
+                        and value.conversion.provider == "frankfurter"
+                        and value.conversion.direction != "valuation"
+                        and value.conversion.fee_status == "unknown"
+                        for value in [
+                            value.source
+                            for value in (record.amount, record.target, record.outstanding)
+                            if value is not None and value.source is not None
+                        ]
+                        + record.schedule.amounts
+                    )
+                    else ""
+                ),
+                record,
+            )
         variable = bool(record.schedule.amounts)
         budget = record.schedule.recurrence == "monthlyBudget"
         forecast = record.schedule.basis == "allowance"
@@ -326,7 +429,7 @@ def calculate(
                 "including within this horizon. Confirm when the budget should start."
                 if budget
                 else "The reported date is approximate; earlier obligations remain possible "
-                "and receipts are not assured.",
+                "and receipt timing is an assumption, not confirmed.",
                 record,
             )
         if record.reliability in {"uncertain", "unknown"}:
@@ -387,7 +490,8 @@ def calculate(
             issue(
                 "monthlyPattern",
                 "Dates calculated from the reported monthly pattern are estimates; timing "
-                "is unconfirmed. No arrears are inferred and income is not assured.",
+                "is unconfirmed. No arrears are inferred; a reliable receipt is counted on "
+                "its calculated day as an assumption.",
                 record,
             )
         if forecast:
@@ -587,19 +691,15 @@ def calculate(
                     schedule_index=index if variable or budget or count is not None else None,
                     amount_basis="budget"
                     if budget or forecast
+                    else "requiredFloor"
+                    if required_floor
                     else "requiredOnly"
                     if required_only
                     else "reported",
+                    # Reliable income counts at its reported figure and calculated day; estimated
+                    # amounts, approximate dates and monthly patterns stay labelled assumptions.
                     included=counted.amount_paise is not None
-                    and (
-                        record.kind != "income"
-                        or (
-                            record.reliability == "reliable"
-                            and counted.status == "exact"
-                            and record.schedule.certainty == "exact"
-                            and pattern is None
-                        )
-                    ),
+                    and (record.kind != "income" or record.reliability == "reliable"),
                     overdue=original < anchor,
                     auto_debit=record.auto_debit,
                     balance_paise=None,
@@ -652,6 +752,12 @@ def calculate(
         ):
             continue
         selected = record.target if record.target is not None else record.amount
+        if (
+            selected.amount_paise is not None
+            and record.amount.amount_paise is not None
+            and selected.amount_paise < record.amount.amount_paise
+        ):
+            selected = record.amount
         variable = bool(record.schedule.amounts)
         if selected.amount_paise == 0 and record.amount.amount_paise == 0:
             continue
@@ -698,6 +804,14 @@ def calculate(
         selected = record.target if record.target is not None else record.amount
         if selected.amount_paise == 0 and record.amount.amount_paise == 0:
             continue
+        required_floor = (
+            record.target is not None
+            and selected.amount_paise is not None
+            and record.amount.amount_paise is not None
+            and selected.amount_paise < record.amount.amount_paise
+        )
+        if required_floor:
+            selected = record.amount
         required_only = selected.amount_paise is None and record.amount.amount_paise is not None
         if required_only:
             selected = record.amount
@@ -719,7 +833,12 @@ def calculate(
             else "Occurrence count within this period is unknown without a start date; "
             "variable or unanchored sequences are excluded from the allowance."
         )
-        if required_only:
+        if required_floor:
+            assumption += (
+                " Uses the current required/minimum exposure; the selected target is below it "
+                "and remains unchanged. Confirm the payment and conversion terms."
+            )
+        elif required_only:
             assumption += " Uses only the required/minimum; the higher intended target is unknown."
         elif record.target is not None:
             assumption += " Uses the intended target, not an additional payment."
@@ -743,7 +862,11 @@ def calculate(
                 amount_paise=selected.amount_paise if computable else None,
                 status=selected.status if computable else "unknown",
                 recurrence=record.schedule.recurrence,
-                amount_basis="requiredOnly" if required_only else "reported",
+                amount_basis="requiredFloor"
+                if required_floor
+                else "requiredOnly"
+                if required_only
+                else "reported",
                 required_paise=record.amount.amount_paise if record.kind == "debt" else None,
                 target_paise=record.target.amount_paise if record.target is not None else None,
                 assumption=assumption,
@@ -767,7 +890,15 @@ def calculate(
         )
     plan = Plan(
         **metrics.model_dump(),
+        planning_facts=facts,
+        occurrence_amounts={
+            record.id: [money(value, config) for value in record.schedule.amounts]
+            for record in facts.records
+            if record.schedule.amounts
+        },
         evaluated_on=today or anchor,
+        exchange_rates=exchange_rates or {},
+        exchange_checked_on=(today or anchor) if exchange_rates is not None else None,
         projection_partial=partial,
         events=events,
         issues=issues,
@@ -783,6 +914,7 @@ def calculate(
                     "pastIncome",
                     "uncertainDate",
                     "monthlyPattern",
+                    "targetBelowRequired",
                 }
                 for item in issues
             ),
@@ -793,6 +925,18 @@ def calculate(
         event
         for event in events
         if event.kind == "income" and not event.included and event.amount_paise is not None
+    ]
+    assumed = [
+        event
+        for event in events
+        if event.kind == "income"
+        and event.included
+        and event.amount_paise
+        and (
+            event.date_assumption
+            or event.amount_status != "exact"
+            or records_by_id[event.record_id].schedule.certainty != "exact"
+        )
     ]
     if conditional:
         for arrival in ("reportedDate", "notByHorizon"):
@@ -812,6 +956,21 @@ def calculate(
                     metrics=comparison,
                 )
             )
+    if assumed:
+        branch = [
+            event.model_copy(update={"included": False}) if event in assumed else event.model_copy()
+            for event in events
+        ]
+        comparison, _ = reconcile(branch, facts, anchor, config)
+        plan.income_comparisons.append(
+            IncomeComparison(
+                id="income:withoutAssumed",
+                conditions=[
+                    IncomeCondition(event_id=event.id, arrival="notByHorizon") for event in assumed
+                ],
+                metrics=comparison,
+            )
+        )
     options = (
         adjustment_options(
             facts, events, anchor, anchor + timedelta(days=config.horizon_days), today or anchor
@@ -866,9 +1025,10 @@ def calculate(
         ]
         minimum_impacts[day], _ = reconcile(branch, facts, anchor, config)
     receipt_impacts = {}
-    for receipt in conditional:
+    for receipt in conditional + assumed:
+        # Conditional receipts are compared included; assumed receipts are compared excluded.
         branch = [
-            event.model_copy(update={"included": True})
+            event.model_copy(update={"included": receipt in conditional})
             if event.id == receipt.id
             else event.model_copy()
             for event in events
@@ -988,6 +1148,7 @@ def reconcile(
 
 def export_text(snapshot: Snapshot) -> str:
     """Render a cashflow review with decisions, supporting facts, and qualified scenarios."""
+
     def rupees(amount: int | None) -> str:
         """Format a paise amount as INR text, preserving unknown amounts."""
         if amount is None:
@@ -1004,7 +1165,8 @@ def export_text(snapshot: Snapshot) -> str:
             f"INR per {conversion.currency} rate {conversion.rate or 'unknown'} "
             f"({conversion.rate_status}), rate date {conversion.rate_date or 'unknown'}; "
             f"INR fee {conversion.fee if conversion.fee is not None else 'unknown'} "
-            f"({conversion.fee_status}); net INR is derived, not an additional receipt"
+            f"({conversion.fee_status}); {conversion.direction} INR is derived, "
+            "not an additional amount"
         )
 
     def amount_details(record: Record) -> str:
@@ -1013,12 +1175,14 @@ def export_text(snapshot: Snapshot) -> str:
         text = f"{rupees(selected.amount_paise)} ({selected.status}, reported)"
         if record.schedule.amounts:
             text = "varies by occurrence: " + "; ".join(
-                f"index {index}: {source_details(value)}"
+                f"index {index}: calculated "
+                f"{rupees(plan.occurrence_amounts[record.id][index].amount_paise)}; "
+                f"{source_details(value)}"
                 for index, value in enumerate(record.schedule.amounts)
             )
         elif selected.source is not None:
             text = (
-                f"net {rupees(selected.amount_paise)} ({selected.status}, derived); "
+                f"calculated {rupees(selected.amount_paise)} ({selected.status}, derived); "
                 + source_details(selected.source)
             )
         if record.schedule.recurrence == "monthlyBudget":
@@ -1032,16 +1196,21 @@ def export_text(snapshot: Snapshot) -> str:
                 f"selected target {text}; required/minimum {rupees(record.amount.amount_paise)} "
                 f"({record.amount.status}, reported)"
             )
+            if record.amount.source is not None:
+                text += "; " + source_details(record.amount.source)
         if record.outstanding is not None:
             text += (
                 f"; outstanding {rupees(record.outstanding.amount_paise)} "
                 f"({record.outstanding.status}, reported; unchanged)"
             )
+            if record.outstanding.source is not None:
+                text += "; " + source_details(record.outstanding.source)
         return text
 
     plan = snapshot.accepted.plan if snapshot.accepted is not None else snapshot.plan
+    facts = plan.planning_facts
     assessment = plan.decision_assessment
-    records = {record.id: record for record in snapshot.facts.records}
+    records = {record.id: record for record in facts.records}
     outcome = assessment.outcome
     relevant_actions = [
         action for action in assessment.actions if action.id == assessment.next_action_id
@@ -1081,8 +1250,14 @@ def export_text(snapshot: Snapshot) -> str:
         f"Outlook: {assessment.outcome.branch if assessment.outcome else 'uncertain'}; "
         "known projection "
         f"{'is partial' if plan.projection_partial else 'uses reviewed coverage'}.",
-        f"Opening: {rupees(snapshot.facts.opening.amount_paise)} "
-        f"({snapshot.facts.opening.status}, reported).",
+        f"Opening: {rupees(facts.opening.amount_paise)} ({facts.opening.status}, reported).",
+        *([source_details(facts.opening.source)] if facts.opening.source is not None else []),
+        *(
+            f"Provider {response.event_id} {field}: {source_details(value.source)}"
+            for response in facts.provider_responses
+            for field, value in (("payment", response.payment), ("cost", response.cost))
+            if value is not None and value.source is not None
+        ),
         f"Reliable dated receipts: {rupees(plan.reliable_income_paise)}.",
         "Uncertain dated receipts (excluded, not treated as confirmed zero): "
         f"{rupees(plan.uncertain_income_paise)}.",
@@ -1096,7 +1271,7 @@ def export_text(snapshot: Snapshot) -> str:
         ),
         f"Trough: {rupees(plan.trough_paise)}; "
         f"peak cumulative cash gap: {rupees(plan.peak_gap_paise)}.",
-        f"Reserve floor (not an expense): {rupees(snapshot.facts.reserve_paise)}; "
+        f"Reserve floor (not an expense): {rupees(facts.reserve_paise)}; "
         f"reserve shortfall: {rupees(plan.reserve_shortfall_paise)}.",
         f"First gap: {plan.first_gap.date}, {rupees(plan.first_gap.amount_paise)}."
         if plan.first_gap
@@ -1160,7 +1335,9 @@ def export_text(snapshot: Snapshot) -> str:
     rows.append("Dated rows:")
     for event in plan.events:
         basis = (
-            "required/minimum only; selected target unknown"
+            "current required/minimum exposure; selected target below minimum and unchanged"
+            if event.amount_basis == "requiredFloor"
+            else "required/minimum only; selected target unknown"
             if event.amount_basis == "requiredOnly"
             else "accepted planning assumption"
             if event.amount_basis == "assumed"
@@ -1185,7 +1362,7 @@ def export_text(snapshot: Snapshot) -> str:
             f"balance {rupees(event.balance_paise)}"
         )
     rows.append("Reported records (including those outside the projection):")
-    for record in snapshot.facts.records:
+    for record in facts.records:
         rows.append(
             f"{record.label} [{record.id}] | {record.kind} | {amount_details(record)} | "
             f"date {record.schedule.date or 'unknown'}; {record.schedule.recurrence}; "
@@ -1207,7 +1384,7 @@ def export_text(snapshot: Snapshot) -> str:
                 f"{amount_details(record)} | excluded from dated projection pending its date"
             )
     rows.append("Uncertainty and verification:")
-    for conflict in snapshot.facts.conflicts:
+    for conflict in facts.conflicts:
         rows.append(f"Conflict {conflict.id}:")
         rows.extend(
             f"- {value.id}: "

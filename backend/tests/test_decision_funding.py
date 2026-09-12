@@ -227,9 +227,10 @@ async def test_later_timing_only_cut_remains_optional_after_earlier_deferral(
         assert next_action(current.plan).id == "clarify:schedule:sameDayTiming:2026-09-16"
     current = await store.command("owner", response_command(current, "unavailable"))
     assert next_action(current.plan).id == "review"
-    assert any(
-        item.id == preview.id for item in current.plan.decision_assessment.actions
-    ) is not decline_first
+    assert (
+        any(item.id == preview.id for item in current.plan.decision_assessment.actions)
+        is not decline_first
+    )
     assert current.plan.events == baseline.plan.events
     assert current.facts.provider_responses == []
 

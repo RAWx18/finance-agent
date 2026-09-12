@@ -42,8 +42,8 @@ def money_state(money: Money) -> WorkspaceState:
 
 def project(snapshot: Snapshot, config: Config) -> Workspace:
     """Project the current ledger; event balances and metrics come only from reconcile."""
-    facts = snapshot.facts
     plan = snapshot.accepted.plan if snapshot.accepted else snapshot.plan
+    facts = plan.planning_facts
     assessment = plan.decision_assessment
     workspace = Workspace(change=snapshot.latest_change, issues=assessment.uncertainties)
     records = {record.id: record for record in facts.records}
@@ -183,7 +183,13 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
                 )
             )
     opening_conflicts = [item.id for item in facts.conflicts if item.field == "opening"]
-    if facts.opening.amount_paise is not None or opening_conflicts or facts.reserve_paise or events:
+    if (
+        facts.opening.amount_paise is not None
+        or facts.opening.source is not None
+        or opening_conflicts
+        or facts.reserve_paise
+        or events
+    ):
         workspace.cards.append(
             WorkspaceCard(
                 id="cash",
@@ -201,7 +207,12 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
                         label="Cash at the plan start",
                         value=facts.opening.amount_paise,
                         state="conflicting" if opening_conflicts else money_state(facts.opening),
-                        references=["facts.opening"],
+                        references=[
+                            "facts.opening",
+                            "accepted.plan.planningFacts.opening"
+                            if snapshot.accepted
+                            else "plan.planningFacts.opening",
+                        ],
                     ),
                     WorkspaceRow(
                         field="reserve",
@@ -271,7 +282,7 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
 
 def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list[WorkspaceCard]:
     """Build commitment and uncertainty cards prioritized by exposure, focus, and corrections."""
-    facts = snapshot.facts
+    facts = plan.planning_facts
     records = {record.id: record for record in facts.records}
     cards: list[WorkspaceCard] = []
     next_events: dict[str, Event] = {}
@@ -458,7 +469,7 @@ def evidence(
     projection_ref: str | None = None,
 ) -> tuple[list[WorkspaceResult], list[Contribution]]:
     """Trace workspace results to contributions, exclusions, assumptions, and source facts."""
-    facts = snapshot.facts
+    facts = plan.planning_facts
     projection_ref = projection_ref or (
         "preview.plan" if prefix else "accepted.plan" if snapshot.accepted else "plan"
     )
@@ -474,7 +485,7 @@ def evidence(
             reason="reportedOpening"
             if facts.opening.amount_paise is not None
             else "unknownOpening",
-            references=["facts.opening"],
+            references=["facts.opening", f"{projection_ref}.planningFacts.opening"],
             date=snapshot.anchor_date,
         )
     ]
@@ -484,7 +495,7 @@ def evidence(
             f"schedule.amounts.{event.schedule_index}"
             if record.schedule.amounts
             else "target"
-            if record.target and event.amount_basis != "requiredOnly"
+            if record.target and event.amount_basis not in {"requiredOnly", "requiredFloor"}
             else "amount"
         )
         contributions.append(
@@ -517,7 +528,8 @@ def evidence(
                 if record.schedule.certainty != "exact"
                 else event.amount_basis,
                 date=event.date,
-                references=([f"{projection_ref}.events.{event.id}.source"] if event.source else [])
+                references=[f"{projection_ref}.planningFacts.records.{record.id}.{amount_field}"]
+                + ([f"{projection_ref}.events.{event.id}.source"] if event.source else [])
                 + (
                     [
                         f"facts.records.{record.id}.{amount_field}",
@@ -542,7 +554,7 @@ def evidence(
                     id=f"{prefix}record:{record.id}",
                     record_id=record.id,
                     event_id=None,
-                    amount_paise=record.target.amount_paise
+                    amount_paise=max(record.target.amount_paise, record.amount.amount_paise or 0)
                     if record.target is not None and record.target.amount_paise is not None
                     else record.amount.amount_paise,
                     date=record.schedule.date,
@@ -556,7 +568,10 @@ def evidence(
                     else "approximateDateOutsideWindow"
                     if record.schedule.certainty == "estimate"
                     else "outsideHorizon",
-                    references=[f"facts.records.{record.id}"],
+                    references=[
+                        f"facts.records.{record.id}",
+                        f"{projection_ref}.planningFacts.records.{record.id}",
+                    ],
                 )
             )
     issues = [item.id for item in plan.decision_assessment.uncertainties]
@@ -719,6 +734,19 @@ def evidence(
             if source and source.target is not None and source.target.amount_paise is None:
                 if item.amount_paise is not None:
                     amount_text = f" (required/minimum {rupees(item.amount_paise)})"
+            if (
+                source
+                and occurrence is None
+                and source.target is not None
+                and source.target.amount_paise is not None
+                and source.amount.amount_paise is not None
+                and source.target.amount_paise < source.amount.amount_paise
+            ):
+                qualifications.append(
+                    f"{label}: current required/minimum exposure "
+                    f"({rupees(source.amount.amount_paise)}) exceeds the unchanged selected "
+                    f"target ({rupees(source.target.amount_paise)})."
+                )
             if source and occurrence is None and source.schedule.recurrence != "once":
                 amount_text += (
                     " per calendar month"
@@ -775,6 +803,13 @@ def evidence(
                     qualifications.append(
                         f"Uses {label}'s intended payment{amount_text}; required/minimum unknown."
                     )
+                elif occurrence.amount_basis == "requiredFloor":
+                    qualifications.append(
+                        f"Uses {label}'s current required/minimum exposure "
+                        f"({rupees(occurrence.required_paise)}); selected target "
+                        f"({rupees(source.target.amount_paise) if source.target else 'unknown'}) "
+                        "is below it and remains unchanged."
+                    )
                 elif occurrence.required_status == "estimate":
                     qualifications.append(
                         f"{label}'s required/minimum payment is estimated at "
@@ -830,6 +865,7 @@ def evidence(
                 if identity == "opening"
                 else result_issues,
                 dependencies=[
+                    f"{projection_ref}.planningFacts",
                     "facts.opening",
                     "facts.coverage",
                     "facts.conflicts",
@@ -915,12 +951,10 @@ def evidence(
                 )
             )
     for comparison in plan.income_comparisons:
-        conditional_ids = {
-            item.event_id for item in comparison.conditions if item.arrival == "reportedDate"
-        }
+        arrivals = {item.event_id: item.arrival for item in comparison.conditions}
         branch = [
-            event.model_copy(update={"included": True})
-            if event.id in conditional_ids
+            event.model_copy(update={"included": arrivals[event.id] == "reportedDate"})
+            if event.id in arrivals
             else event.model_copy()
             for event in plan.events
         ]

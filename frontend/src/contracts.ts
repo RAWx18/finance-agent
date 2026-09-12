@@ -587,11 +587,18 @@ export interface components {
         };
         /**
          * AdjustmentOptions
-         * @description Available payment adjustments for a session revision and evaluation date.
+         * @description Available payment adjustments bound to a canonical session snapshot.
          */
         AdjustmentOptions: {
+            /**
+             * Sessionid
+             * Format: uuid
+             */
+            sessionId: string;
             /** Revision */
             revision: number;
+            /** Sequence */
+            sequence: number;
             /**
              * Today
              * Format: date
@@ -794,6 +801,8 @@ export interface components {
             commandId: string;
             /** Expectedrevision */
             expectedRevision: number;
+            /** Expectedsequence */
+            expectedSequence?: number | null;
             /** Operation */
             operation: components["schemas"]["ReplaceFacts"] | components["schemas"]["UpdateFacts"] | components["schemas"]["PreviewAdjustments"] | components["schemas"]["AcceptPreview"] | components["schemas"]["DiscardPreview"] | components["schemas"]["RejectPreview"] | components["schemas"]["ClearAccepted"] | components["schemas"]["RespondToAction"];
         };
@@ -991,6 +1000,17 @@ export interface components {
              * @enum {string}
              */
             feeStatus: "exact" | "estimate" | "unknown";
+            /** Provider */
+            readonly provider?: "frankfurter" | null;
+            /** Fetchedat */
+            readonly fetchedAt?: string | null;
+            /**
+             * Direction
+             * @description Owner-controlled: receipt deducts INR fees, payment adds them, valuation uses only the rate. Input direction is overridden by the financial field.
+             * @default receipt
+             * @enum {string}
+             */
+            readonly direction: "receipt" | "payment" | "valuation";
         };
         /**
          * Coverage
@@ -1180,7 +1200,7 @@ export interface components {
              * @default reported
              * @enum {string}
              */
-            amountBasis: "reported" | "requiredOnly" | "assumed" | "budget";
+            amountBasis: "reported" | "requiredOnly" | "requiredFloor" | "assumed" | "budget";
             /**
              * Amountstatus
              * @default exact
@@ -1206,6 +1226,28 @@ export interface components {
             autoDebit: boolean;
             /** Balancepaise */
             balancePaise: number | null;
+        };
+        /**
+         * ExchangeRate
+         * @description A provider reference rate and the original retrieval timestamp.
+         */
+        ExchangeRate: {
+            /** Base */
+            base: string;
+            /** Quote */
+            quote: string;
+            /** Rate */
+            rate: string;
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /**
+             * Fetchedat
+             * Format: date-time
+             */
+            fetchedAt: string;
         };
         /**
          * FactConflict
@@ -1468,6 +1510,26 @@ export interface components {
              * @default false
              */
             planReady: boolean;
+            /**
+             * Headline
+             * @description One plain sentence: what happens to the consumer's money and when.
+             */
+            headline: string;
+            /**
+             * Action
+             * @description The single dated step to take now, or that none is needed.
+             */
+            action: string;
+            /**
+             * Topcaveat
+             * @description The one assumption most likely to change the headline if it is wrong.
+             */
+            topCaveat: string;
+            /**
+             * Secondary
+             * @description Result without assumed-timing income, when such income is counted.
+             */
+            secondary?: string | null;
             /** Summary */
             summary: string;
             /** Covered */
@@ -1520,6 +1582,17 @@ export interface components {
              * Format: date
              */
             evaluatedOn: string;
+            planningFacts: components["schemas"]["Facts"];
+            /** Occurrenceamounts */
+            occurrenceAmounts?: {
+                [key: string]: components["schemas"]["Money"][];
+            };
+            /** Exchangerates */
+            exchangeRates?: {
+                [key: string]: components["schemas"]["ExchangeRate"];
+            };
+            /** Exchangecheckedon */
+            exchangeCheckedOn?: string | null;
             /** Projectionpartial */
             projectionPartial: boolean;
             /** Events */
@@ -1599,7 +1672,7 @@ export interface components {
         };
         /**
          * ProviderResponseInput
-         * @description Reported provider response with payment and cost amounts in INR.
+         * @description Reported provider response with payment and cost source amounts.
          */
         ProviderResponseInput: {
             /** Eventid */
@@ -2101,7 +2174,7 @@ export interface components {
              * Amountbasis
              * @enum {string}
              */
-            amountBasis: "reported" | "requiredOnly";
+            amountBasis: "reported" | "requiredOnly" | "requiredFloor";
             /** Requiredpaise */
             requiredPaise?: number | null;
             /** Targetpaise */

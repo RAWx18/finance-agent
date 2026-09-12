@@ -4,13 +4,15 @@
 import re
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, ValidationError, model_validator
 from pydantic.alias_generators import to_camel
+from pydantic_core import ErrorDetails
 
 from .amounts import money_value
+from .exchange import ExchangeRate
 
 
 class Model(BaseModel):
@@ -27,6 +29,68 @@ Controllability = Literal["unknown", "controllable", "committed"]
 ActionResponseValue = Literal["unavailable", "declined"]
 RecordId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 Rupees = Annotated[str, Field(pattern=r"^(0|[1-9][0-9]{0,12})(\.[0-9]{1,2})?$", max_length=16)]
+ConversionDirection = Literal["receipt", "payment", "valuation"]
+
+
+def direct_money(value: Any, direction: ConversionDirection) -> Any:
+    """Bind conversion semantics to the owning field before money validation."""
+    if isinstance(value, BaseModel):
+        value = value.model_dump()
+    if not isinstance(value, dict):
+        return value
+    value = dict(value)
+    if value.get("source") is not None:
+        value["source"] = direct_money(value["source"], direction)
+    if value.get("conversion") is not None:
+        conversion = value["conversion"]
+        if isinstance(conversion, BaseModel):
+            conversion = conversion.model_dump()
+        if isinstance(conversion, dict):
+            value["conversion"] = {**conversion, "direction": direction}
+    return value
+
+
+def direct_facts(value: Any) -> Any:
+    """Bind opening and competing source values before persisted money is rederived."""
+    if not isinstance(value, dict):
+        return value
+    value = dict(value)
+    if "opening" in value:
+        value["opening"] = direct_money(value["opening"], "receipt")
+    if not isinstance(value.get("records", []), list) or not isinstance(
+        value.get("conflicts", []), list
+    ):
+        return value
+    records = {}
+    for record in value.get("records", []):
+        if isinstance(record, BaseModel):
+            record = record.model_dump()
+        if isinstance(record, dict):
+            records[record.get("id")] = record.get("kind")
+    conflicts = []
+    for conflict in value.get("conflicts", []):
+        if isinstance(conflict, BaseModel):
+            conflict = conflict.model_dump()
+        if not isinstance(conflict, dict) or not isinstance(conflict.get("values"), list):
+            conflicts.append(conflict)
+            continue
+        identity = conflict.get("record_id", conflict.get("recordId"))
+        direction: ConversionDirection = (
+            "valuation"
+            if conflict.get("field") == "outstanding"
+            else "receipt"
+            if identity is None or records.get(identity) == "income"
+            else "payment"
+        )
+        conflicts.append(
+            {
+                **conflict,
+                "values": [direct_money(item, direction) for item in conflict.get("values", [])],
+            }
+        )
+    if "conflicts" in value:
+        value["conflicts"] = conflicts
+    return value
 
 
 class Conversion(Model):
@@ -41,6 +105,16 @@ class Conversion(Model):
     rate_date: date | None = None
     fee: Rupees | None = None
     fee_status: Status = "unknown"
+    provider: Literal["frankfurter"] | None = Field(
+        default=None, json_schema_extra={"readOnly": True}
+    )
+    fetched_at: datetime | None = Field(default=None, json_schema_extra={"readOnly": True})
+    direction: ConversionDirection = Field(
+        default="receipt",
+        description="Owner-controlled: receipt deducts INR fees, payment adds them, valuation "
+        "uses only the rate. Input direction is overridden by the financial field.",
+        json_schema_extra={"readOnly": True},
+    )
 
     @model_validator(mode="after")
     def validate_terms(self) -> "Conversion":
@@ -164,6 +238,30 @@ class RecordBase(Model):
     auto_debit: bool = False
     controllability: Controllability | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def direct_amounts(cls, value: Any) -> Any:
+        """Apply record-owned conversion semantics to scalar and occurrence money."""
+        if not isinstance(value, dict):
+            return value
+        value = dict(value)
+        direction: ConversionDirection = "receipt" if value.get("kind") == "income" else "payment"
+        for field in ("amount", "target", "outstanding"):
+            if field in value:
+                value[field] = direct_money(
+                    value[field], "valuation" if field == "outstanding" else direction
+                )
+        if value.get("schedule") is not None:
+            schedule = value["schedule"]
+            if isinstance(schedule, BaseModel):
+                schedule = schedule.model_dump()
+            if isinstance(schedule, dict) and isinstance(schedule.get("amounts"), list):
+                value["schedule"] = {
+                    **schedule,
+                    "amounts": [direct_money(item, direction) for item in schedule["amounts"]],
+                }
+        return value
+
     @model_validator(mode="after")
     def validate_record(self) -> "RecordBase":
         """Validate record details against income and outflow requirements."""
@@ -179,8 +277,6 @@ class RecordBase(Model):
             raise ValueError("Controllability applies only to outflows")
         if self.kind != "income" and self.controllability is None:
             self.controllability = "unknown"
-        if self.kind != "income" and any(item.conversion for item in self.schedule.amounts):
-            raise ValueError("Only income can use currency conversion")
         if self.schedule.recurrence == "monthlyBudget" and (
             self.kind not in {"essential", "optional"} or self.auto_debit
         ):
@@ -208,10 +304,6 @@ class RecordInput(RecordBase):
         """Validate debt amounts, currency eligibility, and variable payments."""
         if self.kind != "debt" and (self.target is not None or self.outstanding is not None):
             raise ValueError("Target and outstanding apply only to debt")
-        if (self.amount.conversion and self.kind != "income") or any(
-            item is not None and item.conversion for item in (self.target, self.outstanding)
-        ):
-            raise ValueError("Only income can use currency conversion; debt and outflows stay INR")
         if self.schedule.amounts:
             if self.amount.amount is not None or self.amount.conversion is not None:
                 raise ValueError("Variable amounts cannot also have a scalar amount")
@@ -250,12 +342,11 @@ class FactsInput(Model):
         default_factory=list, max_length=1000, json_schema_extra={"readOnly": True}
     )
 
-    @model_validator(mode="after")
-    def validate_opening(self) -> "FactsInput":
-        """Require opening cash to be reported in INR."""
-        if self.opening.conversion is not None:
-            raise ValueError("Opening cash must be INR")
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def direct_opening(cls, value: Any) -> Any:
+        """Bind opening cash and conflicts to their owning financial fields."""
+        return direct_facts(value)
 
 
 class Facts(Model):
@@ -270,6 +361,12 @@ class Facts(Model):
     conflicts: list["FactConflict"] = Field(
         default_factory=list, max_length=1000, json_schema_extra={"readOnly": True}
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def direct_opening(cls, value: Any) -> Any:
+        """Rebind persisted opening cash and conflicts before deriving INR."""
+        return direct_facts(value)
 
 
 ConflictField = Literal["opening", "amount", "target", "outstanding", "schedule.date"]
@@ -537,19 +634,23 @@ class ProviderResponseBase(Model):
     reported_on: date
     payment_date: date | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def direct_payments(cls, value: Any) -> Any:
+        """Provider payment and cost quotes represent cash outflows."""
+        if isinstance(value, dict):
+            return {
+                key: direct_money(item, "payment") if key in {"payment", "cost"} else item
+                for key, item in value.items()
+            }
+        return value
+
 
 class ProviderResponseInput(ProviderResponseBase):
-    """Reported provider response with payment and cost amounts in INR."""
+    """Reported provider response with payment and cost source amounts."""
 
     payment: MoneyInput | None = None
     cost: MoneyInput | None = None
-
-    @model_validator(mode="after")
-    def validate_currency(self) -> "ProviderResponseInput":
-        """Require provider payments and costs to be reported in INR."""
-        if any(item is not None and item.conversion for item in (self.payment, self.cost)):
-            raise ValueError("Provider payments and costs must be INR")
-        return self
 
 
 class ProviderResponse(ProviderResponseBase):
@@ -638,6 +739,7 @@ class Command(Model):
 
     command_id: UUID
     expected_revision: int = Field(ge=0, strict=True)
+    expected_sequence: int | None = Field(default=None, ge=0, strict=True)
     operation: Annotated[
         ReplaceFacts
         | UpdateFacts
@@ -671,7 +773,9 @@ class Event(Model):
     date: date
     date_assumption: str | None = None
     amount_paise: int | None
-    amount_basis: Literal["reported", "requiredOnly", "assumed", "budget"] = "reported"
+    amount_basis: Literal["reported", "requiredOnly", "requiredFloor", "assumed", "budget"] = (
+        "reported"
+    )
     amount_status: Status = "exact"
     required_paise: int | None = None
     required_status: Status = "unknown"
@@ -817,6 +921,17 @@ class Outcome(Model):
     branch: Literal["fits", "uncertain", "gap", "conflict"]
     readiness: Literal["ready", "qualified"]
     plan_ready: bool = False
+    headline: str = Field(
+        description="One plain sentence: what happens to the consumer's money and when."
+    )
+    action: str = Field(description="The single dated step to take now, or that none is needed.")
+    top_caveat: str = Field(
+        description="The one assumption most likely to change the headline if it is wrong."
+    )
+    secondary: str | None = Field(
+        default=None,
+        description="Result without assumed-timing income, when such income is counted.",
+    )
     summary: str
     covered: str
     not_covered: str
@@ -866,7 +981,7 @@ class UndatedItem(Model):
     amount_paise: int | None
     status: Status
     recurrence: Recurrence
-    amount_basis: Literal["reported", "requiredOnly"]
+    amount_basis: Literal["reported", "requiredOnly", "requiredFloor"]
     required_paise: int | None = None
     target_paise: int | None = None
     assumption: str
@@ -887,6 +1002,10 @@ class Plan(ProjectionMetrics):
     """Evaluated cash-flow projection with events, qualifications, and decision guidance."""
 
     evaluated_on: date
+    planning_facts: Facts
+    occurrence_amounts: dict[str, list[Money]] = Field(default_factory=dict)
+    exchange_rates: dict[str, ExchangeRate] = Field(default_factory=dict)
+    exchange_checked_on: date | None = None
     projection_partial: bool
     events: list[Event]
     issues: list[Issue]
@@ -911,9 +1030,11 @@ class AdjustmentOption(Model):
 
 
 class AdjustmentOptions(Model):
-    """Available payment adjustments for a session revision and evaluation date."""
+    """Available payment adjustments bound to a canonical session snapshot."""
 
+    session_id: UUID
     revision: int
+    sequence: int
     today: date
     options: list[AdjustmentOption]
 
@@ -1150,6 +1271,19 @@ class Error(Model):
     code: str
     message: str
     snapshot: Snapshot | None = None
+
+
+def validation_reason(item: ErrorDetails) -> str:
+    """Return a field error's reason; validator messages are static and never echo input."""
+    return item["msg"].removeprefix("Value error, ").removeprefix("Assertion failed, ")
+
+
+def validation_detail(error: ValidationError) -> str:
+    """Summarize up to three field errors as path and reason."""
+    return "; ".join(
+        ".".join(str(part) for part in item["loc"]) + ": " + validation_reason(item)
+        for item in error.errors(include_input=False, include_context=False)[:3]
+    )
 
 
 class Settings(Model):

@@ -243,7 +243,9 @@ def test_explicit_clear_preserves_other_unknowns_and_untargeted_dates(config):
         uuid4(),
     )
     plan = project(result.model_dump(mode="json", by_alias=True))
-    assert plan.decision_assessment.next_question_id == "phone:schedule.date"
+    # Cash covers every payment, so the unknown date stays a recorded uncertainty, not a question.
+    assert [item.id for item in plan.decision_assessment.uncertainties] == ["phone:schedule.date"]
+    assert plan.decision_assessment.next_question_id is None
     assert plan.decision_assessment.outcome.branch == "uncertain"
     assert normalize(result, config).records[0] == source.records[0]
     assert normalize(result, config).records[2] == source.records[2]
@@ -253,7 +255,8 @@ async def test_unavailable_focused_scope_is_not_reopened_by_unneeded_income(stor
     """Verify unneeded income does not reopen an unavailable focused-scope question."""
     await store.create("owner")
     data = loans()
-    data["coverage"] = {}
+    # Undiscussed income is asked first by design; this test targets the other categories.
+    data["coverage"] = {"income": "none"}
     saved = await store.command("owner", parsed_command(data))
     assert next_action(saved.plan).id == "clarify:coverage"
     unavailable = await store.command("owner", response_command(saved, "unavailable"))

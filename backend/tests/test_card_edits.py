@@ -220,7 +220,10 @@ async def test_llm_cannot_supply_card_source_and_compaction_retains_canonical_ch
         if not item.id.startswith("result:"):
             assert item.model_dump(mode="json", by_alias=True) in sent["change"]["items"]
     assert json.loads(request[-1]["content"])["stateSource"] == "canonical"
-    assert sent["dialogue"]["sharedCardIds"] == ["cash"]
+    assert sent["dialogue"]["sharedCardIds"] == ["cash", "questions"]
+    assert sent["dialogue"]["questionOptions"][0]["id"] == "income"
+    assert saved.workspace.cards[-1].issue_ids == ["income"]
+    assert saved.facts.coverage.income == "notDiscussed"
 
 
 @pytest.mark.parametrize("reply", ["text", "tool"])

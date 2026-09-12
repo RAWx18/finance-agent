@@ -14,7 +14,13 @@ async def test_progressive_cards_keep_first_gap_despite_positive_closing(store):
     assert empty.plan.decision_assessment.outcome is not None
     assert empty.workspace.cards == []
     cash = await store.command("owner", update(0, opening=money("100")))
-    assert [(card.id, card.title) for card in cash.workspace.cards] == [("cash", "Cash & timing")]
+    assert [(card.id, card.title) for card in cash.workspace.cards] == [
+        ("cash", "Cash & timing"),
+        ("questions", "Important uncertainty"),
+    ]
+    assert cash.workspace.cards[-1].issue_ids == ["income"]
+    assert cash.facts.coverage.income == "notDiscussed"
+    assert cash.workspace.questions[0].action_id == "clarify:income"
     dated = await store.command(
         "owner",
         parsed_command(
@@ -137,7 +143,7 @@ async def test_variable_foreign_receipt_and_monthly_budget_keep_occurrence_ident
         ),
     )
     timeline = next(card for card in snapshot.workspace.cards if card.id == "timeline")
-    assert timeline.record_ids == ["budget", "wages", "rent"]
+    assert timeline.record_ids == ["wages", "rent", "budget"]
     assert timeline.record_ids.count("budget") == 1
     assert timeline.event_ids == ["wages:2026-09-11", "rent:2026-09-13"]
     assert all(
@@ -145,8 +151,20 @@ async def test_variable_foreign_receipt_and_monthly_budget_keep_occurrence_ident
     )
     event = next(item for item in snapshot.plan.events if item.id == timeline.event_ids[0])
     assert event.schedule_index == 1
-    assert event.source.model_dump(mode="json", by_alias=True) == foreign
-    assert event.amount_paise == 1599000 and not event.included
+    assert event.source.model_dump(mode="json", by_alias=True) == {
+        **foreign,
+        "conversion": {
+            **foreign["conversion"],
+            "provider": None,
+            "fetchedAt": None,
+            "direction": "receipt",
+        },
+    }
+    assert event.amount_paise == 1599000 and event.included
+    assert event.amount_status == "estimate"
+    assert next(item for item in snapshot.facts.records if item.id == "wages").reliability == (
+        "reliable"
+    )
     assert len([item for item in snapshot.plan.events if item.record_id == "budget"]) == 30
     assert any(item.reason == "monthlyBudget" for item in snapshot.workspace.contributions)
     assert snapshot.plan.budget_basis == (await store.get("owner")).plan.budget_basis

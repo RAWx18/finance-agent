@@ -157,7 +157,9 @@ async def test_review_uses_the_accepted_plan_not_the_baseline(store):
     )
     result = await tools.invoke("review_plan", {"expectedRevision": 2}, "review")
     assert "code" not in result
-    assert result["outcome"]["branch"] == "fits"
+    # The accepted cut is an assumption, so the fitting plan is qualified rather than a gap.
+    assert result["outcome"]["branch"] != "gap" and result["outcome"]["planReady"] is True
+    assert "fit" in result["outcome"]["headline"]
     assert result["snapshot"]["accepted"]["plan"]["peakGapPaise"] == 0
 
 

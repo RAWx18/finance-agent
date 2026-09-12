@@ -202,7 +202,8 @@ async def test_later_intake_questions_do_not_displace_help_for_the_current_gap(s
                     record("rent", "essential", "2000", "2026-09-12"),
                     record("trip", "optional", "500", None),
                 ],
-                coverage={},
+                # Undiscussed income is asked before any cut; the later intake here is other costs.
+                coverage={"income": "none"},
                 decision={"concern": "Rent is due before payday."},
             )
         ),
@@ -366,7 +367,8 @@ async def test_omitted_date_certainty_never_promotes_an_estimate(store):
         "date-without-certainty",
     )
     assert moved["snapshot"]["facts"]["records"][0]["schedule"]["certainty"] == "estimate"
-    assert moved["activePlan"]["reliableIncomePaise"] == 0
+    assert moved["activePlan"]["reliableIncomePaise"] == 1000000
+    assert moved["activePlan"]["incomeComparisons"][0]["id"] == "income:withoutAssumed"
     confirmed = await tools.update_facts(
         {
             "expectedRevision": 2,
@@ -377,3 +379,4 @@ async def test_omitted_date_certainty_never_promotes_an_estimate(store):
         "confirmed-date",
     )
     assert confirmed["activePlan"]["reliableIncomePaise"] == 1000000
+    assert confirmed["activePlan"]["incomeComparisons"] == []

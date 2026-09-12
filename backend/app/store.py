@@ -4,11 +4,12 @@
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4, uuid5
+from uuid import UUID, uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -17,6 +18,7 @@ from pydantic import TypeAdapter, ValidationError
 from .auth_models import Access, Owner
 from .config import Config
 from .decisions import UNAVAILABLE_ACTIONS, action_dependency_key
+from .exchange import ExchangeRate, ExchangeRates, apply_rates, rate_captures, rate_currencies
 from .facts import merge_facts
 from .finance import adjustment_options, calculate, dependency_key, normalize, resolve_adjustments
 from .models import (
@@ -33,6 +35,7 @@ from .models import (
     DiscardPreview,
     Error,
     Facts,
+    FactsInput,
     FactsPatch,
     InvalidatedAssumption,
     Money,
@@ -44,8 +47,11 @@ from .models import (
     Scenario,
     Snapshot,
     UpdateFacts,
+    validation_detail,
 )
 from .workspace import change_set, project
+
+logger = logging.getLogger("uvicorn.error.exchange")
 
 
 class Problem(Exception):
@@ -71,11 +77,19 @@ def owner_hash(token: str) -> str:
 class Store:
     """Persistent financial sessions with authorized commands and snapshot subscriptions."""
 
-    def __init__(self, path: Path, config: Config, clock: Callable[[], datetime] = utc_now):
+    def __init__(
+        self,
+        path: Path,
+        config: Config,
+        clock: Callable[[], datetime] = utc_now,
+        rates: ExchangeRates | None = None,
+    ):
         """Initialize session storage settings and live subscription state."""
         self.path = path
         self.config = config
         self.clock = clock
+        self.rates = rates
+        self.rates_available = False
         self.lock = asyncio.Lock()
         self.listeners: dict[str, set[asyncio.Queue[Snapshot | Error]]] = {}
         self.listener_access: dict[asyncio.Queue[Snapshot | Error], Access] = {}
@@ -144,9 +158,21 @@ class Store:
         )
         await self.db.create_function("casefold", 1, str.casefold, deterministic=True)
         await self.db.commit()
+        if self.rates is not None:
+            try:
+                await self.rates.open()
+                self.rates_available = True
+            except Exception as error:
+                logger.warning("Exchange storage disabled type=%s", type(error).__name__)
 
     async def close(self) -> None:
         """Notify subscribers of shutdown and close persistent storage."""
+        self.rates_available = False
+        if self.rates is not None:
+            try:
+                await self.rates.close()
+            except Exception as error:
+                logger.warning("Exchange storage close failed type=%s", type(error).__name__)
         async with self.lock:
             for owner in list(self.listeners):
                 self.publish(owner, Error(code="unavailable", message="Server is shutting down."))
@@ -234,9 +260,23 @@ class Store:
             evaluated_on = (
                 anchor if rebuild else TypeAdapter(date).validate_python(cached_plan["evaluatedOn"])
             )
+            checked_on: date | None = TypeAdapter(date | None).validate_python(
+                cached_plan.get("exchangeCheckedOn")
+            )
+            rates = TypeAdapter(dict[str, ExchangeRate]).validate_python(
+                cached_plan.get("exchangeRates", {})
+            )
+            observations = rates if checked_on is not None or rates else None
             # Stored projections are caches, never inputs to current schema validation.
             payload.pop("workspace", None)
-            plan = calculate(facts, anchor, self.config, today=today or evaluated_on)
+            plan = calculate(
+                facts,
+                anchor,
+                self.config,
+                today=today or evaluated_on,
+                exchange_rates=observations,
+            )
+            plan.exchange_checked_on = checked_on
             payload["plan"] = plan
             for field in ("preview", "accepted"):
                 scenario = payload.get(field)
@@ -246,8 +286,14 @@ class Store:
                     raise ValueError("Scenario must be an object")
                 adjustments = TypeAdapter(list[Adjustment]).validate_python(scenario["adjustments"])
                 scenario["plan"] = calculate(
-                    facts, anchor, self.config, adjustments=adjustments, today=today or evaluated_on
+                    facts,
+                    anchor,
+                    self.config,
+                    adjustments=adjustments,
+                    today=today or evaluated_on,
+                    exchange_rates=observations,
                 )
+                scenario["plan"].exchange_checked_on = checked_on
                 scenario["reducedOutflowPaise"] = (
                     plan.outflow_paise - scenario["plan"].outflow_paise
                 )
@@ -261,7 +307,7 @@ class Store:
                 500, "invalidStoredState", "Stored session state is invalid; unable to load it."
             ) from None
 
-    async def current(self, owner: Owner) -> Snapshot:
+    async def current(self, owner: Owner, *, refresh: bool = True) -> Snapshot:
         """Load a live session and refresh date-sensitive projections under the store lock."""
         access = owner
         owner = await self.owner_key(owner)
@@ -277,7 +323,7 @@ class Store:
             await self.remove(owner, "expired")
             raise Problem(410, "expired", "Session expired; start a fresh session.")
         today = now.astimezone(ZoneInfo(self.config.timezone)).date()
-        if rebuild or snapshot.plan.evaluated_on != today:
+        if refresh and (rebuild or snapshot.plan.evaluated_on != today):
             snapshot, _ = self.load_snapshot(row[0], today=today)
             snapshot.sequence += 1
             async with self.transaction():
@@ -309,16 +355,96 @@ class Store:
         """Authorize the owner and return the current financial snapshot."""
         await self.check(owner)
         async with self.lock:
-            return await self.current(owner)
+            snapshot = await self.current(owner, refresh=self.rates is None)
+        if self.rates is None:
+            return snapshot
+        session_id = snapshot.session_id
+        while True:
+            currencies = rate_currencies(snapshot.facts.model_dump())
+            rates = await self.observe_rates(currencies)
+            async with self.lock:
+                snapshot = await self.current(owner, refresh=False)
+                if snapshot.session_id != session_id:
+                    raise Problem(
+                        409, "conversationChanged", "Workspace changed during refresh.", snapshot
+                    )
+                if not rate_currencies(snapshot.facts.model_dump()) <= currencies:
+                    continue
+                before = snapshot.model_copy(deep=True)
+                today = self.clock().astimezone(ZoneInfo(self.config.timezone)).date()
+                rates = self.current_rates(rates, today)
+                snapshot.facts = Facts.model_validate(
+                    apply_rates(snapshot.facts.model_dump(), rates or {}, capture=True)
+                )
+                self.reproject(snapshot, rates, today)
+                if snapshot == before:
+                    return snapshot
+                snapshot.sequence += 1
+                async with self.transaction():
+                    key = await self.owner_key(owner)
+                    await self.save_snapshot(key, snapshot)
+                self.publish(key, snapshot)
+                return snapshot
+
+    async def observe_rates(self, currencies: set[str]) -> dict[str, ExchangeRate] | None:
+        """Obtain optional reference quotes without holding financial storage locks."""
+        if self.rates is None:
+            return None
+        observations = {}
+        if self.rates_available:
+            for currency in sorted(currencies):
+                try:
+                    quote = await self.rates.get(currency)
+                    if quote is not None:
+                        observations[currency] = quote
+                except Exception as error:
+                    logger.warning("Exchange lookup failed type=%s", type(error).__name__)
+        return observations
+
+    def current_rates(
+        self, rates: dict[str, ExchangeRate] | None, today: date
+    ) -> dict[str, ExchangeRate] | None:
+        """Discard observations fetched before the current local calendar day."""
+        if rates is None:
+            return None
+        return {
+            currency: quote
+            for currency, quote in rates.items()
+            if quote.fetched_at.astimezone(ZoneInfo(self.config.timezone)).date() == today
+        }
+
+    def reproject(
+        self, snapshot: Snapshot, rates: dict[str, ExchangeRate] | None, today: date
+    ) -> None:
+        """Keep baseline and consented scenarios on one exchange observation context."""
+        snapshot.plan = calculate(
+            snapshot.facts, snapshot.anchor_date, self.config, today=today, exchange_rates=rates
+        )
+        for scenario in (snapshot.preview, snapshot.accepted):
+            if scenario is not None:
+                scenario.plan = calculate(
+                    snapshot.facts,
+                    snapshot.anchor_date,
+                    self.config,
+                    adjustments=scenario.adjustments,
+                    today=today,
+                    exchange_rates=rates,
+                )
+                scenario.reduced_outflow_paise = (
+                    snapshot.plan.outflow_paise - scenario.plan.outflow_paise
+                )
+        snapshot.workspace = project(snapshot, self.config)
 
     async def options(self, owner: Owner) -> AdjustmentOptions:
-        """Return currently available adjustment options and their source revision."""
-        await self.check(owner)
+        """Return available adjustment options with their canonical snapshot context."""
+        await self.get(owner)
         async with self.lock:
             snapshot = await self.current(owner)
             today = self.clock().astimezone(ZoneInfo(self.config.timezone)).date()
             return AdjustmentOptions(
+                session_id=snapshot.session_id,
                 revision=snapshot.revision,
+                sequence=snapshot.sequence,
                 today=today,
                 options=adjustment_options(
                     snapshot.facts,
@@ -364,7 +490,12 @@ class Store:
                 anchor_date=anchor,
                 end_date_exclusive=anchor + timedelta(days=self.config.horizon_days),
                 facts=facts,
-                plan=calculate(facts, anchor, self.config),
+                plan=calculate(
+                    facts,
+                    anchor,
+                    self.config,
+                    exchange_rates={} if self.rates is not None else None,
+                ),
             )
             snapshot.workspace = project(snapshot, self.config)
             async with self.transaction():
@@ -379,7 +510,51 @@ class Store:
                 )
             return snapshot
 
-    async def command(self, owner: Owner, command: Command) -> Snapshot:
+    async def command_state(
+        self, owner: Owner, command: Command, fingerprint: str, session_id: UUID | None
+    ) -> tuple[Snapshot, Snapshot | None]:
+        """Check workspace identity, original receipts and revision under the caller's lock."""
+        snapshot = await self.current(owner, refresh=self.rates is None)
+        if session_id is not None and snapshot.session_id != session_id:
+            raise Problem(
+                409, "conversationChanged", "Command belongs to another workspace.", snapshot
+            )
+        async with self.connection().execute(
+            "SELECT fingerprint, result FROM commands WHERE owner = ? AND id = ?",
+            (await self.owner_key(owner), str(command.command_id)),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is not None:
+            receipt, _ = self.load_snapshot(row[1])
+            if (
+                receipt.session_id != snapshot.session_id
+                or receipt.conversation_slug != snapshot.conversation_slug
+            ):
+                raise Problem(
+                    409, "conversationChanged", "Command belongs to another workspace.", snapshot
+                )
+            if row[0] != fingerprint:
+                raise Problem(409, "commandConflict", "Command ID was used for different content.")
+            return snapshot, receipt
+        if snapshot.revision != command.expected_revision:
+            raise Problem(
+                409,
+                "staleRevision",
+                "Session changed; preserve your draft and review current facts.",
+                snapshot,
+            )
+        if command.expected_sequence is not None and snapshot.sequence != command.expected_sequence:
+            raise Problem(
+                409,
+                "stalePreview",
+                "Session changed; preserve your draft and review the current preview.",
+                snapshot,
+            )
+        return snapshot, None
+
+    async def command(
+        self, owner: Owner, command: Command, *, session_id: UUID | None = None
+    ) -> Snapshot:
         """Apply a revision-checked financial command with idempotent result storage."""
         await self.check(owner)
         access = owner
@@ -391,38 +566,20 @@ class Store:
         payload = command.model_dump_json(exclude_unset=True)
         fingerprint = hashlib.sha256(payload.encode()).hexdigest()
         async with self.lock:
+            snapshot, receipt = await self.command_state(owner, command, fingerprint, session_id)
+            if receipt is not None:
+                return receipt
+            session_id = snapshot.session_id
+            currencies = rate_currencies(command.model_dump()) | rate_currencies(
+                snapshot.facts.model_dump()
+            )
+        rates = await self.observe_rates(currencies)
+        async with self.lock:
+            snapshot, receipt = await self.command_state(access, command, fingerprint, session_id)
+            if receipt is not None:
+                return receipt
             owner = await self.owner_key(owner)
             db = self.connection()
-            snapshot = await self.current(access)
-            async with db.execute(
-                "SELECT fingerprint, result FROM commands WHERE owner = ? AND id = ?",
-                (owner, str(command.command_id)),
-            ) as cursor:
-                row = await cursor.fetchone()
-            if row is not None:
-                receipt, _ = self.load_snapshot(row[1])
-                if (
-                    receipt.session_id != snapshot.session_id
-                    or receipt.conversation_slug != snapshot.conversation_slug
-                ):
-                    raise Problem(
-                        409,
-                        "conversationChanged",
-                        "Command belongs to another workspace.",
-                        snapshot,
-                    )
-                if row[0] != fingerprint:
-                    raise Problem(
-                        409, "commandConflict", "Command ID was used for different content."
-                    )
-                return receipt
-            if snapshot.revision != command.expected_revision:
-                raise Problem(
-                    409,
-                    "staleRevision",
-                    "Session changed; preserve your draft and review current facts.",
-                    snapshot,
-                )
             async with db.execute(
                 "SELECT COUNT(*) FROM commands WHERE owner = ?", (owner,)
             ) as cursor:
@@ -437,6 +594,8 @@ class Store:
             before = snapshot.model_copy(deep=True)
             now = self.clock()
             today = now.astimezone(ZoneInfo(self.config.timezone)).date()
+            rates = self.current_rates(rates, today)
+            self.reproject(snapshot, rates, today)
             if isinstance(operation, ReplaceFacts | UpdateFacts):
                 try:
                     if changes is not None and not set(changes.remove_provider_response_ids) <= (
@@ -479,14 +638,26 @@ class Store:
                         and source.decision.responses != snapshot.facts.decision.responses
                     ):
                         raise ValueError("Action responses are server-managed; use respondToAction")
+                    source = FactsInput.model_validate(
+                        apply_rates(
+                            source.model_dump(),
+                            rates,
+                            capture=True,
+                            captures=rate_captures(snapshot.facts.model_dump()),
+                        )
+                    )
                     facts = normalize(source, self.config)
                     facts.decision = facts.decision.model_copy(
                         update={"responses": snapshot.facts.decision.responses}
                     )
-                    plan = calculate(facts, snapshot.anchor_date, self.config, today=today)
+                    plan = calculate(
+                        facts, snapshot.anchor_date, self.config, today=today, exchange_rates=rates
+                    )
                 except ValidationError as error:
                     raise Problem(
-                        422, "invalidFacts", "Incomplete or invalid financial fields; clarify them."
+                        422,
+                        "invalidFacts",
+                        "Invalid financial fields; no changes saved. " + validation_detail(error),
                     ) from error
                 except ValueError as error:
                     raise Problem(422, "invalidFacts", str(error)) from error
@@ -541,7 +712,9 @@ class Store:
                     response.dependency_key = key
                     responses.append(response)
                 facts.provider_responses = responses
-                plan = calculate(facts, snapshot.anchor_date, self.config, today=today)
+                plan = calculate(
+                    facts, snapshot.anchor_date, self.config, today=today, exchange_rates=rates
+                )
                 available = {
                     item.event_id: item
                     for item in adjustment_options(
@@ -580,6 +753,7 @@ class Store:
                             self.config,
                             adjustments=retained,
                             today=today,
+                            exchange_rates=rates,
                         )
                         accepted.reduced_outflow_paise = (
                             plan.outflow_paise - accepted.plan.outflow_paise
@@ -650,7 +824,9 @@ class Store:
                             422, "invalidFacts", "Action response limit reached."
                         ) from error
                 if facts.decision.responses != snapshot.facts.decision.responses:
-                    plan = calculate(facts, snapshot.anchor_date, self.config, today=today)
+                    plan = calculate(
+                        facts, snapshot.anchor_date, self.config, today=today, exchange_rates=rates
+                    )
                     if accepted is not None:
                         accepted.plan = calculate(
                             facts,
@@ -658,6 +834,7 @@ class Store:
                             self.config,
                             adjustments=accepted.adjustments,
                             today=today,
+                            exchange_rates=rates,
                         )
                 snapshot = snapshot.model_copy(
                     update={
@@ -769,7 +946,11 @@ class Store:
                         422, "invalidActionResponse", "Action response limit reached."
                     ) from error
                 snapshot.plan = calculate(
-                    snapshot.facts, snapshot.anchor_date, self.config, today=today
+                    snapshot.facts,
+                    snapshot.anchor_date,
+                    self.config,
+                    today=today,
+                    exchange_rates=rates,
                 )
                 for scenario in (snapshot.accepted, snapshot.preview):
                     if scenario is not None:
@@ -779,6 +960,7 @@ class Store:
                             self.config,
                             adjustments=scenario.adjustments,
                             today=today,
+                            exchange_rates=rates,
                         )
                 if (
                     snapshot.preview is not None
@@ -794,6 +976,7 @@ class Store:
                         self.config,
                         adjustments=adjustments,
                         today=today,
+                        exchange_rates=rates,
                     )
                 except ValueError as error:
                     raise Problem(422, "invalidAdjustments", str(error), snapshot) from error
@@ -897,7 +1080,11 @@ class Store:
                                 )
                             ]
                     snapshot.plan = calculate(
-                        snapshot.facts, snapshot.anchor_date, self.config, today=today
+                        snapshot.facts,
+                        snapshot.anchor_date,
+                        self.config,
+                        today=today,
+                        exchange_rates=rates,
                     )
                     if snapshot.accepted:
                         snapshot.accepted.plan = calculate(
@@ -906,6 +1093,7 @@ class Store:
                             self.config,
                             adjustments=snapshot.accepted.adjustments,
                             today=today,
+                            exchange_rates=rates,
                         )
                 snapshot.preview = None
             elif isinstance(operation, ClearAccepted):
@@ -972,9 +1160,12 @@ class Store:
             }
             for proposal in snapshot.rejected_proposals
         ):
-            raise ValueError(
+            raise Problem(
+                422,
+                "proposalRejected",
                 "This proposal was explicitly rejected; "
-                "do not suggest it again without changed facts"
+                "do not suggest it again without changed facts",
+                snapshot,
             )
         for item in resolved:
             prior = retained.get(item.event_id)
@@ -1017,7 +1208,7 @@ class Store:
 
     async def subscribe(self, owner: Owner) -> asyncio.Queue[Snapshot | Error]:
         """Register an authorized subscription seeded with the current financial snapshot."""
-        await self.check(owner)
+        await self.get(owner)
         async with self.lock:
             snapshot = await self.current(owner)
             access = owner

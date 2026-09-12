@@ -128,13 +128,21 @@ def test_uncertain_income_joint_branches_use_reported_dates_and_same_kernel(with
 
 @pytest.mark.parametrize("reliability,status", [("unknown", "exact"), ("reliable", "estimate")])
 def test_amount_exactness_is_independent_from_assured_arrival(reliability, status):
-    """Verify income needs both exact amounts and reliable arrival to count as reliable cash."""
+    """Verify reliable income counts at its estimate while unconfirmed arrival stays conditional."""
     data = facts("0", [record("salary", "income", "30000", "2026-09-21", reliability=reliability)])
     data["records"][0]["amount"]["status"] = status
     plan = project(data)
-    assert plan.reliable_income_paise == 0 and plan.closing_paise == 0
-    assert plan.income_comparisons[0].metrics.closing_paise == 3000000
-    assert plan.decision_assessment.outcome.readiness == "qualified"
+    outcome = plan.decision_assessment.outcome
+    if reliability == "unknown":
+        assert plan.reliable_income_paise == 0 and plan.closing_paise == 0
+        assert plan.income_comparisons[0].metrics.closing_paise == 3000000
+    else:
+        assert plan.reliable_income_paise == 3000000 and plan.closing_paise == 3000000
+        assert plan.income_comparisons[0].id == "income:withoutAssumed"
+        assert plan.income_comparisons[0].metrics.closing_paise == 0
+        assert "salary is counted on its usual day and amount" in outcome.top_caveat
+        assert outcome.secondary.startswith("Even without salary")
+    assert outcome.readiness == "qualified"
 
 
 def test_undated_rent_is_next_question_not_coverage_and_never_spendable():

@@ -165,15 +165,23 @@ def test_conversion_limits_and_negative_net(value):
 
 
 @pytest.mark.parametrize(
-    "location", ["opening", "essential", "debt", "target", "outstanding", "payment", "cost"]
+    "location",
+    ["opening", "essential", "optional", "debt", "target", "outstanding", "payment", "cost"],
 )
-def test_foreign_money_is_income_only(location):
-    """Verify foreign money is rejected in cash, expenses, debts, and provider terms."""
+def test_foreign_money_uses_owning_field_direction(location, config):
+    """Foreign cash, expenses, debt and provider quotes retain independent source terms."""
     data = facts("0", [record("bill", "debt", "100", "2026-09-12")])
     if location == "opening":
         data["opening"] = foreign()
-    elif location in {"essential", "debt"}:
+    elif location in {"essential", "optional", "debt"}:
         data["records"] = [record("bill", location, None, "2026-09-12") | {"amount": foreign()}]
+        data["coverage"] = {
+            "income": "none",
+            "essential": "none",
+            "optional": "none",
+            "debt": "none",
+            location: "reviewed",
+        }
     elif location in {"target", "outstanding"}:
         data["records"][0][location] = foreign()
     else:
@@ -185,8 +193,23 @@ def test_foreign_money_is_income_only(location):
                 location: foreign(),
             }
         ]
-    with pytest.raises(ValueError):
-        project(data)
+    saved = normalize(FactsInput.model_validate(data), config)
+    value = (
+        saved.opening
+        if location == "opening"
+        else (
+            getattr(saved.provider_responses[0], location)
+            if location in {"payment", "cost"}
+            else getattr(
+                saved.records[0], location if location in {"target", "outstanding"} else "amount"
+            )
+        )
+    )
+    assert value.amount_paise == (
+        7800000 if location == "opening" else 8000000 if location == "outstanding" else 8200000
+    )
+    assert value.source.amount == "1000"
+    assert normalize(facts_input(saved), config) == saved
 
 
 async def test_voice_store_sse_source_correction_and_cache_rebuild(store):
@@ -250,7 +273,7 @@ async def test_voice_store_sse_source_correction_and_cache_rebuild(store):
         text = export_text(snapshot)
         assert all(
             term in text
-            for term in ("USD 1000", "rate 81", "INR fee 2000", "2026-09-10", "net INR")
+            for term in ("USD 1000", "rate 81", "INR fee 2000", "2026-09-10", "receipt INR")
         )
         assert any(item.reason == "currencyConversion" for item in snapshot.workspace.contributions)
     finally:
@@ -300,9 +323,12 @@ async def test_foreign_conflicts_keep_original_units_and_resolution(store):
     value = (await store.get("owner")).facts.records[0].amount
     assert value.source.amount == "900" and value.source.status == "exact"
     assert value.amount_paise is None and value.status == "unknown"
-    assert (
-        value.source.conversion.model_dump(mode="json", by_alias=True) == alternative["conversion"]
-    )
+    assert value.source.conversion.model_dump(mode="json", by_alias=True) == {
+        **alternative["conversion"],
+        "direction": "receipt",
+        "provider": None,
+        "fetchedAt": None,
+    }
 
 
 @pytest.mark.parametrize("status,confirmed", [("estimate", "exact"), ("exact", "estimate")])

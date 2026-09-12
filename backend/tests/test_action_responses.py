@@ -122,10 +122,18 @@ async def test_unavailable_opening_and_scope_never_confirm_cash_or_completeness(
     snapshot = await store.create("owner")
     assert next_action(snapshot.plan).id == "clarify:opening"
     snapshot = await store.command("owner", response_command(snapshot, "unavailable"))
+    assert next_action(snapshot.plan).id == "clarify:income"
+    snapshot = await store.command("owner", response_command(snapshot, "unavailable"))
     assert next_action(snapshot.plan).id == "clarify:coverage"
     snapshot = await store.command("owner", response_command(snapshot, "unavailable"))
+    assert [response.action_id for response in snapshot.facts.decision.responses] == [
+        "clarify:opening",
+        "clarify:income",
+        "clarify:coverage",
+    ]
     assert snapshot.facts.opening.amount_paise is None
     assert set(snapshot.facts.coverage.model_dump().values()) == {"notDiscussed"}
+    assert snapshot.facts.records == []
     assert snapshot.plan.closing_paise is None
     assert next_action(snapshot.plan).kind == "reviewOutcome"
     assert snapshot.plan.decision_assessment.next_question_id is None
@@ -378,7 +386,7 @@ async def test_declined_card_cut_preserves_required_shortfall_action(
                     "amount": money("100", "estimate"),
                 }
             ],
-            "clarify:bill:estimate",
+            None,
             id="estimatedDue",
         ),
         pytest.param(

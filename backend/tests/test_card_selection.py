@@ -77,5 +77,24 @@ async def test_visible_unknown_scalar_amount_and_date_are_not_repeated(store):
     saved = await store.command(
         "owner", update(0, opening=money("1000"), records=[{"kind": "essential", "label": "Rent"}])
     )
-    assert {q.fields[0] for q in saved.workspace.questions} >= {"amount", "schedule.date"}
-    assert [card.id for card in saved.workspace.cards] == ["cash", "timeline"]
+    rent = saved.facts.records[0]
+    assert rent.amount.amount_paise is None and rent.schedule.date is None
+    assert {issue.field for issue in saved.workspace.issues if rent.id in issue.record_ids} == {
+        "amount",
+        "schedule.date",
+    }
+    assert [q.fields for q in saved.workspace.questions if rent.id in q.record_ids] == [
+        ["schedule.date"]
+    ]
+    assert [card.id for card in saved.workspace.cards] == ["cash", "timeline", "questions"]
+    assert saved.workspace.cards[1].record_ids == [rent.id]
+    assert saved.workspace.cards[1].rows[0].state == "missing"
+    assert saved.workspace.cards[-1].issue_ids == ["income"]
+    dated = await store.command(
+        "owner",
+        update(saved.revision, records=[{"id": rent.id, "schedule": {"date": "2026-09-14"}}]),
+    )
+    assert [q.fields for q in dated.workspace.questions if rent.id in q.record_ids] == [["amount"]]
+    assert dated.facts.records[0].amount.amount_paise is None
+    assert dated.workspace.cards[1].rows[0].state == "missing"
+    assert dated.workspace.cards[-1].issue_ids == ["income"]

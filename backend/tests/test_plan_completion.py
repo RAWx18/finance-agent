@@ -55,11 +55,15 @@ async def test_gradual_expenses_need_one_contextual_check_not_a_category_loop(st
     store.clock = lambda: datetime(2026, 9, 12, 6, tzinfo=UTC)
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
-    tools.user_turn = "I have 20000 rupees. Rent is 8000 due September 15. Help me plan the month."
+    tools.user_turn = (
+        "I have 20000 rupees. Rent is 8000 due September 15. No income. Help me plan the month."
+    )
     await tools.update_facts(
         {
             "expectedRevision": 0,
             "opening": money("20000"),
+            "coverage": {"income": "none"},
+            "coverageEvidence": {"income": "No income."},
             "records": [
                 {
                     "kind": "essential",
@@ -94,7 +98,8 @@ async def test_gradual_expenses_need_one_contextual_check_not_a_category_loop(st
     saved = await store.get("owner")
     state = canonical(saved)
     assert saved.facts.coverage.essential == "reported"
-    assert saved.facts.coverage.debt == saved.facts.coverage.income == "notDiscussed"
+    assert saved.facts.coverage.debt == "notDiscussed"
+    assert saved.facts.coverage.income == "none"
     assert state["outcome"]["planReady"]
     assert state["dialogue"]["questionOptions"] == []
     assert saved.plan.closing_paise == 700000
@@ -106,7 +111,7 @@ async def test_gradual_expenses_need_one_contextual_check_not_a_category_loop(st
     evidence = json.loads(next(line for line in guidance.splitlines() if line.startswith("{")))
     assert evidence["periodThrough"] == "2026-10-11"
     assert evidence["recurringAllowances"][0]["occurrences"] == 5
-    assert evidence["unconfirmedCategories"] == ["income", "essential", "optional", "debt"]
+    assert evidence["unconfirmedCategories"] == ["essential", "optional", "debt"]
     assert "scopeEvidence" not in saved.model_dump_json()
 
     tools.user_turn = "The rent is 9000, not 8000."

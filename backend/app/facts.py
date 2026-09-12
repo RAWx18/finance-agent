@@ -11,6 +11,7 @@ from .models import (
     ConflictInput,
     ConflictValue,
     ConflictValueInput,
+    ConversionDirection,
     Decision,
     FactConflict,
     Facts,
@@ -20,6 +21,7 @@ from .models import (
     MoneyInput,
     ProviderResponseInput,
     RecordInput,
+    direct_money,
 )
 
 
@@ -66,10 +68,21 @@ def facts_input(facts: Facts) -> FactsInput:
     )
 
 
-def conflict_value(value: ConflictValueInput) -> ConflictValue:
+def conflict_value(
+    value: ConflictValueInput, direction: ConversionDirection = "receipt"
+) -> ConflictValue:
     """Normalize a disputed amount or date while retaining supplied conversion terms."""
     source = (
-        MoneyInput(amount=value.amount, status=value.status, conversion=value.conversion)
+        MoneyInput.model_validate(
+            direct_money(
+                {
+                    "amount": value.amount,
+                    "status": value.status,
+                    "conversion": value.conversion,
+                },
+                direction,
+            )
+        )
         if value.amount is not None
         else None
     )
@@ -91,8 +104,54 @@ def merge_money(value: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any]:
         and isinstance(saved.get("conversion"), dict)
         and value["conversion"]["currency"] == saved["conversion"]["currency"]
     ):
+        if (
+            value["conversion"].get("rate") is not None
+            and value["conversion"].get("provider") != "frankfurter"
+        ):
+            value["conversion"] = {**value["conversion"], "provider": None, "fetched_at": None}
         value["conversion"] = {**saved["conversion"], **value["conversion"]}
     return value
+
+
+def normalized_label(label: str) -> str:
+    """Compare labels case-, width- and punctuation-insensitively."""
+    return "".join(
+        char for char in unicodedata.normalize("NFKC", label).casefold() if char.isalnum()
+    )
+
+
+def correction_targets(facts: Facts, patch: FactsPatch, command_id: UUID) -> list[str]:
+    """Identify each record change: exact id, unique same-label existing record, or new id."""
+    existing = {record.id for record in facts.records}
+    targets = []
+    for index, change in enumerate(patch.records):
+        if change.id is not None and change.id in existing:
+            targets.append(change.id)
+            continue
+        if change.id is None and (change.delete or change.distinct or not change.label):
+            targets.append(str(uuid5(command_id, str(index))))
+            continue
+        # A repeated or rephrased item is a correction of the one record it names, so a
+        # consumer never has to know record identifiers or the word correction.
+        matches = [
+            record.id
+            for record in facts.records
+            if change.label is not None
+            and normalized_label(record.label) == normalized_label(change.label)
+            and (change.kind is None or record.kind == change.kind)
+        ]
+        if len(matches) == 1:
+            targets.append(matches[0])
+        elif change.id is not None:
+            raise ValueError("Correction target does not exist; read current state")
+        elif len(matches) > 1:
+            raise ValueError(
+                "More than one record has that name. Use the exact ID of the one that changed, "
+                "or ask which item the user means."
+            )
+        else:
+            targets.append(str(uuid5(command_id, str(index))))
+    return targets
 
 
 def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput:
@@ -102,24 +161,25 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
         exclude_unset=True,
         exclude={"expected_revision", "records", "conflicts", "resolutions", "merges"},
     )
+    targets = correction_targets(facts, patch, command_id)
     edits: set[tuple[str | None, str]] = set()
     if "opening" in supplied:
         edits.add((None, "opening"))
-    for index, change in enumerate(patch.records):
-        record_id = change.id or str(uuid5(command_id, str(index)))
+    for record_id, change in zip(targets, patch.records, strict=True):
+        correction = record_id in {record.id for record in facts.records}
         for field in ("amount", "target", "outstanding"):
             value = getattr(change, field)
             if field in change.model_fields_set and not (
-                change.id is None and value is not None and value.status == "unknown"
+                not correction and value is not None and value.status == "unknown"
             ):
                 edits.add((record_id, field))
         if change.schedule and "amounts" in change.schedule.model_fields_set:
             edits.add((record_id, "amount"))
         if change.schedule and {"date", "certainty", "pattern"} & change.schedule.model_fields_set:
-            if change.id is not None or change.schedule.date is not None or change.schedule.pattern:
+            if correction or change.schedule.date is not None or change.schedule.pattern:
                 edits.add((record_id, "schedule.date"))
         if change.kind is not None and any(
-            record.id == change.id and record.kind != change.kind for record in facts.records
+            record.id == record_id and record.kind != change.kind for record in facts.records
         ):
             edits.update(
                 (record_id, field) for field in ("amount", "target", "outstanding", "schedule.date")
@@ -142,14 +202,19 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
     for identity in supplied.pop("remove_provider_response_ids", []):
         responses.pop(identity, None)
     for response in supplied.pop("provider_responses", []):
+        saved = responses.get(response["event_id"], {})
+        for field in ("payment", "cost"):
+            if isinstance(response.get(field), dict) and isinstance(saved.get(field), dict):
+                response[field] = merge_money(response[field], saved[field])
         responses[response["event_id"]] = response
     data["provider_responses"] = list(responses.values())
+    if isinstance(supplied.get("opening"), dict):
+        supplied["opening"] = merge_money(supplied["opening"], data["opening"])
     data.update(supplied)
     records = {record["id"]: record for record in data["records"]}
     seen: set[str] = set()
     reports = list(patch.conflicts)
-    for index, change in enumerate(patch.records):
-        record_id = change.id or str(uuid5(command_id, str(index)))
+    for record_id, change in zip(targets, patch.records, strict=True):
         if record_id in seen:
             raise ValueError("A record may be changed only once per operation")
         seen.add(record_id)
@@ -160,29 +225,22 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
         values = change.model_dump(
             exclude_unset=True, exclude={"id", "delete", "distinct", "conflicts"}
         )
+        if change.id != record_id and record_id in records:
+            # Resolved by name: the saved spelling stays the card's stable label.
+            values.pop("label", None)
         reports.extend(
             ConflictInput(record_id=record_id, field=item.field, values=item.values)
             for item in change.conflicts
         )
-        if change.id is None and change.label and not change.distinct:
-            label = "".join(
-                char
-                for char in unicodedata.normalize("NFKC", change.label).casefold()
-                if char.isalnum()
-            )
+        if record_id not in records and change.label and not change.distinct:
+            label = normalized_label(change.label)
             if any(
-                record["kind"] == change.kind
-                and "".join(
-                    char
-                    for char in unicodedata.normalize("NFKC", record["label"]).casefold()
-                    if char.isalnum()
-                )
-                == label
+                record["kind"] == change.kind and normalized_label(record["label"]) == label
                 for record in records.values()
             ):
                 raise ValueError(
-                    "A similarly named record already exists. Reuse its exact ID for a repeat or "
-                    "correction; use distinct only if the user confirmed a separate new item."
+                    "A similarly named record was already added in this operation. Report one "
+                    "item once; use distinct only if the user confirmed a separate new item."
                 )
         membership_change = (
             record_id not in records
@@ -303,12 +361,13 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                     "Correct variable amounts with a full schedule amounts replacement, "
                     "not scalar conflicts"
                 )
-        if any(value.conversion is not None for value in report.values) and (
-            report.field != "amount"
-            or report.record_id is None
-            or records[report.record_id]["kind"] != "income"
-        ):
-            raise ValueError("Only income amount conflicts can use currency conversion")
+        direction: ConversionDirection = (
+            "valuation"
+            if report.field == "outstanding"
+            else "receipt"
+            if report.record_id is None or records[report.record_id]["kind"] == "income"
+            else "payment"
+        )
         alternatives = list(prior.values) if prior else []
         if not prior:
             saved = (
@@ -334,11 +393,12 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                             status=records[report.record_id]["schedule"]["certainty"]
                             if report.field == "schedule.date"
                             else saved["status"],
-                        )
+                        ),
+                        direction,
                     )
                 )
         for candidate in report.values:
-            value = conflict_value(candidate)
+            value = conflict_value(candidate, direction)
             matching_id = next((item for item in alternatives if item.id == value.id), None)
             if matching_id is not None and matching_id != value:
                 raise ValueError("Competing value ID already identifies another value")
@@ -369,7 +429,16 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             raise ValueError("Resolve each existing conflict exactly once")
         if (resolving.record_id, resolving.field) in edits:
             raise ValueError("Do not resolve and edit the same disputed field")
-        value = conflict_value(resolution.value)
+        value = conflict_value(
+            resolution.value,
+            (
+                "valuation"
+                if resolving.field == "outstanding"
+                else "receipt"
+                if resolving.record_id is None or records[resolving.record_id]["kind"] == "income"
+                else "payment"
+            ),
+        )
         if (value.date is not None) != (resolving.field == "schedule.date"):
             raise ValueError("Resolution must address the disputed field type")
         matching_id = next((item for item in resolving.values if item.id == value.id), None)
