@@ -22,6 +22,7 @@
 .toast-actions button:hover:not(:disabled), .toast-viewport .toast-toggle:hover, .toast-viewport .toast-more:hover { border-color: var(--line); background: var(--sage); }
 /* Keep the minimized control clear of the footer's Privacy action. */
 .toast-viewport:has(.toast-toggle[aria-expanded="false"]) { width: auto; bottom: calc(max(12px, env(safe-area-inset-bottom)) + 48px); }
+.dialog > .toast-viewport { position: static; flex: none; width: auto; max-width: none; max-height: min(30dvh, 14rem); margin: 0 .75rem .5rem; }
 .toast-stack:focus-visible { outline-offset: 0; }
 .toast-actions button:focus-visible { outline-offset: 1px; }
 @media print {
