@@ -407,6 +407,10 @@ def create_app(
     async def history_detail(request: Request, slug: str) -> SavedConversation:
         return await history.get(owner(request), slug)
 
+    @application.post("/api/history/{slug}/continue", response_model=Snapshot)
+    async def history_continue(request: Request, slug: str, body: Model) -> Snapshot:
+        return await calls.select(owner(request), slug)
+
     @application.get(
         "/api/history/{slug}/transcript",
         response_class=PlainTextResponse,
@@ -435,7 +439,7 @@ def create_app(
 
     @application.post("/api/session/call", response_model=CallJoin)
     async def join_call(request: Request, body: CallRequest) -> CallJoin:
-        return await calls.start(owner(request), body.call_id)
+        return await calls.start(owner(request), body.call_id, body.conversation_slug)
 
     @application.delete("/api/session/call", response_model=CallState)
     async def end_call(request: Request, body: CallRequest) -> CallState:
@@ -546,7 +550,7 @@ def create_app(
         if path == "api" or path.startswith(("api/", "health/", "auth/")):
             raise Problem(404, "notFound", "Resource not found.")
         protected = is_return_path("/" + path)
-        if path.partition("/")[0] in {"money", "history"} and not protected:
+        if path.partition("/")[0] in {"app", "money", "history"} and not protected:
             raise Problem(404, "notFound", "Resource not found.")
         if not path or protected:
             try:

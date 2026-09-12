@@ -30,7 +30,7 @@ async def seed(directory: Path, owner: str) -> None:
         ) as cursor:
             if await cursor.fetchone() is None:
                 raise ValueError("Only the synthetic browser-test Google identity may be seeded")
-        snapshot = await store.create(owner)
+        await store.create(owner)
         history = History(store)
         conversations = [
             [
@@ -95,7 +95,7 @@ async def seed(directory: Path, owner: str) -> None:
             started = now - timedelta(hours=index + 1)
             store.clock = lambda started=started: started
             call = uuid4()
-            await history.start(owner, call, snapshot.session_id)
+            await history.start(owner, call, (await store.get(owner)).session_id)
             captions = CaptionHistory(history, owner, call)
             for number, (role, text) in enumerate(turns):
                 stamp = started + timedelta(seconds=number * 18)

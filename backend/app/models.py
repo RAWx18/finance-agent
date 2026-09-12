@@ -707,6 +707,7 @@ class Scenario(Model):
 
 class Snapshot(Model):
     session_id: UUID
+    conversation_slug: str | None = None
     revision: int
     sequence: int
     created_at: datetime
@@ -911,10 +912,14 @@ class Settings(Model):
 
 class CallRequest(Model):
     call_id: UUID
+    conversation_slug: str | None = Field(
+        default=None, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=119
+    )
 
 
 class CallJoin(Model):
     call_id: UUID
+    conversation_slug: str
     url: str
     token: str = Field(repr=False)
     expires_at: datetime
@@ -922,6 +927,7 @@ class CallJoin(Model):
 
 class CallState(Model):
     call_id: UUID | None = None
+    conversation_slug: str | None = None
     status: Literal["idle", "connecting", "active", "ending", "ended", "error"] = "idle"
     cleanup_confirmed: bool = True
     message: str | None = None

@@ -6,12 +6,13 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from typing import Any, Literal
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from .auth_models import Owner
-from .models import Model
+from .models import Coverage, Facts, Model, Money, Snapshot
 from .store import Problem, Store
+from .workspace import project
 
 
 class ConversationSummary(Model):
@@ -43,7 +44,98 @@ class History:
     def __init__(self, store: Store):
         self.store = store
 
-    async def start(self, owner: Owner, call_id: UUID, session_id: UUID) -> None:
+    def selection(self, snapshot: Snapshot, current: Snapshot, slug: str) -> Snapshot:
+        revision = snapshot.revision
+        snapshot.session_id = uuid4()
+        snapshot.conversation_slug = slug
+        snapshot.revision = max(revision, current.revision) + 1
+        snapshot.sequence = max(snapshot.sequence, current.sequence) + 1
+        if snapshot.preview is not None and snapshot.preview.source_revision == revision:
+            snapshot.preview.source_revision = snapshot.revision
+        snapshot.latest_change = None
+        snapshot.workspace = project(snapshot, self.store.config)
+        return snapshot
+
+    async def memory(self, key: str, slug: str, current: Snapshot) -> tuple[str, Snapshot]:
+        # Only a captured snapshot or a provably untouched original session can be restored.
+        store = self.store
+        db = store.connection()
+        async with db.execute(
+            "SELECT c.call_id, c.session_id, c.started, c.expires, m.snapshot "
+            "FROM conversations c LEFT JOIN conversation_memory m "
+            "ON m.call_id = c.call_id AND m.owner = c.owner "
+            "WHERE c.owner = ? AND c.slug = ? AND c.expires > ?",
+            (key, slug, store.clock().astimezone(UTC).isoformat()),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            raise Problem(404, "notFound", "Conversation is unavailable.")
+        if row[4] is not None:
+            snapshot, _ = store.load_snapshot(
+                row[4], today=store.clock().astimezone(ZoneInfo(store.config.timezone)).date()
+            )
+            if snapshot.conversation_slug != slug or str(snapshot.session_id) != row[1]:
+                raise Problem(409, "conversationChanged", "Conversation memory is unavailable.")
+            if snapshot.expires_at <= store.clock():
+                raise Problem(410, "expired", "Conversation expired.")
+            return str(row[0]), snapshot
+        async with db.execute(
+            "SELECT 1 FROM commands WHERE owner = ? LIMIT 1", (key,)
+        ) as cursor:
+            receipt = await cursor.fetchone()
+        if (
+            receipt is not None
+            or current.conversation_slug is not None
+            or str(current.session_id) != row[1]
+            or current.revision != 0
+            or current.created_at > datetime.fromisoformat(row[2])
+            or current.as_of != current.created_at
+            or current.expires_at != datetime.fromisoformat(row[3])
+            or current.facts != Facts(
+                opening=Money(amount_paise=None, status="unknown"),
+                reserve_paise=0,
+                coverage=Coverage(),
+                records=[],
+            )
+            or current.preview is not None
+            or current.accepted is not None
+        ):
+            raise Problem(
+                409,
+                "conversationMemoryUnavailable",
+                "This saved chat has no attributable financial snapshot. "
+                "Its transcript is available, but it cannot safely be continued.",
+            )
+        snapshot = current.model_copy(deep=True)
+        snapshot.conversation_slug = slug
+        await db.execute(
+            "INSERT INTO conversation_memory VALUES (?, ?, NULL, ?)",
+            (row[0], key, snapshot.model_dump_json(by_alias=True)),
+        )
+        return str(row[0]), snapshot
+
+    async def select(self, owner: Owner, slug: str) -> Snapshot:
+        store = self.store
+        await store.check(owner)
+        async with store.lock:
+            current = await store.current(owner)
+            async with store.transaction():
+                key = await store.owner_key(owner)
+                logical_id, snapshot = await self.memory(key, slug, current)
+                if current.conversation_slug == slug:
+                    return current
+                snapshot = self.selection(snapshot, current, slug)
+                await store.connection().execute(
+                    "UPDATE conversations SET session_id = ? WHERE call_id = ? AND owner = ?",
+                    (str(snapshot.session_id), logical_id, key),
+                )
+                await store.save_snapshot(key, snapshot)
+            store.publish(key, snapshot)
+            return snapshot
+
+    async def start(
+        self, owner: Owner, call_id: UUID, session_id: UUID, slug: str | None = None
+    ) -> str:
         store = self.store
         await store.check(owner)
         async with store.lock, store.transaction():
@@ -55,13 +147,28 @@ class History:
                 row = await cursor.fetchone()
             if row is None:
                 raise Problem(404, "notFound", "No current session.")
-            snapshot = json.loads(row[0])
-            if snapshot["sessionId"] != str(session_id):
+            snapshot, _ = store.load_snapshot(row[0])
+            if snapshot.session_id != session_id:
                 raise Problem(409, "sessionChanged", "The financial session has changed.")
             now = store.clock().astimezone(UTC)
-            expires = datetime.fromisoformat(snapshot["expiresAt"]).astimezone(UTC)
+            expires = snapshot.expires_at.astimezone(UTC)
             if expires <= now:
                 raise Problem(410, "expired", "Session expired.")
+            if slug is not None:
+                if snapshot.conversation_slug != slug:
+                    raise Problem(
+                        409, "conversationChanged", "Select this conversation before starting it."
+                    )
+                logical_id, _ = await self.memory(key, slug, snapshot)
+                await db.execute(
+                    "UPDATE conversation_memory SET media_call_id = ? WHERE call_id = ?",
+                    (str(call_id), logical_id),
+                )
+                await db.execute(
+                    "UPDATE conversations SET ended = NULL WHERE call_id = ?", (logical_id,)
+                )
+                await store.save_snapshot(key, snapshot)
+                return slug
             async with db.execute(
                 "SELECT COUNT(*) FROM conversations WHERE owner = ?", (key,)
             ) as cursor:
@@ -103,18 +210,50 @@ class History:
                     dates,
                 ),
             )
+            snapshot = self.selection(snapshot, snapshot, slug)
+            await db.execute(
+                "UPDATE conversations SET session_id = ? WHERE call_id = ?",
+                (str(snapshot.session_id), str(call_id)),
+            )
+            await db.execute(
+                "INSERT INTO conversation_memory VALUES (?, ?, ?, ?)",
+                (str(call_id), key, str(call_id), snapshot.model_dump_json(by_alias=True)),
+            )
+            await store.save_snapshot(key, snapshot)
+        store.publish(key, snapshot)
+        return slug
 
-    async def active(self, owner: Owner, call_id: UUID) -> None:
+    async def active(self, owner: Owner, call_id: UUID) -> str:
         # Called only under the shared lock and transaction, including the Access recheck.
         key = await self.store.owner_key(owner)
         async with self.store.connection().execute(
-            "SELECT 1 FROM conversations c JOIN sessions s ON s.owner = c.owner "
-            "WHERE c.owner = ? AND c.call_id = ? AND c.ended IS NULL "
-            "AND c.expires > ? AND c.session_id = json_extract(s.snapshot, '$.sessionId')",
+            "SELECT c.call_id FROM conversations c JOIN sessions s ON s.owner = c.owner "
+            "JOIN conversation_memory m ON m.call_id = c.call_id AND m.owner = c.owner "
+            "WHERE c.owner = ? AND m.media_call_id = ? AND c.ended IS NULL "
+            "AND c.expires > ? AND c.session_id = json_extract(s.snapshot, '$.sessionId') "
+            "AND c.slug = json_extract(s.snapshot, '$.conversationSlug')",
             (key, str(call_id), self.store.clock().astimezone(UTC).isoformat()),
         ) as cursor:
-            if await cursor.fetchone() is None:
+            row = await cursor.fetchone()
+            if row is None:
                 raise Problem(404, "notFound", "Conversation is unavailable.")
+            return str(row[0])
+
+    async def recent(self, owner: Owner, call_id: UUID) -> list[dict[str, str]]:
+        store = self.store
+        await store.check(owner)
+        async with store.lock, store.transaction():
+            logical_id = await self.active(owner, call_id)
+            async with store.connection().execute(
+                "SELECT role, text FROM conversation_messages WHERE call_id = ? "
+                "ORDER BY sequence", (logical_id,)
+            ) as cursor:
+                messages = [{"role": row[0], "content": row[1]} for row in await cursor.fetchall()]
+            turns = [index for index, item in enumerate(messages) if item["role"] == "user"]
+            start = turns[-store.config.voice.history_turns] if (
+                len(turns) > store.config.voice.history_turns
+            ) else 0
+            return messages[start:]
 
     async def append(
         self,
@@ -134,12 +273,13 @@ class History:
             raise Problem(429, "historyLimit", "Caption storage capacity reached.")
         await store.check(owner)
         async with store.lock, store.transaction():
-            await self.active(owner, call_id)
+            logical_id = await self.active(owner, call_id)
+            segment = f"{call_id}:{segment}"
             db = store.connection()
             async with db.execute(
                 "SELECT text, finalized FROM conversation_messages WHERE call_id = ? "
                 "AND segment = ?",
-                (str(call_id), segment),
+                (logical_id, segment),
             ) as cursor:
                 prior = await cursor.fetchone()
             if prior is not None:
@@ -148,18 +288,18 @@ class History:
                 await db.execute(
                     "UPDATE conversation_messages SET text = ?, interrupted = ?, finalized = ? "
                     "WHERE call_id = ? AND segment = ?",
-                    (text, not completed, completed, str(call_id), segment),
+                    (text, not completed, completed, logical_id, segment),
                 )
                 if role == "user":
                     await db.execute(
                         "UPDATE conversations SET title = ? WHERE call_id = ? AND ? = "
                         "(SELECT segment FROM conversation_messages WHERE call_id = ? "
                         "AND role = 'user' ORDER BY sequence LIMIT 1)",
-                        (" ".join(text.split())[:80], str(call_id), segment, str(call_id)),
+                        (" ".join(text.split())[:80], logical_id, segment, logical_id),
                     )
                 return
             async with db.execute(
-                "SELECT COUNT(*) FROM conversation_messages WHERE call_id = ?", (str(call_id),)
+                "SELECT COUNT(*) FROM conversation_messages WHERE call_id = ?", (logical_id,)
             ) as cursor:
                 count = await cursor.fetchone()
             assert count is not None
@@ -169,7 +309,7 @@ class History:
                 await db.execute(
                     "UPDATE conversations SET title = ? WHERE call_id = ? AND NOT EXISTS "
                     "(SELECT 1 FROM conversation_messages WHERE call_id = ? AND role = 'user')",
-                    (" ".join(text.split())[:80], str(call_id), str(call_id)),
+                    (" ".join(text.split())[:80], logical_id, logical_id),
                 )
             # An unfinished prefix stays marked even if logout or process death prevents closure.
             await db.execute(
@@ -177,7 +317,7 @@ class History:
                 "(call_id, segment, role, text, created, interrupted, finalized) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
-                    str(call_id),
+                    logical_id,
                     segment,
                     role,
                     text,
@@ -191,15 +331,15 @@ class History:
         store = self.store
         await store.check(owner)
         async with store.lock, store.transaction():
-            await self.active(owner, call_id)
+            logical_id = await self.active(owner, call_id)
             await store.connection().execute(
                 "UPDATE conversation_messages SET finalized = 1 WHERE call_id = ?",
-                (str(call_id),),
+                (logical_id,),
             )
             if end:
                 await store.connection().execute(
                     "UPDATE conversations SET ended = ? WHERE call_id = ?",
-                    (store.clock().astimezone(UTC).isoformat(), str(call_id)),
+                    (store.clock().astimezone(UTC).isoformat(), logical_id),
                 )
 
     async def list(self, owner: Owner, search: str = "") -> ConversationList:

@@ -453,7 +453,7 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
             if message["content"].startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == current.model_dump(
-            mode="json", by_alias=True
+            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
         )
         assert any("Saved figures changed" in message["content"] for message in request["messages"])
         assert await store.get("owner") == current

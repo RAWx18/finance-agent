@@ -195,7 +195,7 @@ async def test_cancelled_completion_cannot_speak_or_save_after_external_correcti
         if message.get("content", "").startswith("Canonical application state;")
     )
     assert json.loads(state.split("\n", 1)[1])["snapshot"] == snapshot.model_dump(
-        mode="json", by_alias=True
+        mode="json", by_alias=True, exclude={"workspace", "latest_change"}
     )
     result = await next_frame(voice.frames, FunctionCallResultFrame)
     assert result.function_name == "read_state" and result.tool_call_id != "obsolete-save"

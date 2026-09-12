@@ -3,3 +3,7 @@
 export function isHistoryRoute(path: string): boolean {
   return path.length <= 128 && /^\/history(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)?$/.exec(path)?.[0] === path;
 }
+
+export function isConversationRoute(path: string): boolean {
+  return path.length <= 124 && /^\/app(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)?$/.exec(path)?.[0] === path;
+}

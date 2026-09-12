@@ -70,6 +70,15 @@ class Auth:
                 display_name TEXT NOT NULL, google_name TEXT NOT NULL, email TEXT NOT NULL,
                 generation INTEGER NOT NULL, UNIQUE(issuer, subject)
             );
+            CREATE TABLE IF NOT EXISTS user_memories (
+                owner TEXT NOT NULL REFERENCES auth_users(id) ON DELETE CASCADE,
+                scope TEXT NOT NULL CHECK(scope IN ('common', 'user')),
+                key TEXT NOT NULL,
+                text TEXT NOT NULL,
+                updated TEXT NOT NULL,
+                expires TEXT,
+                PRIMARY KEY(owner, scope, key)
+            );
             CREATE TABLE IF NOT EXISTS auth_grants (
                 user_id TEXT PRIMARY KEY REFERENCES auth_users(id) ON DELETE CASCADE,
                 access_token TEXT NOT NULL, refresh_token TEXT, expires REAL NOT NULL,
@@ -548,6 +557,10 @@ class Auth:
             db = self.store.connection()
             async with self.store.transaction():
                 await db.execute("DELETE FROM auth_flows WHERE expires <= ?", (self.now(),))
+                await db.execute(
+                    "DELETE FROM user_memories WHERE expires <= ?",
+                    (self.store.clock().astimezone(UTC).isoformat(),),
+                )
                 async with db.execute(
                     "DELETE FROM auth_sessions WHERE expires <= ? OR idle_expires <= ? "
                     "RETURNING user_id, hash",

@@ -220,6 +220,8 @@ class Call:
     watchers: list[asyncio.Task[Any]] = field(default_factory=list)
     admitted_at: float = field(default_factory=monotonic)
     timings: dict[str, float] = field(default_factory=dict)
+    session_id: UUID | None = None
+    resume_slug: str | None = None
 
     def mark(self, stage: str) -> None:
         # Monotonic seconds since admission; repeated stages record the latest attempt.
@@ -289,8 +291,29 @@ class CallManager:
             return state
         return CallState()
 
-    async def start(self, owner: Owner, call_id: UUID) -> CallJoin:
-        await self.store.get(owner)
+    def check_idle(self) -> None:
+        call = self.call
+        if call and (
+            call.state.status in {"connecting", "active", "ending"}
+            or not call.state.cleanup_confirmed
+            or call.task is not None and not call.task.done()
+            or call.teardown is not None and not call.teardown.done()
+            or any(not task.done() for task in call.operations.values())
+        ):
+            raise Problem(409, "callBusy", "A voice call is already running or ending.")
+
+    async def select(self, owner: Owner, slug: str) -> Snapshot:
+        await self.store.check(owner)
+        async with self.lock:
+            if self.closed:
+                raise Problem(503, "voiceUnavailable", "Voice is shutting down.")
+            self.check_idle()
+            return await History(self.store).select(owner, slug)
+
+    async def start(
+        self, owner: Owner, call_id: UUID, conversation_slug: str | None = None
+    ) -> CallJoin:
+        snapshot = await self.store.get(owner)
         async with self.lock:
             if self.closed:
                 raise Problem(503, "voiceUnavailable", "Voice is shutting down.")
@@ -298,13 +321,19 @@ class CallManager:
             if call and call.owner == owner and call.id == call_id:
                 if call.stop.is_set() or call.state.status not in {"connecting", "active"}:
                     raise Problem(409, "callEnded", "This call has ended; use a fresh call ID.")
+                if conversation_slug != call.resume_slug:
+                    raise Problem(409, "conversationChanged", "Call belongs to another chat.")
             else:
                 if (owner, call_id) in self.attempts:
                     raise Problem(409, "callEnded", "This call has ended; use a fresh call ID.")
-                if call and (
-                    not call.state.cleanup_confirmed or call.task and not call.task.done()
+                self.check_idle()
+                if (
+                    conversation_slug is not None
+                    and snapshot.conversation_slug != conversation_slug
                 ):
-                    raise Problem(409, "callBusy", "A voice call is already running or ending.")
+                    raise Problem(
+                        409, "conversationChanged", "Select this conversation before starting it."
+                    )
                 self.remember(owner, call_id)
                 reason = unavailable_reason(self.config, self.environment)
                 if reason:
@@ -312,8 +341,15 @@ class CallManager:
                 call = Call(
                     owner,
                     call_id,
-                    CallState(call_id=call_id, status="connecting", cleanup_confirmed=False),
+                    CallState(
+                        call_id=call_id,
+                        conversation_slug=conversation_slug,
+                        status="connecting",
+                        cleanup_confirmed=False,
+                    ),
                     asyncio.get_running_loop().create_future(),
+                    session_id=snapshot.session_id,
+                    resume_slug=conversation_slug,
                 )
                 call.join.add_done_callback(
                     lambda future: None if future.cancelled() else future.exception()
@@ -437,6 +473,13 @@ class CallManager:
                 call.stop.set()
                 return
             value = await self.store.get(call.owner)
+            if call.session_id is not None and (
+                value.session_id != call.session_id
+                or value.conversation_slug != call.state.conversation_slug
+            ):
+                pipeline.invalidate()
+                call.stop.set()
+                return
             if value.sequence <= sequence:
                 continue
             sequence = value.sequence
@@ -460,6 +503,7 @@ class CallManager:
                 return
             call.state = CallState(
                 call_id=call.id,
+                conversation_slug=call.state.conversation_slug,
                 status="error",
                 cleanup_confirmed=False,
                 message="Voice provider unavailable; continue with manual entry.",
@@ -475,9 +519,19 @@ class CallManager:
                 if call.stop.is_set():
                     raise asyncio.CancelledError
                 snapshot = await self.store.get(call.owner)
-                await history.start(call.owner, call.id, snapshot.session_id)
+                if snapshot.session_id != call.session_id:
+                    raise Problem(409, "sessionChanged", "The financial session has changed.")
+                call.state.conversation_slug = await history.start(
+                    call.owner, call.id, snapshot.session_id, call.resume_slug
+                )
                 call.history = history
+                snapshot = await self.store.get(call.owner)
+                call.session_id = snapshot.session_id
                 pipeline.history = CaptionHistory(history, call.owner, call.id)
+                pipeline.resume_slug = call.resume_slug
+                pipeline.resume_messages = (
+                    await history.recent(call.owner, call.id) if call.resume_slug else []
+                )
                 expires = min(
                     self.store.clock() + timedelta(seconds=voice.call_seconds),
                     snapshot.expires_at,
@@ -517,6 +571,8 @@ class CallManager:
                 if call.stop.is_set():
                     raise asyncio.CancelledError
                 queue = await self.store.subscribe(call.owner)
+                async with self.store.lock, self.store.transaction():
+                    await history.active(call.owner, call.id)
                 call.mark("pipelineConstructionStarted")
                 await pipeline.start(
                     self.store,
@@ -532,6 +588,7 @@ class CallManager:
                 await self.store.check(call.owner)
                 async with self.store.lock:
                     await self.store.owner_key(call.owner)
+                    await history.active(call.owner, call.id)
                     if call.revoked:
                         raise AuthProblem(401, "unauthenticated")
                     if call.stop.is_set():
@@ -540,9 +597,11 @@ class CallManager:
                         raise Problem(
                             503, "voiceUnavailable", "Call credentials expired during setup."
                         )
+                    assert call.state.conversation_slug is not None
                     call.join.set_result(
                         CallJoin(
                             call_id=call.id,
+                            conversation_slug=call.state.conversation_slug,
                             url=url,
                             token=browser_token.result(),
                             expires_at=expires,
@@ -570,7 +629,12 @@ class CallManager:
                 if readiness not in done:
                     raise TimeoutError
                 readiness.result()
-                call.state = CallState(call_id=call.id, status="active", cleanup_confirmed=False)
+                call.state = CallState(
+                    call_id=call.id,
+                    conversation_slug=call.state.conversation_slug,
+                    status="active",
+                    cleanup_confirmed=False,
+                )
                 call.mark("ready")
                 remaining = max(0.0, (expires - self.store.clock()).total_seconds())
                 try:
@@ -584,6 +648,8 @@ class CallManager:
             setup_error = (
                 AuthProblem(401, error.body.code)
                 if isinstance(error, AuthProblem) and error.status == 401
+                else error
+                if error.status in {404, 409, 410}
                 else Problem(503, "voiceUnavailable", error.body.message)
             )
             call.state.message = setup_error.body.message

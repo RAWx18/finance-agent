@@ -20,6 +20,10 @@ from .test_auth import begin, callback
         "/history/conversation-2026-09-12-143205-2",
         "/history/a",
         "/history/" + "a" * 119,
+        "/app/conversation-2026-09-12-143205",
+        "/app/conversation-2026-09-12-143205-2",
+        "/app/a",
+        "/app/" + "a" * 123,
     ],
 )
 def test_history_deep_link_survives_protected_reload_and_oauth(tmp_path, config, path):
@@ -56,6 +60,22 @@ def test_history_deep_link_survives_protected_reload_and_oauth(tmp_path, config,
         "//evil.test/history/x",
         "https://evil.test",
         "/history/" + "a" * 120,
+        "/app//x",
+        "/app/x/y",
+        "/app/x?x=y",
+        "/app/x#fragment",
+        "/app/x\n",
+        "/app/x\r",
+        "/app/x\x00",
+        "/app/UPPER",
+        "/app/x_2",
+        "/app/-x",
+        "/app/x-",
+        "/app/x--y",
+        "/app/%2e%2e",
+        "/app/x\\account",
+        "//evil.test/app/x",
+        "/app/" + "a" * 124,
     ],
 )
 def test_oauth_rejects_history_path_injection(path):
@@ -63,7 +83,9 @@ def test_oauth_rejects_history_path_injection(path):
         LoginRequest(returnTo=path)
 
 
-@pytest.mark.parametrize("path", ["/history/UPPER", "/history/x/y", "/history/x--y"])
+@pytest.mark.parametrize(
+    "path", ["/history/UPPER", "/history/x/y", "/history/x--y", "/app/UPPER", "/app/x/y"]
+)
 def test_unknown_history_routes_do_not_serve_spa(client, path):
     assert client.get(path).status_code == 404
 
@@ -84,3 +106,7 @@ def test_history_openapi_matches_frontend_contract(client):
     }
     assert models["ConversationMessage"]["properties"]["role"]["enum"] == ["user", "assistant"]
     assert set(schema["paths"]["/api/history"]) == {"get"}
+    assert set(schema["paths"]["/api/history/{slug}/continue"]) == {"post"}
+    for name in ("Snapshot", "CallJoin", "CallState", "CallRequest"):
+        assert "conversationSlug" in models[name]["properties"]
+    assert "conversationSlug" in models["CallJoin"]["required"]

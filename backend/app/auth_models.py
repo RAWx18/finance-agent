@@ -30,12 +30,12 @@ FixedReturnPath = Literal[
     "/account",
     "/history",
 ]
-HISTORY_PATH = r"/history/[a-z0-9]+(?:-[a-z0-9]+)*"
+CONVERSATION_PATH = r"/(?:history|app)/[a-z0-9]+(?:-[a-z0-9]+)*"
 
 
 def is_return_path(value: str) -> bool:
     return value in get_args(FixedReturnPath) or (
-        len(value) <= 128 and re.fullmatch(HISTORY_PATH, value) is not None
+        len(value) <= 128 and re.fullmatch(CONVERSATION_PATH, value) is not None
     )
 
 
@@ -49,7 +49,7 @@ ReturnPath = (
     FixedReturnPath
     | Annotated[
         str,
-        Field(pattern="^" + HISTORY_PATH + "$", max_length=128),
+        Field(pattern="^" + CONVERSATION_PATH + "$", max_length=128),
         AfterValidator(validate_return_path),
     ]
 )

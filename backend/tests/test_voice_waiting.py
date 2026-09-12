@@ -233,7 +233,7 @@ class TestWaiting:
             if message.get("content", "").startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == baseline.model_dump(
-            mode="json", by_alias=True
+            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
         )
         instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
         text = "".join(ElementTree.fromstring(ssml).itertext()).strip()
@@ -344,7 +344,7 @@ class TestWaiting:
             if item.get("content", "").startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == baseline.model_dump(
-            mode="json", by_alias=True
+            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
         )
         assert {"role": "user", "content": "My wages arrive on Friday."} in request["messages"]
         instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)

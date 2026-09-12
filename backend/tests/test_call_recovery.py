@@ -18,6 +18,18 @@ from .test_voice import PipelineDouble, RoomsDouble, environment
 from .test_voice import provider_doubles as provider_doubles
 
 
+def assert_call_memory(snapshot, baseline):
+    assert snapshot.conversation_slug is not None
+    assert snapshot.session_id != baseline.session_id
+    assert snapshot.revision > baseline.revision and snapshot.sequence > baseline.sequence
+    exclude = {"session_id", "conversation_slug", "revision", "sequence", "latest_change"}
+    current = snapshot.model_dump(exclude=exclude)
+    initial = baseline.model_dump(exclude=exclude)
+    current["workspace"].pop("change")
+    initial["workspace"].pop("change")
+    assert current == initial
+
+
 @pytest.fixture
 async def manager(store, config, tmp_path, provider_doubles):
     await store.create("owner")
@@ -52,7 +64,7 @@ async def test_delayed_end_cannot_stop_replacement_or_replay_terminal_identity(m
     assert error.value.body.code == "callEnded"
     assert len(RoomsDouble.instances) == 2
     assert (await manager.end("owner", second.call_id)).cleanup_confirmed
-    assert await store.get("owner") == baseline
+    assert_call_memory(await store.get("owner"), baseline)
 
 
 async def test_cancel_before_start_is_idempotent_and_owner_scoped(manager):
@@ -120,7 +132,7 @@ async def test_cancelled_setup_deletes_the_predetermined_room(
     assert RoomsDouble.instances[0].deleted == [call.room_name]
     assert RoomsDouble.instances[0].closed and PipelineDouble.instances[0].closed
     assert call.state.cleanup_confirmed and not store.listeners
-    assert await store.get("owner") == baseline
+    assert_call_memory(await store.get("owner"), baseline)
     with pytest.raises(Problem) as error:
         await manager.start("owner", call_id)
     assert error.value.body.code == "callEnded"
@@ -179,7 +191,7 @@ async def test_history_hang_cannot_skip_media_cleanup(manager, store, monkeypatc
     assert manager.call.state.cleanup_confirmed and manager.call.state.status == "ended"
     assert RoomsDouble.instances[0].deleted == [manager.call.room_name]
     assert RoomsDouble.instances[0].closed and PipelineDouble.instances[0].closed
-    assert await store.get("owner") == baseline
+    assert_call_memory(await store.get("owner"), baseline)
     finish.assert_awaited_once()
 
 
@@ -219,7 +231,7 @@ async def test_unconfirmed_cleanup_blocks_replacement_until_explicit_retry(
     assert call.state.cleanup_confirmed
     assert len(PipelineDouble.instances) == 1
     assert sum(len(room.tokens) for room in RoomsDouble.instances) == 2
-    assert await store.get("owner") == baseline
+    assert_call_memory(await store.get("owner"), baseline)
     replacement = await manager.start("owner", uuid4())
     assert replacement.call_id != join.call_id
 
@@ -320,7 +332,7 @@ async def test_call_expiry_preserves_figures_and_never_refreshes_tokens(manager,
     assert state.status == "ended" and state.cleanup_confirmed
     assert "expired" in state.message
     assert len(RoomsDouble.instances) == 1 and len(RoomsDouble.instances[0].tokens) == 2
-    assert await store.get("owner") == baseline
+    assert_call_memory(await store.get("owner"), baseline)
     with pytest.raises(Problem):
         await manager.start("owner", join.call_id)
 

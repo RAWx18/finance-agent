@@ -197,6 +197,7 @@ def test_http_setup_guards_contract_and_csp(client):
     client.post("/api/session", json={})
     assert client.get("/api/session/call").json() == {
         "callId": None,
+        "conversationSlug": None,
         "status": "idle",
         "cleanupConfirmed": True,
         "message": None,
@@ -285,13 +286,22 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
             assert result.status_code == 200
             assert result.json() == {
                 "callId": str(call.id),
+                "conversationSlug": state.conversation_slug,
                 "status": "error",
                 "cleanupConfirmed": True,
                 "message": "Conversations are temporarily unavailable. Please try again shortly.",
             }
             assert call.state == state
         assert caplog.messages == [f"Voice unavailable: {reason}"]
-        assert client.get("/api/session").json() == baseline
+        current = client.get("/api/session").json()
+        assert current["sessionId"] != baseline["sessionId"]
+        assert current == {
+            **baseline,
+            "sessionId": current["sessionId"],
+            "conversationSlug": state.conversation_slug,
+            "revision": baseline["revision"] + 1,
+            "sequence": baseline["sequence"] + 1,
+        }
         assert all(
             record.exc_info is None and record.stack_info is None for record in caplog.records
         )
@@ -454,7 +464,9 @@ async def test_lifecycle_ownership_correction_deletion(store, config, tmp_path, 
     await store.create("other")
     manager = CallManager(store, config, environment(tmp_path))
     join = await manager.start("owner", uuid4())
-    assert set(join.model_dump(by_alias=True)) == {"callId", "url", "token", "expiresAt"}
+    assert set(join.model_dump(by_alias=True)) == {
+        "callId", "conversationSlug", "url", "token", "expiresAt"
+    }
     assert manager.state("owner").status == "connecting"
     assert manager.state("other").status == "idle"
     assert (await manager.end("other", uuid4())).status == "ended"
@@ -466,7 +478,10 @@ async def test_lifecycle_ownership_correction_deletion(store, config, tmp_path, 
     assert join.token == "test-token-1"
     pipeline.ready_event.set()
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
-    await tools.update_facts({"expectedRevision": 0, "opening": money("100")}, "external")
+    await tools.update_facts(
+        {"expectedRevision": (await store.get("owner")).revision, "opening": money("100")},
+        "external",
+    )
     await asyncio.wait_for(pipeline.interrupted.wait(), 2)
     assert manager.state("owner").status == "active"
     await store.delete("owner")

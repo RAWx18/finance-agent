@@ -61,7 +61,7 @@ async def test_empty_success_waits_for_continue_from_committed_state(
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == (
             await store.get("owner")
-        ).model_dump(mode="json", by_alias=True)
+        ).model_dump(mode="json", by_alias=True, exclude={"workspace", "latest_change"})
         assert [m for m in body["messages"] if m["role"] == "tool"] == [
             m for m in observed[1]["messages"] if m["role"] == "tool"
         ]
@@ -449,14 +449,20 @@ async def test_scripted_first_turn_commits_before_canonical_followup_and_speech(
                 "first-turn",
             )
         assert body["tool_choice"] == "auto"
-        result = json.loads(next(m["content"] for m in body["messages"] if m["role"] == "tool"))
-        assert result["snapshot"] == (await store.get("owner")).model_dump(
-            mode="json", by_alias=True
+        receipt = json.loads(next(m["content"] for m in body["messages"] if m["role"] == "tool"))
+        state = next(
+            message["content"]
+            for message in body["messages"]
+            if message.get("content", "").startswith("Canonical application state;")
         )
-        assert result["snapshot"]["revision"] == int(patch is not None)
+        result = json.loads(state.split("\n", 1)[1])
+        assert result["snapshot"] == (await store.get("owner")).model_dump(
+            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
+        )
+        assert receipt["revision"] == result["snapshot"]["revision"] == int(patch is not None)
         assert "premature question" not in json.dumps(body)
         questions = result["dialogue"]["questionOptions"]
-        assert questions == result["workspace"]["questions"]
+        assert all(question in result["workspace"]["questions"] for question in questions)
         answers.append(
             "What can you tell me about " + questions[0]["fields"][0] + "?"
             if questions

@@ -111,6 +111,14 @@ class HistoryConfig(BaseModel):
     max_search_chars: int = Field(default=200, ge=1, le=1000)
 
 
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_notes: int = Field(ge=1, le=20)
+    max_note_chars: int = Field(ge=40, le=500)
+    user_days: int = Field(ge=1, le=90)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -132,6 +140,7 @@ class Config(BaseModel):
     workspace_max_questions: int = Field(default=3, ge=1, le=10)
     workspace_max_actions: int = Field(default=6, ge=1, le=20)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
+    memory: MemoryConfig
     auth: AuthConfig
     voice: VoiceConfig
 

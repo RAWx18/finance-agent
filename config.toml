@@ -25,6 +25,13 @@ max_messages = 2000
 max_caption_chars = 16000
 max_search_chars = 200
 
+[memory]
+# Limits apply separately to common preferences, user context and each saved chat.
+max_notes = 8
+max_note_chars = 240
+# Common preferences last until forgotten; chat notes follow the chat's expiry.
+user_days = 30
+
 [auth]
 session_hours = 168
 idle_hours = 24
@@ -56,7 +63,7 @@ introduction = "Introduce yourself as {assistant_name}, an AI financial assistan
 language = "English"
 tone = "Warm, calm and practical. Speak to an adult as a capable financial assistant, not a form or a lecturer."
 # Use an exact verified Azure deployment name for an approved model.
-model = "gpt-5.6-terra"
+model = "gpt-5.6-luna"
 reasoning_effort = "none"
 model_timeout_seconds = 35
 max_completion_tokens = 1600

@@ -940,7 +940,7 @@ def test_auth_openapi_types_have_no_dangling_schema_references(auth_client):
     assert return_paths[1] == {
         "type": "string",
         "maxLength": 128,
-        "pattern": "^/history/[a-z0-9]+(?:-[a-z0-9]+)*$",
+        "pattern": "^/(?:history|app)/[a-z0-9]+(?:-[a-z0-9]+)*$",
     }
     assert models["Facts"]["additionalProperties"] is False
     assert not {"user", "userId", "email", "googleSubject"} & set(models["Facts"]["properties"])

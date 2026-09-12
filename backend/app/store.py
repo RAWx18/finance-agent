@@ -107,6 +107,12 @@ class Store:
                 search_date TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS conversation_owner ON conversations(owner, started);
+            CREATE TABLE IF NOT EXISTS conversation_memory (
+                call_id TEXT PRIMARY KEY REFERENCES conversations(call_id) ON DELETE CASCADE,
+                owner TEXT NOT NULL REFERENCES sessions(owner) ON DELETE CASCADE,
+                media_call_id TEXT UNIQUE,
+                snapshot TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS conversation_messages (
                 sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                 call_id TEXT NOT NULL REFERENCES conversations(call_id) ON DELETE CASCADE,
@@ -117,6 +123,13 @@ class Store:
                 interrupted INTEGER NOT NULL,
                 finalized INTEGER NOT NULL,
                 UNIQUE(call_id, segment)
+            );
+            CREATE TABLE IF NOT EXISTS chat_memories (
+                call_id TEXT NOT NULL REFERENCES conversations(call_id) ON DELETE CASCADE,
+                key TEXT NOT NULL,
+                text TEXT NOT NULL,
+                updated TEXT NOT NULL,
+                PRIMARY KEY(call_id, key)
             );
         """
         )
@@ -250,12 +263,27 @@ class Store:
             snapshot.sequence += 1
             async with self.transaction():
                 await self.owner_key(access)
-                await self.connection().execute(
-                    "UPDATE sessions SET snapshot = ? WHERE owner = ?",
-                    (snapshot.model_dump_json(by_alias=True), owner),
-                )
+                await self.save_snapshot(owner, snapshot)
             self.publish(owner, snapshot)
         return snapshot
+
+    async def save_snapshot(self, owner: str, snapshot: Snapshot) -> None:
+        # The caller holds the shared lock and transaction for workspace and memory writes.
+        result = snapshot.model_dump_json(by_alias=True)
+        db = self.connection()
+        await db.execute(
+            "UPDATE sessions SET snapshot = ?, expires = ? WHERE owner = ?",
+            (result, snapshot.expires_at.isoformat(), owner),
+        )
+        if snapshot.conversation_slug is not None:
+            async with db.execute(
+                "UPDATE conversation_memory SET snapshot = ? WHERE owner = ? AND call_id = "
+                "(SELECT call_id FROM conversations WHERE owner = ? AND slug = ? "
+                "AND session_id = ?)",
+                (result, owner, owner, snapshot.conversation_slug, str(snapshot.session_id)),
+            ) as cursor:
+                if cursor.rowcount != 1:
+                    raise Problem(409, "conversationChanged", "Conversation memory is unavailable.")
 
     async def get(self, owner: Owner) -> Snapshot:
         await self.check(owner)
@@ -348,12 +376,22 @@ class Store:
             ) as cursor:
                 row = await cursor.fetchone()
             if row is not None:
+                receipt, _ = self.load_snapshot(row[1])
+                if (
+                    receipt.session_id != snapshot.session_id
+                    or receipt.conversation_slug != snapshot.conversation_slug
+                ):
+                    raise Problem(
+                        409,
+                        "conversationChanged",
+                        "Command belongs to another workspace.",
+                        snapshot,
+                    )
                 if row[0] != fingerprint:
                     raise Problem(
                         409, "commandConflict", "Command ID was used for different content."
                     )
-                snapshot, _ = self.load_snapshot(row[1])
-                return snapshot
+                return receipt
             if snapshot.revision != command.expected_revision:
                 raise Problem(
                     409,
@@ -876,9 +914,7 @@ class Store:
             result = snapshot.model_dump_json(by_alias=True)
             async with self.transaction():
                 await self.owner_key(access)
-                await db.execute(
-                    "UPDATE sessions SET snapshot = ? WHERE owner = ?", (result, owner)
-                )
+                await self.save_snapshot(owner, snapshot)
                 await db.execute(
                     "INSERT INTO commands VALUES (?, ?, ?, ?)",
                     (owner, str(command.command_id), fingerprint, result),

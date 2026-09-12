@@ -176,6 +176,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/history/{slug}/continue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** History Continue */
+        post: operations["history_continue_api_history__slug__continue_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/history/{slug}/transcript": {
         parameters: {
             query?: never;
@@ -510,6 +527,8 @@ export interface components {
              * Format: uuid
              */
             callId: string;
+            /** Conversationslug */
+            conversationSlug: string;
             /** Url */
             url: string;
             /** Token */
@@ -527,11 +546,15 @@ export interface components {
              * Format: uuid
              */
             callId: string;
+            /** Conversationslug */
+            conversationSlug?: string | null;
         };
         /** CallState */
         CallState: {
             /** Callid */
             callId?: string | null;
+            /** Conversationslug */
+            conversationSlug?: string | null;
             /**
              * Status
              * @default idle
@@ -563,6 +586,21 @@ export interface components {
             resultIds?: string[];
             /** Cardids */
             cardIds?: string[];
+        };
+        /** ChangeSource */
+        ChangeSource: {
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "humanCardEdit";
+            /** Actorid */
+            actorId: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
         };
         /** Choice */
         Choice: {
@@ -643,6 +681,7 @@ export interface components {
              * @enum {string}
              */
             status: "exact" | "estimate";
+            source?: components["schemas"]["MoneyInput"] | null;
         };
         /** ConflictValueInput */
         ConflictValueInput: {
@@ -657,6 +696,7 @@ export interface components {
              * @enum {string}
              */
             status: "exact" | "estimate";
+            conversion?: components["schemas"]["Conversion"] | null;
         };
         /** Consequence */
         Consequence: {
@@ -757,6 +797,29 @@ export interface components {
             expiresAt: string;
             /** Messagecount */
             messageCount: number;
+        };
+        /** Conversion */
+        Conversion: {
+            /** Currency */
+            currency: string;
+            /** Rate */
+            rate?: string | null;
+            /**
+             * Ratestatus
+             * @default unknown
+             * @enum {string}
+             */
+            rateStatus: "exact" | "estimate" | "unknown";
+            /** Ratedate */
+            rateDate?: string | null;
+            /** Fee */
+            fee?: string | null;
+            /**
+             * Feestatus
+             * @default unknown
+             * @enum {string}
+             */
+            feeStatus: "exact" | "estimate" | "unknown";
         };
         /** Coverage */
         Coverage: {
@@ -910,7 +973,24 @@ export interface components {
              * @default reported
              * @enum {string}
              */
-            amountBasis: "reported" | "requiredOnly" | "assumed";
+            amountBasis: "reported" | "requiredOnly" | "assumed" | "budget";
+            /**
+             * Amountstatus
+             * @default exact
+             * @enum {string}
+             */
+            amountStatus: "exact" | "estimate" | "unknown";
+            /** Requiredpaise */
+            requiredPaise?: number | null;
+            /**
+             * Requiredstatus
+             * @default unknown
+             * @enum {string}
+             */
+            requiredStatus: "exact" | "estimate" | "unknown";
+            source?: components["schemas"]["MoneyInput"] | null;
+            /** Scheduleindex */
+            scheduleIndex?: number | null;
             /** Included */
             included: boolean;
             /** Overdue */
@@ -1084,6 +1164,7 @@ export interface components {
              * @enum {string}
              */
             status: "exact" | "estimate" | "unknown";
+            source?: components["schemas"]["MoneyInput"] | null;
         };
         /** MoneyInput */
         MoneyInput: {
@@ -1094,6 +1175,7 @@ export interface components {
              * @enum {string}
              */
             status: "exact" | "estimate" | "unknown";
+            conversion?: components["schemas"]["Conversion"] | null;
         };
         /** Outcome */
         Outcome: {
@@ -1149,6 +1231,8 @@ export interface components {
             reserveShortfallPaise: number | null;
             /** Peakgapdate */
             peakGapDate?: string | null;
+            /** Timingrisks */
+            timingRisks?: components["schemas"]["TimingRisk"][];
             /**
              * Evaluatedon
              * Format: date
@@ -1194,6 +1278,8 @@ export interface components {
             reserveShortfallPaise: number | null;
             /** Peakgapdate */
             peakGapDate?: string | null;
+            /** Timingrisks */
+            timingRisks?: components["schemas"]["TimingRisk"][];
         };
         /** ProviderResponse */
         ProviderResponse: {
@@ -1435,6 +1521,8 @@ export interface components {
         };
         /** Schedule */
         Schedule: {
+            /** Enddate */
+            endDate?: string | null;
             /** Date */
             date: string | null;
             /**
@@ -1442,22 +1530,32 @@ export interface components {
              * @default once
              * @enum {string}
              */
-            recurrence: "once" | "weekly" | "fortnightly" | "monthly";
+            recurrence: "once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget";
             /**
              * Certainty
              * @default exact
              * @enum {string}
              */
             certainty: "exact" | "estimate" | "unknown";
+            /** Count */
+            count?: number | null;
+            /** Amounts */
+            amounts?: components["schemas"]["MoneyInput"][];
         };
         /** SchedulePatch */
         SchedulePatch: {
+            /** Enddate */
+            endDate?: string | null;
             /** Date */
             date?: string | null;
             /** Recurrence */
-            recurrence?: ("once" | "weekly" | "fortnightly" | "monthly") | null;
+            recurrence?: ("once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget") | null;
             /** Certainty */
             certainty?: ("exact" | "estimate" | "unknown") | null;
+            /** Count */
+            count?: number | null;
+            /** Amounts */
+            amounts?: components["schemas"]["MoneyInput"][];
         };
         /** Settings */
         Settings: {
@@ -1514,6 +1612,8 @@ export interface components {
              * Format: uuid
              */
             sessionId: string;
+            /** Conversationslug */
+            conversationSlug?: string | null;
             /** Revision */
             revision: number;
             /** Sequence */
@@ -1560,6 +1660,18 @@ export interface components {
             /** Rejectedproposals */
             readonly rejectedProposals?: components["schemas"]["RejectedProposal"][];
         };
+        /** TimingRisk */
+        TimingRisk: {
+            /**
+             * Date
+             * Format: date
+             */
+            date: string;
+            /** Exposurepaise */
+            exposurePaise: number;
+            /** Remaininggappaise */
+            remainingGapPaise: number;
+        };
         /** Uncertainty */
         Uncertainty: {
             /** Id */
@@ -1600,7 +1712,7 @@ export interface components {
              * Recurrence
              * @enum {string}
              */
-            recurrence: "once" | "weekly" | "fortnightly" | "monthly";
+            recurrence: "once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget";
         };
         /** UpdateFacts */
         UpdateFacts: {
@@ -1610,6 +1722,8 @@ export interface components {
              */
             type: "updateFacts";
             changes: components["schemas"]["FactsPatch"];
+            /** Source */
+            source?: "humanCardEdit" | null;
         };
         /** User */
         User: {
@@ -1688,6 +1802,7 @@ export interface components {
             revision: number;
             /** Items */
             items: components["schemas"]["ChangeItem"][];
+            source?: components["schemas"]["ChangeSource"] | null;
         };
         /** WorkspaceQuestion */
         WorkspaceQuestion: {
@@ -1747,6 +1862,8 @@ export interface components {
             excludedReasons?: {
                 [key: string]: string;
             };
+            /** Qualifications */
+            qualifications?: string[];
             /** Eventids */
             eventIds: string[];
             /** Witnesseventids */
@@ -3474,6 +3591,149 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SavedConversation"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Gone */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Content Too Large */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unsupported Media Type */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Unprocessable Content */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Precondition Required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too Many Requests */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    history_continue_api_history__slug__continue_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slug: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Model"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Snapshot"];
                 };
             };
             /** @description Bad Request */

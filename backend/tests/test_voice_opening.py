@@ -19,6 +19,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.aggregators.llm_response_universal import LLMAssistantAggregator
 
+from app.voice_pipeline import RESUME, VoicePipeline
 from app.voice_tools import introduction
 
 from .conftest import money
@@ -65,6 +66,52 @@ async def render(instance, text):
 
 async def ready(voice):
     await voice.pipeline.worker.rtvi._call_event_handler("on_client_ready")
+
+
+@pytest.fixture
+def resumed_dialogue(monkeypatch):
+    messages = [
+        {"role": "user", "content": "My salary is five lakh. I am worried about rent."},
+        {"role": "assistant", "content": "Does your salary arrive before rent is due?"},
+        {"role": "user", "content": "It comes after rent. Change that five lakh to six lakh."},
+    ]
+    initialize = VoicePipeline.__init__
+
+    def resumed(pipeline):
+        initialize(pipeline)
+        pipeline.resume_slug = "conversation-2026-09-11-060000"
+        pipeline.resume_messages = [dict(message) for message in messages]
+
+    monkeypatch.setattr(VoicePipeline, "__init__", resumed)
+    return messages
+
+
+async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying_writes(
+    resumed_dialogue, voice, synthesis, store
+):
+    await voice.pipeline.tools.update_facts(
+        {"expectedRevision": 0, "opening": money("600000")}, "saved-before-reconnect"
+    )
+    baseline = await store.get("owner")
+    response = "Yeah, let's continue with rent before payday."
+    voice.responses.put_nowait(text_reply(response))
+    await ready(voice)
+    request = await asyncio.wait_for(voice.requests.get(), 2)
+    assert request["tool_choice"] == "none"
+    assert all(message in request["messages"] for message in resumed_dialogue)
+    assert {"role": "developer", "content": introduction(store.config)} not in request["messages"]
+    assert {"role": "developer", "content": RESUME} in request["messages"]
+    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    await render(instance, response)
+    await next_frame(voice.frames, TTSAudioRawFrame)
+    await next_frame(voice.frames, TTSStoppedFrame)
+    await asyncio.wait_for(synthesis.turns.get(), 2)
+    assert await store.get("owner") == baseline
+    assert voice.pipeline.metrics.get("tool_calls", 0) == 0
+    assert voice.pipeline.completed_turns == 2
+    await ready(voice)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(voice.requests.get(), 0.05)
 
 
 @pytest.mark.parametrize(
@@ -148,7 +195,7 @@ async def test_interrupted_intro_drops_late_audio_and_does_not_resume(voice, syn
     assert voice.pipeline.opening == "preempted" and voice.pipeline.user_speaking
 
 
-async def test_external_refresh_before_first_turn_never_asks_or_repeats_intro(
+async def test_external_refresh_replaces_an_unheard_opening_without_waiting_for_user(
     voice, synthesis, store
 ):
     voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
@@ -158,12 +205,59 @@ async def test_external_refresh_before_first_turn_never_asks_or_repeats_intro(
     await voice.pipeline.tools.update_facts(
         {"expectedRevision": 0, "opening": money("100")}, "external"
     )
+    voice.responses.put_nowait(text_reply("Hi, I'm Isha; what's worrying you about money?"))
     await voice.pipeline.interrupt()
+    request = await asyncio.wait_for(voice.requests.get(), 2)
+    assert request["tool_choice"] == "none"
+    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    await render(instance, "Hi, I'm Isha; what's worrying you about money?")
+    await next_frame(voice.frames, TTSAudioRawFrame)
+    await next_frame(voice.frames, TTSStoppedFrame)
     await ready(voice)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(voice.requests.get(), 0.1)
     assert synthesis.requests.empty() and voice.pipeline.completed_turns == 0
     assert (await store.get("owner")).revision == 1
+
+
+async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, synthesis):
+    voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
+    await ready(voice)
+    await asyncio.wait_for(voice.requests.get(), 2)
+    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    await asyncio.to_thread(
+        instance.synthesizing.connect.call_args.args[0],
+        SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)),
+    )
+    await next_frame(voice.frames, TTSAudioRawFrame)
+    await voice.pipeline.tools.update_facts(
+        {"expectedRevision": 0, "opening": money("100")}, "external"
+    )
+    await voice.pipeline.interrupt()
+    await ready(voice)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(voice.requests.get(), 0.05)
+    assert synthesis.requests.empty()
+
+
+async def test_first_request_refresh_still_completes_one_opening(voice, synthesis, monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(voice.pipeline.tools, "refresh", lambda snapshot: None)
+        await voice.pipeline.tools.update_facts(
+            {"expectedRevision": 0, "opening": money("100")}, "external"
+        )
+    greeting = "Hi, I'm Isha; what's worrying you about money?"
+    voice.responses.put_nowait(text_reply(greeting))
+    await ready(voice)
+    assert (await asyncio.wait_for(voice.requests.get(), 2))["tool_choice"] == "none"
+    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    await render(instance, greeting)
+    await next_frame(voice.frames, TTSAudioRawFrame)
+    await next_frame(voice.frames, TTSStoppedFrame)
+    assert voice.pipeline.opening == "delivered"
+    await voice.pipeline.worker.queue_frame(LLMRunFrame())
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(voice.requests.get(), 0.05)
 
 
 @pytest.mark.parametrize("tool", ["read_state", "update_facts"])
