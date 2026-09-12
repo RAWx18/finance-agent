@@ -52,6 +52,11 @@ do not establish live speech interpretation accuracy.
 
 ## Opt-in real services
 
+The [conversation-quality checks](voiceConversation.md) contain observed synthetic before/after
+replays, deterministic state checks and remaining naturalness limitations. The bounded
+`scripts.verify_dialogue` runner uses the current prompt and tools with temporary state; it
+requires `--allow-billable` and does not exercise STT, TTS or Daily.
+
 These checks consume real provider usage. Keep Azure/Daily credentials and endpoint/region privately in the root
 environment file. They do not change provider billing, real financial sessions or Google accounts.
 Use the locked backend environment, installed frontend dependencies and built frontend.
