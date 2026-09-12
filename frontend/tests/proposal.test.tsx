@@ -35,12 +35,14 @@ beforeEach(() => {
   vi.spyOn(api, 'delete').mockResolvedValue({ deleted: true });
 });
 
+/** Exposes a resolver for controlling proposal response timing in tests. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
   return { promise, resolve };
 }
 
+/** Opens the conversation's inline financial picture after delivering the proposal fixture. */
 async function review(router = appRouter()) {
   projectWorkspace(saved);
   render(<RouterProvider router={router} />);

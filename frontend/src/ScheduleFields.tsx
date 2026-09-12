@@ -12,15 +12,18 @@ export type ScheduleDraft = {
   timing: 'date' | 'dayOfMonth' | 'monthEnd'; day: string;
 };
 
+/** Creates an editable draft of a record's schedule and occurrence amounts. */
 export function scheduleDraft(schedule: Record['schedule']): ScheduleDraft {
   return { recurrence: schedule.recurrence, endDate: schedule.endDate ?? '', count: schedule.count?.toString() ?? (schedule.amounts?.length ? String(schedule.amounts.length) : ''), amounts: structuredClone(schedule.amounts ?? []),
     timing: schedule.pattern?.kind ?? 'date', day: schedule.pattern?.day?.toString() ?? '' };
 }
 
+/** Prepares ordered amounts for saving, including explicit unknowns and absent conversions. */
 export function scheduleAmounts(amounts: MoneyInput[]): MoneyInput[] {
   return amounts.map(amount => ({ ...submittedMoney(amount), ...(!amount.conversion ? { conversion: null } : {}) }));
 }
 
+/** Produces the schedule changes represented by an edited draft. */
 export function schedulePatch(draft: ScheduleDraft, schedule: Record['schedule']): components['schemas']['SchedulePatch'] {
   const initial = scheduleDraft(schedule);
   return { ...(draft.recurrence !== initial.recurrence ? { recurrence: draft.recurrence } : {}),
@@ -29,11 +32,13 @@ export function schedulePatch(draft: ScheduleDraft, schedule: Record['schedule']
         ? { pattern: draft.timing === 'dayOfMonth' ? { kind: draft.timing, day: Number(draft.day) } : { kind: draft.timing, day: null }, date: null, certainty: 'unknown', recurrence: 'monthly' } : {}
       : schedule.pattern ? { pattern: null } : {}),
     ...(draft.endDate !== initial.endDate ? { endDate: draft.endDate || null } : {}),
+    // Clearing ordered amounts must not silently discard the occurrence limit inferred from their length.
     ...(draft.count !== initial.count || initial.amounts.length > 0 && !draft.amounts.length ? { count: draft.count ? Number(draft.count) : null } : {}),
     ...(JSON.stringify(draft.amounts) !== JSON.stringify(initial.amounts) ? { amounts: scheduleAmounts(draft.amounts) } : {}),
   };
 }
 
+/** Reports the first invalid schedule choice or occurrence amount. */
 export function scheduleError(draft: ScheduleDraft, record: Record, limit: number): string | null {
   if (draft.timing !== 'date') {
     if (draft.recurrence !== 'monthly' || draft.count || draft.amounts.length) return 'Monthly timing patterns require monthly recurrence, no occurrence count and one amount for all occurrences.';
@@ -52,6 +57,7 @@ export function scheduleError(draft: ScheduleDraft, record: Record, limit: numbe
   return null;
 }
 
+/** Provides recurrence, timing-pattern, and finite-schedule inputs for a record. */
 export function ScheduleFields({ draft, record, onChange }: { draft: ScheduleDraft; record: Record; onChange: (draft: ScheduleDraft) => void }) {
   const budget = draft.recurrence === 'monthlyBudget';
   const pattern = draft.timing !== 'date';
@@ -81,6 +87,7 @@ export function ScheduleFields({ draft, record, onChange }: { draft: ScheduleDra
   </>;
 }
 
+/** Supports a shared amount or ordered occurrence amounts with applicable debt and schedule choices. */
 export function RecordAmountFields({ record, amount, draft, clearTarget, onAmount, onSchedule, onClearTarget }: {
   record: Record; amount: MoneyInput; draft: ScheduleDraft; clearTarget: boolean;
   onAmount: (amount: MoneyInput) => void; onSchedule: (draft: ScheduleDraft) => void; onClearTarget: (clear: boolean) => void;

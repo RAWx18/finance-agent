@@ -19,10 +19,12 @@ import { initialState } from '../src/session';
 import { planningSnapshot, scenario, settings } from './fixtures';
 import { projectWorkspace } from './workspace';
 
+/** Creates an exact USD source fixture with a dated conversion rate and zero fee. */
 function source(): MoneyInput {
   return { amount: '125.50', status: 'exact', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'exact', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact' } };
 }
 
+/** Builds a freelance-income fixture retaining original USD terms beside supplied INR values. */
 function income(): Snapshot {
   const saved = planningSnapshot();
   saved.facts.records[0] = { ...saved.facts.records[0], kind: 'income', label: 'Freelance income', reliability: 'reliable', controllability: null,
@@ -32,6 +34,7 @@ function income(): Snapshot {
   return projectWorkspace(saved);
 }
 
+/** Renders a record editor with live-session props and exposes its command spy. */
 function editor(saved = income(), field: EditTarget['field'] = 'amount') {
   const onCommand = vi.fn();
   const props = { target: { recordId: saved.facts.records[0].id, field }, snapshot: saved,
@@ -371,6 +374,7 @@ it.each(['exact', 'estimate', 'unknown'] as const)('saves only the selected inli
   receipt.facts.records[0].schedule.amounts![1] = { ...value, amount: '140.25' };
   const fetch = vi.fn<(path: string, init: RequestInit) => Promise<Response>>().mockResolvedValue(new Response(JSON.stringify(receipt)));
   vi.stubGlobal('fetch', fetch);
+  /** Routes the inline edit through API serialization against the mocked receipt. */
   const onCommand = (operation: Command['operation']) => api.save({ commandId: 'occurrence-edit', expectedRevision: saved.revision, operation });
   render(<FinancialContext snapshot={saved} stale={false} locked={false} onCommand={onCommand} proposalActive={false} />);
   expect(screen.getByRole('listitem', { name: 'Freelance income' })).toHaveTextContent('Occurrence 2 of 3');
@@ -390,9 +394,11 @@ it.each(['exact', 'estimate', 'unknown'] as const)('saves only the selected inli
 });
 
 describe('MoneyEdit API patches', () => {
+  /** Opens a correction editor against a mocked HTTP response and returns the request spy. */
   function open(saved: Snapshot, field: EditTarget['field'] = 'amount') {
     const fetch = vi.fn<(path: string, init: RequestInit) => Promise<Response>>().mockResolvedValue(new Response(JSON.stringify(saved)));
     vi.stubGlobal('fetch', fetch);
+    /** Serializes editor operations with the fixture's command identity and revision. */
     const onCommand = (operation: Command['operation']) => api.save({ commandId: 'correction', expectedRevision: saved.revision, operation });
     render(<MoneyEdit target={{ recordId: saved.facts.records[0].id, field }} snapshot={saved}
       state={{ ...initialState, phase: 'ready', connection: 'live', snapshot: saved, settings }} active onCommand={onCommand} onClose={vi.fn()} onRetry={vi.fn()} />);

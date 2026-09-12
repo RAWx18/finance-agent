@@ -4,6 +4,7 @@ import { useId } from 'react';
 import type { Snapshot } from './api';
 import { dateLabel, lastDate, money } from './money';
 
+/** Visualizes projected cash, shortfalls, and the reserve floor over the plan period. */
 export function MoneyChart({ snapshot }: { snapshot: Snapshot }) {
   const id = useId().replaceAll(':', '');
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
@@ -20,7 +21,9 @@ export function MoneyChart({ snapshot }: { snapshot: Snapshot }) {
   const high = Math.max(0, snapshot.facts.reservePaise, ...points.map(point => point.balance));
   const low = Math.min(0, ...points.map(point => point.balance));
   const range = Math.max(100, high - low);
+  /** Returns the chart position for a plan date. */
   const x = (date: string) => 6 + (Date.parse(date) - start) / (end - start) * 628;
+  /** Returns the chart position for a cash balance. */
   const y = (amount: number) => 16 + (high - amount) / range * 158;
   // Event order preserves an intraday low even when a later receipt recovers on the same date.
   const path = points.map((point, index) => `${index ? 'H' : 'M'} ${x(point.date).toFixed(2)} ${index ? 'V' : ''} ${y(point.balance).toFixed(2)}`).join(' ');
@@ -28,6 +31,7 @@ export function MoneyChart({ snapshot }: { snapshot: Snapshot }) {
   const area = `${path} V ${zero} H 6 Z`;
   const first = plan.firstGap;
   const timing = plan.timingRisks?.find(item => item.date === first?.date);
+  /** Formats a paise amount as a compact rupee axis label. */
   const axis = (amount: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', notation: 'compact', maximumFractionDigits: 1 }).format(amount / 100);
   return <figure className="money-chart">
     <div className="money-chart-plot">

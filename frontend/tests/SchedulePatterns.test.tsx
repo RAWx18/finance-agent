@@ -15,6 +15,7 @@ import { planningSnapshot, settings } from './fixtures';
 
 type Schedule = Snapshot['facts']['records'][number]['schedule'];
 
+/** Renders a live-session schedule editor and exposes its command spy. */
 function editor(saved: Snapshot, field: EditTarget['field'] = 'recurrence') {
   const onCommand = vi.fn<(operation: Command['operation']) => void>();
   return { ...render(<MoneyEdit target={{ recordId: saved.facts.records[0].id, field }} snapshot={saved}
@@ -22,6 +23,7 @@ function editor(saved: Snapshot, field: EditTarget['field'] = 'recurrence') {
     active onCommand={onCommand} onClose={vi.fn()} onRetry={vi.fn()} />), onCommand };
 }
 
+/** Creates an undated monthly schedule fixture using day 31 or a month-end pattern. */
 function patterned(kind: 'dayOfMonth' | 'monthEnd' = 'dayOfMonth'): Snapshot {
   const saved = planningSnapshot();
   saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', count: null, amounts: [],

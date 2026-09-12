@@ -10,10 +10,12 @@ import { test as authenticated } from './authSupport';
 
 export const test = authenticated.extend<{ moneySafety: void }>({
   serviceWorkers: 'block',
+  /** Keep Money tests free of provider traffic, call mutations and browser errors. */
   moneySafety: [async ({ context, baseURL }, use) => {
     const origin = new URL(baseURL!).origin;
     const blocked: string[] = [];
     const errors: string[] = [];
+    /** Collect a tab's runtime errors for the shared safety assertions. */
     const observe = (page: Page) => page.on('pageerror', error => errors.push(error.message));
     context.pages().forEach(observe); context.on('page', observe);
     await context.route('**/*', async route => {
@@ -33,16 +35,19 @@ export const test = authenticated.extend<{ moneySafety: void }>({
   }, { auto: true }],
 });
 
+/** Close browser tabs and remove the financial session after a Money test. */
 export async function cleanup(context: BrowserContext) {
   await Promise.all(context.pages().map(page => page.close()));
   const response = await context.request.delete('/api/session');
   expect([200, 204, 404]).toContain(response.status());
 }
 
+/** Return an ISO calendar date offset from the plan's anchor in UTC days. */
 export function dateAt(anchor: string, offset: number) {
   const date = new Date(`${anchor}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + offset); return date.toISOString().slice(0, 10);
 }
 
+/** Submit a command against the current revision and return the saved snapshot. */
 export async function command(page: Page, operation: Command['operation']) {
   const current = await page.request.get('/api/session'); expect(current.ok()).toBe(true);
   const snapshot = await current.json() as Snapshot;
@@ -52,6 +57,7 @@ export async function command(page: Page, operation: Command['operation']) {
   return await response.json() as Snapshot;
 }
 
+/** Navigate through the available Money controls and verify the destination. */
 export async function browse(page: Page, route: MoneyRoute) {
   await expect(page.locator('#money-heading')).toBeVisible();
   const select = page.getByRole('combobox', { name: 'Browse Money', exact: true });
@@ -61,6 +67,7 @@ export async function browse(page: Page, route: MoneyRoute) {
   await expect(page.getByRole('heading', { level: 1, name: moneyRoutes[route], exact: true })).toBeVisible();
 }
 
+/** Save the open correction, close its confirmation and return the saved snapshot. */
 export async function saveCorrection(page: Page) {
   const response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
   await page.getByRole('button', { name: 'Save correction', exact: true }).click();
@@ -69,6 +76,7 @@ export async function saveCorrection(page: Page) {
   return await saved.json() as Snapshot;
 }
 
+/** Correct a Money field and verify focus returns to its edit control. */
 export async function correct(page: Page, label: string, field: string, value: string) {
   const edit = page.getByRole('button', { name: `Edit ${label}`, exact: true }); await edit.click();
   await page.getByRole('combobox', { name: 'Detail', exact: true }).selectOption(field);
@@ -79,6 +87,7 @@ export async function correct(page: Page, label: string, field: string, value: s
   const saved = await saveCorrection(page); await expect(edit).toBeFocused(); return saved;
 }
 
+/** Seed the reference cash-flow scenario and open its Money overview. */
 export async function golden(page: Page, cardTarget = false) {
   const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
   const saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: initial.revision,
@@ -96,6 +105,7 @@ export async function golden(page: Page, cardTarget = false) {
   return saved;
 }
 
+/** Verify the projected closing cash shown in the plan details. */
 export async function checkClosing(page: Page, amount: string) {
   await browse(page, '/money');
   await page.getByRole('button', { name: 'View calculation', exact: true }).click();

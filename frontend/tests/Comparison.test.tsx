@@ -26,6 +26,7 @@ beforeEach(() => {
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: scenario() }));
 });
 
+/** Follows a Money navigation link and waits for the requested route to render. */
 async function navigate(user: ReturnType<typeof userEvent.setup>, path: MoneyRoute) {
   const link = within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: path === '/money' ? 'Overview' : moneyRoutes[path] });
   expect(link).toHaveAttribute('href', path);
@@ -33,6 +34,7 @@ async function navigate(user: ReturnType<typeof userEvent.setup>, path: MoneyRou
   await waitFor(() => expect(screen.getByRole('main')).toHaveAttribute('data-route', path));
 }
 
+/** Loads the app's snapshot fixture and opens custom spending changes for interaction tests. */
 async function open() {
   const user = userEvent.setup();
   render(<App />);
@@ -51,6 +53,7 @@ async function open() {
   return user;
 }
 
+/** Checks the supplied closing forecast in the overview and its calculation dialog. */
 async function closing(user: ReturnType<typeof userEvent.setup>, amount: string) {
   await navigate(user, '/money');
   expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent(`Closing forecast${amount.replace(/\.00$/, '')}`);
@@ -63,6 +66,7 @@ async function closing(user: ReturnType<typeof userEvent.setup>, amount: string)
   await user.click(within(dialog).getByRole('button', { name: 'Close plan details' }));
 }
 
+/** Selects a fixture payment and enters a proposed amount through the comparison form. */
 async function add(user: ReturnType<typeof userEvent.setup>, amount = '0', index = 0) {
   const edit = screen.queryByRole('button', { name: 'Edit selections' });
   if (edit) await user.click(edit);

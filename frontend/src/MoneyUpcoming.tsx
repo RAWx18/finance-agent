@@ -10,6 +10,7 @@ import { MoneyIcon } from './MoneyIcon';
 import { reasons } from './WorkspaceDetails';
 import { amountStatus, factStatus } from './MoneyRecords';
 
+/** Presents a projected receipt or payment with its timing, certainty, and balance impact. */
 export function MoneyEvent({ event, snapshot, compact = false }: { event: Plan['events'][number]; snapshot: Snapshot; compact?: boolean }) {
   const record = snapshot.facts.records.find(item => item.id === event.recordId);
   // Reported events use the target when supplied; requiredOnly explicitly uses the minimum.
@@ -43,6 +44,7 @@ export function MoneyEvent({ event, snapshot, compact = false }: { event: Plan['
   </li>;
 }
 
+/** Provides searchable upcoming and earlier requirements, including notices for undated items. */
 export function MoneyUpcoming({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const [search, setSearch] = useState('');

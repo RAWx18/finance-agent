@@ -21,6 +21,7 @@ test('compact financial picture receives real SSE facts and recalculates an inli
   await context.exposeBinding('financialPictureCapture', () => { captures++; });
   await context.addInitScript(() => {
     if (!navigator.mediaDevices) return;
+    /** Report and reject microphone requests during financial-picture checks. */
     navigator.mediaDevices.getUserMedia = async () => {
       await (window as unknown as { financialPictureCapture: () => Promise<void> }).financialPictureCapture();
       throw new DOMException('Financial picture checks keep the microphone off.', 'NotAllowedError');
@@ -108,6 +109,7 @@ test('compact financial picture receives real SSE facts and recalculates an inli
     const left = page.locator('.conversation-pane');
     const bounds = await left.boundingBox();
     expect(bounds).not.toBeNull();
+    /** Verify financial edits preserve the conversation layout and accessible controls. */
     async function layout() {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), 'No horizontal page overflow').toBe(true);
       const details = picture.getByRole('region', { name: 'Financial picture details', exact: true });
@@ -129,6 +131,7 @@ test('compact financial picture receives real SSE facts and recalculates an inli
         }
       }
     }
+    /** Verify the picture avoids repeated forecasts and conversational prompts. */
     async function concise() {
       const text = await picture.innerText();
       expect(text).not.toMatch(/The dated items leave|Incomplete forecast|Next step/i);

@@ -5,6 +5,7 @@ import { api, authEpoch } from './api';
 import { notify } from './Toast';
 import { MoneyIcon } from './MoneyIcon';
 
+/** Offer a plain-text download of the saved plan with failure feedback. */
 export function Download({ label, primary = false, compact = false }: { label: string; primary?: boolean; compact?: boolean }) {
   const pending = useRef(false);
   const [busy, setBusy] = useState(false);

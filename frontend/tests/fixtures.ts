@@ -12,6 +12,7 @@ export const settings: Settings = {
   voiceUnavailableReason: 'Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION.', openingBasis: 'Enter available cash and only unpaid or future items.',
 };
 
+/** Creates an empty session fixture with unknown opening cash and a clarification action. */
 export function snapshot(): Snapshot {
   return {
     sessionId: '51e107ab-efc3-4c40-ac5b-9b7f3a1678a0', conversationSlug: null, revision: 0, sequence: 0,
@@ -45,13 +46,16 @@ export function snapshot(): Snapshot {
   };
 }
 
+/** Models an EventSource in memory so tests can deliver session events and inspect closure. */
 export class Stream extends EventTarget {
   static instances: Stream[] = [];
   onopen: (() => void) | null = null;
   onerror: (() => void) | null = null;
   closed = false;
+  /** Registers this stream for tests to drive the corresponding subscription. */
   constructor(public url: string) { super(); Stream.instances.push(this); }
   close() { this.closed = true; }
+  /** Dispatches JSON event data, projecting a cloned snapshot into test presentation cards. */
   emit(name: string, value: unknown) {
     this.dispatchEvent(new MessageEvent(name, { data: JSON.stringify(name === 'snapshot' && value && typeof value === 'object' && 'facts' in value && value.facts
       ? projectWorkspace(structuredClone(value as Snapshot)) : value) }));
@@ -63,6 +67,7 @@ export const adjustmentOptions: AdjustmentOptions = { revision: 0, today: '2026-
   { eventId: 'card:2026-09-26', recordId: 'card', label: 'Card payment', kind: 'card', date: '2026-09-26', originalPaise: 400000, minimumPaise: 200000, acceptanceReady: true, dependencyKey: 'card-terms' },
 ] };
 
+/** Builds a rent-gap fixture with supplied forecast metrics and a contact-payee action. */
 export function planningSnapshot(): Snapshot {
   const saved = snapshot();
   saved.facts.opening = { status: 'exact', amountPaise: 500000 };
@@ -92,18 +97,21 @@ export function planningSnapshot(): Snapshot {
   return projectWorkspace(saved);
 }
 
+/** Builds a presentation fixture with income coverage explicitly marked unknown. */
 export function questionSnapshot(): Snapshot {
   const saved = snapshot();
   saved.facts.coverage.income = 'unknown';
   return projectWorkspace(saved);
 }
 
+/** Creates a comparison fixture that omits the optional purchase from supplied totals. */
 export function scenario(id = 'preview-one'): Scenario {
   return { id, sourceRevision: 0, createdAt: '2026-09-11T04:00:00Z',
     adjustments: [{ ...adjustmentOptions.options[0], amountPaise: 0, acceptedRevision: null }], reducedOutflowPaise: 200000,
     plan: { ...planningSnapshot().plan, outflowPaise: 2300000, closingPaise: 1200000 } };
 }
 
+/** Models an unavailable opening-cash answer followed by a coverage clarification. */
 export function unconfirmedSnapshot(): Snapshot {
   const saved = snapshot();
   saved.revision = 1; saved.sequence = 1;
@@ -120,6 +128,7 @@ export function unconfirmedSnapshot(): Snapshot {
   return projectWorkspace(saved);
 }
 
+/** Builds an optional-spending or card-minimum choice fixture with a preview action. */
 export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceOptional'): Snapshot {
   const saved = planningSnapshot();
   const option = adjustmentOptions.options[kind === 'reduceOptional' ? 0 : 1];

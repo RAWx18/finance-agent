@@ -12,6 +12,7 @@ import { MoneyIcon } from './MoneyIcon';
 
 type Choice = AdjustmentOptions['options'][number] & { amount: string };
 
+/** Supports selecting spending reductions and reviewing their combined preview. */
 export function Comparison({ snapshot, settings, active, locked, pending, onCommand }: {
   snapshot: Snapshot; settings: Settings; active: boolean; locked: boolean;
   pending: boolean; onCommand: (operation: Command['operation']) => void;
@@ -66,11 +67,13 @@ export function Comparison({ snapshot, settings, active, locked, pending, onComm
     return () => { current = false; dismiss('choices:load'); };
   }, [active, loadError, blocked]);
 
+  /** Presents a validation message and directs focus to it. */
   function fail(message: string) {
     setError(message);
     requestAnimationFrame(() => errorRef.current?.focus());
   }
 
+  /** Adds a valid payment reduction to the selected changes. */
   function addChoice() {
     if (blocked || staleChoices || !options) return;
     if (!option) return fail('Choose a payment or expense.');
@@ -83,6 +86,7 @@ export function Comparison({ snapshot, settings, active, locked, pending, onComm
     setSelecting(false);
   }
 
+  /** Requests a preview when all selected changes remain valid. */
   function previewChoices() {
     if (blocked) return;
     if (staleChoices || !options) return fail('Review refreshed choices before previewing.');

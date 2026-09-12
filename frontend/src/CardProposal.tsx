@@ -4,16 +4,19 @@ import { useId, useState } from 'react';
 import type { Command, Plan, Snapshot } from './api';
 import { cardDate, cardMoney } from './cardFields';
 
+/** Describes a plan's first shortfall or the absence of a known shortfall. */
 function gapLabel(plan: Plan): string {
   return plan.firstGap ? `${cardMoney(plan.firstGap.amountPaise)} · ${cardDate(plan.firstGap.date)}` : plan.closingPaise === null ? 'Unknown' : 'None in known items';
 }
 
+/** Presents planning changes and consent controls in a financial card. */
 export function CardProposal({ snapshot, active, blocked, onCommand }: {
   snapshot: Snapshot; active: boolean; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const preview = snapshot.preview;
   const scenario = preview ?? snapshot.accepted;
   const id = useId();
+  // Consent must be renewed when the proposal, snapshot, or ability to act changes.
   const key = JSON.stringify([snapshot.sessionId, snapshot.revision, snapshot.sequence, preview, active, blocked]);
   const [review, setReview] = useState({ key, expanded: false, checked: false });
   const [saving, setSaving] = useState(false);
@@ -27,6 +30,7 @@ export function CardProposal({ snapshot, active, blocked, onCommand }: {
   const ready = !!preview && preview.adjustments.every(item => item.acceptanceReady)
     && removals.every(id => snapshot.accepted?.adjustments.some(item => item.eventId === id));
   const canAccept = ready && !disabled && review.key === key && review.checked && (total <= 2 || expanded);
+  /** Submits an eligible proposal decision and reports an unconfirmed result. */
   async function decide(type: 'acceptPreview' | 'rejectPreview' | 'discardPreview') {
     if (!preview || disabled || type === 'acceptPreview' && !canAccept) return;
     setSaving(true); setError(''); setReview({ ...review, checked: false });

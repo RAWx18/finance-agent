@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { MoneyInput } from './api';
 
+/** Provides amount, certainty, and optional currency-conversion inputs. */
 export function MoneyFields({ value, onChange, income = false, optional = false, certainty = true, allowUnknown = true, label, certaintyLabel = 'Amount certainty' }: {
   value: MoneyInput | null; onChange: (value: MoneyInput | null) => void; income?: boolean; optional?: boolean;
   certainty?: boolean; allowUnknown?: boolean; label?: string; certaintyLabel?: string;

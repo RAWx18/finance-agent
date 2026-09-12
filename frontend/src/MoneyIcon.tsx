@@ -15,6 +15,7 @@ const paths = {
   talk: 'M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8l-6 4v-4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2ZM8 10h8M8 14h5',
 } as const;
 
+/** Displays a decorative icon for a money-workspace action. */
 export function MoneyIcon({ name }: { name: keyof typeof paths }) {
   return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={paths[name]} /></svg>;
 }

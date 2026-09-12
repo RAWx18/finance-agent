@@ -6,6 +6,7 @@ import type { Page } from '@playwright/test';
 import { test } from './authSupport';
 import type { Command, Snapshot } from '../../src/api';
 
+/** Submit a workspace command against the saved revision and return its snapshot. */
 async function command(page: Page, operation: Command['operation']) {
   const saved = await (await page.request.get('/api/session')).json() as Snapshot;
   if (operation.type === 'updateFacts') operation.changes.expectedRevision = saved.revision;
@@ -13,6 +14,7 @@ async function command(page: Page, operation: Command['operation']) {
   expect(response.ok(), await response.text()).toBe(true);
   return await response.json() as Snapshot;
 }
+/** Return an ISO calendar date offset from the plan's anchor in UTC days. */
 function day(anchor: string, offset: number) {
   const date = new Date(`${anchor}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + offset); return date.toISOString().slice(0, 10);
 }

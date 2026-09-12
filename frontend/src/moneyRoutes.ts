@@ -10,6 +10,7 @@ export const moneyRoutes = {
 } as const;
 
 export type MoneyRoute = keyof typeof moneyRoutes;
+/** Identifies paths belonging to the money workspace. */
 export function isMoneyRoute(path: string): path is MoneyRoute {
   return Object.hasOwn(moneyRoutes, path);
 }

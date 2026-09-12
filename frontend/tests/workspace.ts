@@ -4,6 +4,7 @@ import type { Snapshot } from '../src/api';
 import type { components } from '../src/contracts';
 
 // Test-only presentation fixtures copy supplied metrics; integration tests use the real server projector.
+/** Mutates a snapshot fixture with presentation cards and references from its supplied plan. */
 export function projectWorkspace(saved: Snapshot): Snapshot {
   const plan = saved.accepted?.plan ?? saved.plan;
   const workspace: Required<NonNullable<Snapshot['workspace']>> = {
@@ -36,6 +37,7 @@ export function projectWorkspace(saved: Snapshot): Snapshot {
     issueIds: plan.decisionAssessment?.uncertainties?.map(issue => issue.id) ?? [], dependencies: [],
     assumptions: ['sameDayOutflowBeforeIncome', 'closingIsNotSpendable', 'unreportedFactsNotZero', 'noPaymentExecution'],
   }));
+  /** Appends a card skeleton for the fixture's selected records and results. */
   function card(template: 'cash' | 'timeline' | 'questions' | 'proposal', section: components['schemas']['WorkspaceCard']['section'], title: string,
     recordIds: string[] = [], resultIds: string[] = []) {
     const card: components['schemas']['WorkspaceCard'] = { id: template, template, section, title, state: 'known', recordIds, resultIds,

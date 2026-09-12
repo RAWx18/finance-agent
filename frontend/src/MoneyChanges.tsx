@@ -9,6 +9,7 @@ import { PagedList } from './PagedList';
 import { dateLabel, decimal, money } from './money';
 import { MoneyIcon } from './MoneyIcon';
 
+/** Presents saved assumptions, suggested reductions, and custom planning changes. */
 export function MoneyChanges({ snapshot, settings, active, blocked, pending, onCommand }: {
   snapshot: Snapshot; settings: Settings; active: boolean; blocked: boolean; pending: boolean;
   onCommand: (operation: Command['operation']) => void;

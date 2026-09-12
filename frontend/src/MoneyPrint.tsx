@@ -9,6 +9,7 @@ import { moneyIssues } from './MoneyChecks';
 import { PlanExpiry, PlanSummary, ResultQualification } from './PlanSummary';
 import { PlanningPossibilities } from './PlanningPossibilities';
 
+/** Presents the saved plan and its qualifications for printing, excluding unsaved previews. */
 export function MoneyPrint({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const outcome = plan.decisionAssessment?.outcome;

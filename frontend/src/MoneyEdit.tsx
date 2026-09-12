@@ -13,6 +13,7 @@ type Field = 'opening' | 'reserve' | 'amount' | 'target' | 'outstanding' | 'sche
 export type EditTarget = { recordId?: string; kind?: 'income' | 'essential' | 'optional' | 'debt'; field: Field };
 const labels: Record<Field, string> = { opening: 'Cash at plan start', reserve: 'Cash to keep aside', amount: 'Amount', target: 'Intended payment · includes minimum', outstanding: 'Outstanding balance', 'schedule.date': 'Date', reliability: 'Receipt reliability', controllability: 'Can this spending change?', label: 'Name', recurrence: 'Repeats', autoDebit: 'Automatic debit', debtType: 'Debt type', delete: 'Remove item', add: 'Add item', coverage: 'Review category' };
 
+/** Manages financial fact corrections, item changes, and save confirmation in a dialog. */
 export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand, onRetry }: {
   target: EditTarget; snapshot: Snapshot; state: State; active: boolean; onClose: () => void;
   onCommand: (operation: Command['operation']) => void; onRetry: () => void;
@@ -20,6 +21,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
   const [revision] = useState(snapshot.revision);
   const record = snapshot.facts.records.find(item => item.id === target.recordId);
   const [field, setField] = useState(target.field);
+  /** Supplies the initial text or selection state for a correction field. */
   function read(field: Field) {
     if (['opening', 'reserve', 'amount', 'target', 'outstanding'].includes(field)) return { value: '', status: 'exact' };
     if (field === 'schedule.date') return { value: record?.schedule.date ?? '', status: record?.schedule.certainty ?? 'unknown' };
@@ -28,6 +30,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
   }
   const [initial, setInitial] = useState(() => read(target.field));
   const [input, setInput] = useState(initial);
+  /** Supplies an editable amount for the selected monetary field. */
   function readAmount(field: Field): MoneyInput | null {
     if (field === 'reserve') return { amount: decimal(snapshot.facts.reservePaise), status: 'exact' };
     const value = field === 'opening' ? snapshot.facts.opening : record?.[field as 'amount' | 'target' | 'outstanding'];
@@ -46,6 +49,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
     || JSON.stringify(amount) !== JSON.stringify(initialAmount) || JSON.stringify(schedule) !== JSON.stringify(initialSchedule) || clearTarget;
   const obsolete = revision !== snapshot.revision || !!target.recordId && !record;
   const blocked = state.connection !== 'live' || state.phase !== 'ready' || state.busy || !!state.pending || obsolete;
+  /** Identifies fields with conflicting reports that require resolution before correction. */
   const disputed = (field: Field) => snapshot.facts.conflicts?.some(item => item.recordId === (target.recordId ?? null) && item.field === field);
   const fields: Field[] = record ? ['amount', 'schedule.date', 'label', 'recurrence', ...(record.kind === 'income' ? ['reliability'] as const : ['controllability'] as const),
     ...(record.kind !== 'income' && record.schedule.recurrence !== 'monthlyBudget' ? ['autoDebit'] as const : []), ...(record.kind === 'debt' ? ['target', 'outstanding', 'debtType'] as const : [])] : [target.field];
@@ -54,6 +58,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
   const saved = submitted && !state.busy && !state.pending && state.messageKind === 'status'
     && (state.message.startsWith('Your corrections are saved.') || state.message.startsWith('The action was confirmed'));
 
+  /** Validates and submits the selected fact correction or item change. */
   function submit() {
     if (blocked || disputed(field)) return;
     const changes: components['schemas']['FactsPatch'] = { expectedRevision: revision };
@@ -74,6 +79,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
         const error = moneyError(amount, state.settings!.maxMoneyPaise);
         if (error) { setError(error); return; }
       }
+      // Ordered payments must be the sole amount source, without competing shared amounts or conversion terms.
       const value = variable ? { amount: null, status: 'unknown' as const, conversion: null } : amount ? submittedMoney(amount) : null;
       if (field === 'reserve') changes.reserve = value!.amount!;
       else if (field === 'opening') changes.opening = value!;

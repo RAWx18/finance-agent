@@ -84,7 +84,9 @@ test('live companion edits recalculate canonical cards with durable human proven
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
     await page.evaluate(async () => { const client = window.voiceFixture.clients[0]; client.callbacks.onBotReady!({ version: '2.1' }); await client.micReady; });
     await expect(page.locator('.voice-status')).toHaveText('Listening');
+    /** Return an ISO date offset from the saved plan's anchor in UTC days. */
     const day = (offset: number) => { const date = new Date(`${saved.anchorDate}T00:00:00Z`); date.setUTCDate(date.getUTCDate() + offset); return date.toISOString().slice(0, 10); };
+    /** Save companion facts and retain the resulting snapshot for subsequent edits. */
     const submit = async (changes: Extract<Command['operation'], { type: 'updateFacts' }>['changes']) => {
       const response = await context.request.post('/api/session/commands', { data: { commandId: randomUUID(), expectedRevision: saved.revision,
         operation: { type: 'updateFacts', changes: { ...changes, expectedRevision: saved.revision } } } });

@@ -22,7 +22,9 @@ const sdk = vi.hoisted(() => ({
 }));
 vi.mock('@pipecat-ai/client-js', async original => ({
   ...await original<typeof import('@pipecat-ai/client-js')>(),
+  /** Supplies controllable voice callbacks and track listeners for app journey tests. */
   PipecatClient: class {
+    /** Retains the requested microphone state and callbacks for the test attempt. */
     constructor(options: PipecatClientOptions) { sdk.options = options; sdk.enabled = options.enableMic ?? true; }
     initDevices = sdk.initDevices;
     connect = sdk.connect;
@@ -30,6 +32,7 @@ vi.mock('@pipecat-ai/client-js', async original => ({
     enableMic = sdk.enableMic;
     tracks = sdk.tracks;
     get isMicEnabled() { return sdk.enabled; }
+    /** Retains a listener for track events explicitly emitted by the test. */
     on(name: string, callback: (track: MediaStreamTrack, participant?: Participant) => void) { sdk.listeners.set(name, callback); }
   },
 }));
@@ -37,20 +40,24 @@ vi.mock('@pipecat-ai/daily-transport', () => ({ DailyTransport: class { dailyCal
 
 const join = { conversationSlug: 'conversation-2026-09-12-000000', url: 'https://room.daily.co/test', token: 'test-only-token' };
 const local: Participant = { id: 'consumer', name: 'You', local: true };
+/** Creates an audio track double for microphone lifecycle assertions. */
 function track(readyState = 'live') {
   return Object.assign(new EventTarget(), { kind: 'audio', readyState, stop: vi.fn() }) as unknown as MediaStreamTrack;
 }
+/** Exposes a resolver for ordering asynchronous responses in journey tests. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(yes => { resolve = yes; });
   return { promise, resolve };
 }
+/** Delivers the mocked current snapshot through the app's event stream double. */
 async function updates() {
   await waitFor(() => expect(Stream.instances).toHaveLength(1));
   const initial = await vi.mocked(api.current).mock.results.at(-1)!.value;
   act(() => { Stream.instances[0].onopen?.(); Stream.instances[0].emit('snapshot', initial); });
   return Stream.instances[0];
 }
+/** Follows the conversation entry controls and waits for one mocked SDK connection. */
 async function connect() {
   const start = await screen.findByRole('button', { name: 'Start conversation' });
   await waitFor(() => expect(start).toBeEnabled());
@@ -58,11 +65,13 @@ async function connect() {
   await userEvent.click(screen.getByRole('button', { name: 'Start talking' }));
   await waitFor(() => expect(sdk.connect).toHaveBeenCalledOnce());
 }
+/** Signals assistant readiness through the SDK callback captured by the test. */
 function ready() { act(() => sdk.options!.callbacks!.onBotReady!({ version: '2.1.0' })); }
 function conversation() { return within(screen.getByRole('region', { name: 'Your conversation' })); }
 function livePicture() { return within(screen.getByRole('region', { name: 'Your financial picture' })); }
 function voiceStatus() { return conversation().getByText(/.+/, { selector: '.voice-status' }); }
 function moneyLink() { return within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }); }
+/** Opens Plan changes through Money navigation and checks the resulting route. */
 async function planChanges() {
   await userEvent.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Plan changes' }));
   expect(screen.getByRole('main')).toHaveAttribute('data-route', '/money/changes');
@@ -112,6 +121,7 @@ describe('App voice and financial journey', () => {
       const call = screen.getByRole('region', { name: 'Your conversation' });
       const summary = within(picture).getByRole('region', { name: 'Financial status' });
       expect(summary).toBeVisible();
+      /** Assert a stable conversation view without duplicate review or download destinations. */
       const absent = () => {
         const removed = /^(Review|Take your plan|Finish review|Review saved picture|Return to conversation|View full plan|Continue talking|Download.*)$/i;
         expect(screen.queryByRole('navigation', { name: /journey|progress|plan steps/i })).not.toBeInTheDocument();

@@ -8,6 +8,7 @@ import { dateLabel } from './money';
 import { MoneyIcon } from './MoneyIcon';
 import type { EditTarget } from './MoneyEdit';
 
+/** Collects distinct open checks from the active assessment and workspace. */
 export function moneyIssues(snapshot: Snapshot) {
   const assessment = (snapshot.accepted?.plan ?? snapshot.plan).decisionAssessment;
   return [...new Map([...(assessment?.uncertainties ?? []), ...(snapshot.workspace?.issues ?? [])].map(issue => [issue.id, issue])).values()];
@@ -21,6 +22,7 @@ const issueFields: Partial<Record<string, EditTarget['field']>> = {
   'amount.conversion': 'amount',
 };
 
+/** Presents unresolved checks with correction and conflict-resolution controls. */
 export function MoneyChecks({ snapshot, open, blocked, onClose, onEdit, onCommand }: {
   snapshot: Snapshot; open: boolean; blocked: boolean; onClose: () => void;
   onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;

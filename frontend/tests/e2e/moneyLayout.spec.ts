@@ -9,6 +9,7 @@ import { browse, cleanup, command, dateAt, saveCorrection, test } from './moneyS
 test.describe.configure({ timeout: 45000 });
 test.afterEach(async ({ context }) => { await cleanup(context); });
 
+/** Seed a large, varied plan for pagination, long-label and layout checks. */
 async function seed(page: Page, count: 105 | 120) {
   const response = await page.request.post('/api/session', { data: {} }); expect(response.ok()).toBe(true);
   const initial = await response.json() as Snapshot;
@@ -36,6 +37,7 @@ async function seed(page: Page, count: 105 | 120) {
   return saved;
 }
 
+/** Verify Money's responsive scrolling, overflow and minimum button target sizes. */
 async function fits(page: Page, natural = false) {
   const size = await page.evaluate(() => ({
     width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth,
@@ -57,6 +59,7 @@ async function fits(page: Page, natural = false) {
   expect(small, 'Compact Money buttons meet the 24 × 24 CSS-pixel minimum target size').toEqual([]);
 }
 
+/** Verify an eight-item list remains bounded and scrollable from the keyboard. */
 async function bounded(list: Locator) {
   await expect(list.getByRole('listitem')).toHaveCount(8);
   const size = await list.evaluate(element => ({ height: element.clientHeight, content: element.scrollHeight, overflow: getComputedStyle(element).overflowY }));
@@ -66,6 +69,7 @@ async function bounded(list: Locator) {
   await expect.poll(() => list.evaluate(element => element.scrollTop)).toBeGreaterThan(0);
 }
 
+/** Verify long item names wrap onto multiple lines without clipping. */
 async function wraps(heading: Locator) {
   const layout = await heading.evaluate(element => {
     const bounds = element.getBoundingClientRect(); const range = document.createRange(); range.selectNodeContents(element);

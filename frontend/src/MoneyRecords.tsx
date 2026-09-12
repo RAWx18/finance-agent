@@ -15,6 +15,7 @@ import { moneyIssues } from './MoneyChecks';
 export const coverageLabels = { notDiscussed: 'Not checked', reported: 'Some shared', unknown: 'Not sure', reviewed: 'Reviewed', none: 'None reported' };
 export { amountStatus } from './money';
 
+/** Describes a fact field's certainty, conflict, or absence. */
 export function factStatus(snapshot: Snapshot, field: 'opening' | 'amount' | 'target' | 'outstanding' | 'schedule.date', record?: Fact) {
   if (snapshot.facts.conflicts?.some(item => item.recordId === (record?.id ?? null) && item.field === field)) return 'Conflicting reports';
   if (field === 'schedule.date') return record?.schedule.date ? amountStatus[record.schedule.certainty] : 'Unknown';
@@ -23,6 +24,7 @@ export function factStatus(snapshot: Snapshot, field: 'opening' | 'amount' | 'ta
   return value ? amountStatus[value.status] : 'Not supplied';
 }
 
+/** Identifies records with uncertain, conflicting, or unresolved financial details. */
 export function needsCheck(record: Fact, snapshot: Snapshot) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   return (record.schedule.amounts?.length ? record.schedule.amounts.some(amount => amount.status !== 'exact' || amount.conversion && (amount.conversion.rateStatus !== 'exact' || amount.conversion.feeStatus !== 'exact')) : record.amount.status !== 'exact') || !!record.schedule.date && record.schedule.certainty !== 'exact'
@@ -33,6 +35,7 @@ export function needsCheck(record: Fact, snapshot: Snapshot) {
     || moneyIssues(snapshot).some(item => item.recordIds.includes(record.id));
 }
 
+/** Presents a reported item's amounts, schedule, checks, and correction controls. */
 export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
   record: Fact; snapshot: Snapshot; blocked: boolean; onEdit: (target: EditTarget) => void;
   onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
@@ -43,6 +46,7 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
   const missingDate = plan.budgetBasis.unresolvedAmounts.some(item => item.recordId === record.id && item.reason === 'missingDate');
   const exclusions = [...new Set(snapshot.workspace?.contributions?.filter(item => item.recordId === record.id && !item.included && !item.id.startsWith('proposal:'))
     .map(item => reasons[item.reason]).filter(Boolean))];
+  /** Presents a record amount with its reporting status and monthly-budget qualifier. */
   const fieldAmount = (field: 'amount' | 'target' | 'outstanding') => <>
     <strong>{field === 'amount' && record.schedule.amounts?.length ? 'Varies by occurrence' : record[field] ? amountLabel(record[field]) : 'Not supplied'}</strong>
     <span className="money-meta">{field === 'amount' && record.schedule.amounts?.length ? '' : record[field] || conflicts.some(item => item.field === field) ? factStatus(snapshot, field, record) : ''}{field === 'amount' && record.schedule.recurrence === 'monthlyBudget' && ' · per calendar month'}</span>
@@ -93,6 +97,7 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
   </li>;
 }
 
+/** Provides searchable category records, coverage review, and conditional income comparisons. */
 export function MoneyRecords({ category, snapshot, blocked, onEdit, onCommand }: {
   category: 'income' | 'spending' | 'debts'; snapshot: Snapshot; blocked: boolean;
   onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
