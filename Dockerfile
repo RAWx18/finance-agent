@@ -38,4 +38,4 @@ COPY --from=frontend /app/frontend/dist /app/frontend/dist
 RUN python -c "from pipecat.transports.daily.transport import DailyTransport; from pipecat.services.azure.stt import AzureSTTService; from pipecat.services.azure.tts import AzureTTSService; from pipecat.services.azure.llm import AzureLLMService"
 USER 10001:10001
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-access-log", "--timeout-graceful-shutdown", "10"]
+CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-proxy-headers", "--no-access-log", "--timeout-graceful-shutdown", "10"]

@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Request
 
-from .auth_models import Access, AuthSession, ReturnPath, User
+from .auth_models import Access, AuthSession, ReturnPath, User, is_return_path
 from .config import Environment
 from .google import ISSUER, Google, GoogleRejected, GoogleUnavailable, Grant, Identity, digest
 from .store import Problem, Store
@@ -493,7 +493,7 @@ class Auth:
                 for owner, session_hash in revoked:
                     self.revoke(owner, session_hash)
         return_to: ReturnPath = flow["return_to"]
-        if return_to not in {"/app", "/figures", "/account"}:
+        if not is_return_path(return_to):
             return_to = "/app"
         return token, return_to
 

@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import json
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
@@ -114,7 +115,20 @@ def test_google_environment_names_and_secrets_are_separate(monkeypatch):
     assert "secret-google" not in repr(environment) and KEY not in repr(environment)
 
 
-@pytest.mark.parametrize("return_to", ["/app", "/figures", "/account"])
+@pytest.mark.parametrize(
+    "return_to",
+    [
+        "/app",
+        "/money",
+        "/money/income",
+        "/money/spending",
+        "/money/debts",
+        "/money/upcoming",
+        "/money/changes",
+        "/account",
+        "/history",
+    ],
+)
 def test_oidc_login_cookie_pkce_identity_and_no_finance_side_effect(auth_client, return_to):
     client, google, _ = auth_client
     params, initiated = begin(client, return_to=return_to)
@@ -135,6 +149,7 @@ def test_oidc_login_cookie_pkce_identity_and_no_finance_side_effect(auth_client,
     assert flow[1] == digest(client.cookies[FLOW_COOKIE])
     assert flow[2] != google.codes[params["code"]][1]["code_challenge"]
     assert flow[3] == digest(authorization["nonce"][0]) and flow[4] == 0
+    assert query(client, "SELECT return_to FROM auth_flows") == [(return_to,)]
     response = callback(client, params)
     assert response.status_code == 303 and response.headers["location"] == return_to
     assert all(
@@ -167,12 +182,46 @@ def test_oidc_login_cookie_pkce_identity_and_no_finance_side_effect(auth_client,
         "/",
         "/api/session",
         "/app/../account",
+        "/history?redirect=evil",
+        "/figures",
+        "/login",
+        "/money/",
+        "/money/unknown",
+        "/money/income/",
+        "/money/income/details",
+        "/money/incomes",
+        "/money//income",
+        "/money/Income",
+        "/Money",
+        "/moneyish",
+        "/money-income",
+        "/money?redirect=evil",
+        "/money/income?redirect=evil",
+        "/money/income#details",
+        "/money/../account",
+        "/money/%69ncome",
+        "/money%2Fincome",
+        "//attacker.example/money",
+        "/money\\income",
+        "/money/income\n",
     ],
 )
 def test_login_return_target_is_a_fixed_allowlist(auth_client, return_to):
-    client, _, _ = auth_client
-    assert client.post("/api/auth/login", json={"returnTo": return_to}).status_code == 422
+    client, google, _ = auth_client
+    response = client.post("/api/auth/login", json={"returnTo": return_to})
+    assert response.status_code == 422 and response.json()["code"] == "validationError"
     assert not query(client, "SELECT * FROM auth_flows")
+    assert FLOW_COOKIE not in client.cookies and not google.requests
+
+
+@pytest.mark.parametrize("return_to", ["/money/changes", "https://attacker.example/money"])
+def test_callback_return_target_cannot_override_the_stored_money_path(auth_client, return_to):
+    client, _, _ = auth_client
+    params, _ = begin(client, return_to="/money/income")
+    response = callback(client, {**params, "returnTo": return_to})
+    assert response.status_code == 303
+    assert response.headers["location"] == "/money/income"
+    assert client.get("/api/auth/session").status_code == 200
 
 
 def test_state_binding_consumption_replay_and_failed_login_preserve_current_login(auth_client):
@@ -277,6 +326,89 @@ def test_duplicate_session_cookies_are_not_accepted(auth_client):
         [("cookie", f"{COOKIE}={token}"), ("cookie", f"{COOKIE}={token}")],
     ):
         assert client.get("/api/session", headers=headers).status_code == 401
+
+
+@pytest.mark.parametrize("subject", ["google-user-one", "google-user-two"])
+@pytest.mark.parametrize("names", [(COOKIE,), (FLOW_COOKIE,), (COOKIE, FLOW_COOKIE)])
+@pytest.mark.parametrize(
+    "invalid", ["malformed", "incomplete", "duplicate", "duplicateHeaders", "overlength"]
+)
+def test_login_recovers_invalid_cookies_without_claiming_finances(
+    auth_client, subject, names, invalid
+):
+    client, google, _ = auth_client
+    sign_in(client)
+    token = client.cookies[COOKIE]
+    user = client.get("/api/auth/session").json()["user"]
+    client.post("/api/session", json={})
+    saved = client.post("/api/session/commands", json=command(facts("321"))).json()
+    begin(client)
+    binding = client.cookies[FLOW_COOKIE]
+    values = {COOKIE: token, FLOW_COOKIE: binding}
+    parts = []
+    for name, value in values.items():
+        if name in names:
+            if invalid in {"duplicate", "duplicateHeaders"}:
+                parts.append(f"{name}={value}")
+            else:
+                value = {"malformed": "broken", "incomplete": "", "overlength": "x" * 5000}[invalid]
+        parts.append(f"{name}={value}")
+    headers = (
+        [("Cookie", part) for part in parts]
+        if invalid == "duplicateHeaders"
+        else {"Cookie": "; ".join(parts)}
+    )
+    preserved = COOKIE not in names and invalid != "overlength"
+    for path in ("/api/auth/session", "/api/session", "/api/session/call"):
+        response = client.get(path, headers=headers)
+        assert response.status_code == (200 if preserved else 401)
+        if not preserved:
+            assert response.json() == {
+                "code": "unauthenticated",
+                "message": "Sign in to continue.",
+                "snapshot": None,
+            }
+    response = client.post("/api/auth/login", json={}, headers=headers)
+    assert response.status_code == 200
+    cleared = {
+        header.partition("=")[0]
+        for header in response.headers.get_list("set-cookie")
+        if "Max-Age=0" in header
+    }
+    assert cleared == (set(names) if invalid != "overlength" else {COOKIE, FLOW_COOKIE})
+    assert client.cookies[FLOW_COOKIE] != binding
+    assert client.cookies.get(COOKIE) == (token if preserved else None)
+    assert client.get("/api/auth/session").status_code == (200 if preserved else 401)
+    flow = query(
+        client,
+        "SELECT user_id, session_hash FROM auth_flows WHERE binding_hash = ?",
+        (digest(client.cookies[FLOW_COOKIE]),),
+    )
+    assert flow == [(user["id"], digest(token)) if preserved else (None, None)]
+    url = response.json()["url"]
+    params = {
+        "state": parse_qs(urlsplit(url).query)["state"][0],
+        "code": google.code(url, subject),
+    }
+    assert callback(client, params).headers["location"] == "/app"
+    assert client.cookies[COOKIE] != token and FLOW_COOKIE not in client.cookies
+    current = client.get("/api/auth/session").json()["user"]
+    if subject == "google-user-one":
+        assert current["id"] == user["id"]
+        assert client.get("/api/session").json() == saved
+    else:
+        assert current["id"] != user["id"]
+        assert client.get("/api/session").status_code == 404
+        assert (
+            client.post("/api/session", json={}).json()["facts"]["opening"]["amountPaise"] is None
+        )
+        assert (
+            json.loads(
+                query(client, "SELECT snapshot FROM sessions WHERE owner = ?", (user["id"],))[0][0]
+            )
+            == saved
+        )
+    assert client.get("/api/session", headers=headers).status_code == 401
 
 
 def test_idle_refresh_preserves_identity_without_extending_absolute_limit(auth_client):
@@ -793,11 +925,23 @@ def test_auth_openapi_types_have_no_dangling_schema_references(auth_client):
     assert set(models["User"]["properties"]) == {"id", "displayName", "googleName", "email"}
     assert set(models["AuthSettings"]["properties"]) == {"googleAvailable", "sessionHours"}
     assert models["AccountDelete"]["properties"]["confirmation"]["const"] == "DELETE"
-    assert models["LoginRequest"]["properties"]["returnTo"]["enum"] == [
+    return_paths = models["LoginRequest"]["properties"]["returnTo"]["anyOf"]
+    assert return_paths[0]["enum"] == [
         "/app",
-        "/figures",
+        "/money",
+        "/money/income",
+        "/money/spending",
+        "/money/debts",
+        "/money/upcoming",
+        "/money/changes",
         "/account",
+        "/history",
     ]
+    assert return_paths[1] == {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^/history/[a-z0-9]+(?:-[a-z0-9]+)*$",
+    }
     assert models["Facts"]["additionalProperties"] is False
     assert not {"user", "userId", "email", "googleSubject"} & set(models["Facts"]["properties"])
 

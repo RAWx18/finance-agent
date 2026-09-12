@@ -25,6 +25,7 @@ from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .auth import Auth, AuthProblem
+from .auth_models import is_return_path
 from .auth_routes import owner
 from .auth_routes import router as auth_router
 from .config import ROOT, Config, Environment, load_config
@@ -504,7 +505,10 @@ def create_app(
     async def frontend(path: str, request: Request) -> FileResponse | RedirectResponse:
         if path == "api" or path.startswith(("api/", "health/", "auth/")):
             raise Problem(404, "notFound", "Resource not found.")
-        if path in {"", "app", "figures", "account"}:
+        protected = is_return_path("/" + path)
+        if path.partition("/")[0] in {"money", "history"} and not protected:
+            raise Problem(404, "notFound", "Resource not found.")
+        if not path or protected:
             try:
                 await auth.identify(request)
             except Problem as error:
@@ -520,7 +524,7 @@ def create_app(
             raise Problem(404, "notFound", "Resource not found.")
         if target.is_file():
             return FileResponse(target)
-        if path in {"login", "app", "figures", "account"} and (static_dir / "index.html").is_file():
+        if (path == "login" or protected) and (static_dir / "index.html").is_file():
             return FileResponse(static_dir / "index.html")
         raise Problem(404, "notFound", "Frontend build is unavailable or resource does not exist.")
 

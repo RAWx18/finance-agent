@@ -1,13 +1,14 @@
 # SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal, get_args
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -18,7 +19,40 @@ class Access:
 
 
 Owner = str | Access
-ReturnPath = Literal["/app", "/figures", "/account"]
+FixedReturnPath = Literal[
+    "/app",
+    "/money",
+    "/money/income",
+    "/money/spending",
+    "/money/debts",
+    "/money/upcoming",
+    "/money/changes",
+    "/account",
+    "/history",
+]
+HISTORY_PATH = r"/history/[a-z0-9]+(?:-[a-z0-9]+)*"
+
+
+def is_return_path(value: str) -> bool:
+    return value in get_args(FixedReturnPath) or (
+        len(value) <= 128 and re.fullmatch(HISTORY_PATH, value) is not None
+    )
+
+
+def validate_return_path(value: str) -> str:
+    if not is_return_path(value):
+        raise ValueError("Invalid return path")
+    return value
+
+
+ReturnPath = (
+    FixedReturnPath
+    | Annotated[
+        str,
+        Field(pattern="^" + HISTORY_PATH + "$", max_length=128),
+        AfterValidator(validate_return_path),
+    ]
+)
 
 
 class AuthModel(BaseModel):

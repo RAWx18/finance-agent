@@ -55,9 +55,16 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.post("/api/auth/login", response_model=LoginURL)
     async def login(request: Request, response: Response, body: LoginRequest) -> LoginURL:
-        url, binding = await auth.begin(
-            body.return_to, auth.cookie(request, COOKIE), auth.cookie(request, FLOW_COOKIE)
-        )
+        cookies: list[str | None] = []
+        for name in (COOKIE, FLOW_COOKIE):
+            try:
+                cookies.append(auth.cookie(request, name))
+            except AuthProblem:
+                cookies.append(None)
+                response.delete_cookie(
+                    auth.cookie_name(name), path="/", httponly=True, secure=secure, samesite="lax"
+                )
+        url, binding = await auth.begin(body.return_to, *cookies)
         response.set_cookie(
             auth.cookie_name(FLOW_COOKIE),
             binding,
