@@ -258,6 +258,10 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if reason := unavailable_reason(config, environment):
             logger.warning("Voice unavailable at startup: %s", reason)
+        else:
+            from .voice_pipeline import prepare_runtime
+
+            await asyncio.to_thread(prepare_runtime)
         await store.open()
         await auth.open()
         await store.cleanup()

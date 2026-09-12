@@ -18,11 +18,14 @@ COPY --from=uv /uv /usr/local/bin/uv
 WORKDIR /app/backend
 COPY backend/pyproject.toml backend/uv.lock ./
 RUN uv sync --locked --no-dev --no-install-project --python /usr/local/bin/python
+RUN .venv/bin/python -m nltk.downloader -e -d /opt/nltk_data punkt_tab \
+    && NLTK_DATA=/opt/nltk_data .venv/bin/python -c "from nltk import sent_tokenize; assert sent_tokenize('Ready. Listening.') == ['Ready.', 'Listening.']"
 
 FROM ${PYTHON_IMAGE} AS runtime
 ENV PATH="/app/backend/.venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    NLTK_DATA=/opt/nltk_data \
     DATA_DIR=/data
 WORKDIR /app
 RUN apt-get update \
@@ -32,10 +35,12 @@ RUN apt-get update \
     && useradd --system --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app \
     && install -d -o app -g app -m 0700 /data
 COPY --from=dependencies /app/backend/.venv /app/backend/.venv
+COPY --from=dependencies /opt/nltk_data /opt/nltk_data
 COPY backend/app/ /app/backend/app/
 COPY config.toml LICENSE.md ./
 COPY --from=frontend /app/frontend/dist /app/frontend/dist
 RUN python -c "from pipecat.transports.daily.transport import DailyTransport; from pipecat.services.azure.stt import AzureSTTService; from pipecat.services.azure.tts import AzureTTSService; from pipecat.services.azure.llm import AzureLLMService"
 USER 10001:10001
+RUN python -c "from nltk import sent_tokenize; assert sent_tokenize('Ready. Listening.') == ['Ready.', 'Listening.']"
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--app-dir", "/app/backend", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--no-proxy-headers", "--no-access-log", "--timeout-graceful-shutdown", "10"]

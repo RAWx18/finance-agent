@@ -5,6 +5,7 @@ import asyncio
 import inspect
 import json
 import logging
+import time
 from collections.abc import Callable, Coroutine, Sequence
 from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
@@ -27,6 +28,38 @@ from .voice_tools import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def prepare_runtime() -> None:
+    import importlib
+
+    import nltk
+
+    # A call must never download language data or depend on a writable runtime home.
+    try:
+        nltk.data.find("tokenizers/punkt_tab/english/")
+        nltk.sent_tokenize("Ready. Listening.")
+    except LookupError:
+        raise RuntimeError(
+            "Voice tokenizer data missing; install punkt_tab before starting the application."
+        ) from None
+    from loguru import logger as sdk_logger
+
+    sdk_logger.disable("pipecat")
+    for name in (
+        "pipecat.audio.vad.silero",
+        "pipecat.pipeline.worker",
+        "pipecat.processors.aggregators.llm_response_universal",
+        "pipecat.services.azure.llm",
+        "pipecat.transports.daily.transport",
+        "pipecat.workers.runner",
+        "app.speech",
+        "app.voice_turns",
+    ):
+        importlib.import_module(name)
+    from pipecat.utils.prewarm import warm_deferred_imports
+
+    warm_deferred_imports()
 
 
 class VoicePipeline:
@@ -62,6 +95,11 @@ class VoicePipeline:
         self.history: CaptionHistory | None = None
         self.stopping = False
         self.recovery: asyncio.Task[Any] | None = None
+        self.timings: dict[str, float] = {}
+        self.created_at = time.monotonic()
+
+    def mark(self, stage: str) -> None:
+        self.timings.setdefault(stage, round(time.monotonic() - self.created_at, 6))
 
     def refresh(self, snapshot: Snapshot) -> None:
         if self.revoked or snapshot.sequence < self.sequence:
@@ -144,6 +182,7 @@ class VoicePipeline:
             UserStartedSpeakingFrame,
             UserStoppedSpeakingFrame,
         )
+        from pipecat.observers.base_observer import BaseObserver, ProcessorSetUp, StartupWarmup
         from pipecat.pipeline.pipeline import Pipeline
         from pipecat.pipeline.worker import PipelineParams, PipelineWorker
         from pipecat.processors.aggregators.llm_context import LLMContext
@@ -167,7 +206,29 @@ class VoicePipeline:
 
         pipeline = self
         voice = store.config.voice
+        self.mark("constructionStarted")
         generation: ContextVar[int] = ContextVar("voice_generation", default=-1)
+
+        class SetupObserver(BaseObserver):
+            async def on_processor_setup(self, data: ProcessorSetUp) -> None:
+                name = type(data.processor).__name__
+                if name in {
+                    "DailyInputTransport",
+                    "DailyOutputTransport",
+                    "SpeechRecognition",
+                    "GuardedSpeech",
+                    "GuardedLLM",
+                }:
+                    pipeline.timings[name + "SetupSeconds"] = round(
+                        (data.finished_at_ns - data.started_at_ns) / 1_000_000_000, 6
+                    )
+                    pipeline.mark(name + "Ready")
+
+            async def on_startup_warmup(self, data: StartupWarmup) -> None:
+                pipeline.timings["frameworkWarmupSeconds"] = round(
+                    (data.finished_at_ns - data.started_at_ns) / 1_000_000_000, 6
+                )
+                pipeline.mark("frameworkWarmupComplete")
 
         @dataclass
         class Completion:
@@ -326,6 +387,13 @@ class VoicePipeline:
                         failed()
 
         class PublicRTVI(RTVIProcessor):
+            async def set_bot_ready(self, about: Any = None) -> None:
+                # The handshake can arrive while StartFrame is still crossing the processors.
+                await pipeline.started.wait()
+                if not pipeline.revoked:
+                    await super().set_bot_ready(about)
+                    pipeline.mark("botReadySent")
+
             async def push_transport_message(
                 self, model: BaseModel, exclude_none: bool = True
             ) -> None:
@@ -382,12 +450,14 @@ class VoicePipeline:
                         tool_choice=context.tool_choice,
                     )
                 stream = await super().get_chat_completions(context)
+                pipeline.mark("firstModelResponse")
 
                 async def observed() -> Any:
                     async with stream:
                         async for chunk in stream:
                             for choice in chunk.choices or []:
                                 if choice.delta and choice.delta.content:
+                                    pipeline.mark("firstModelText")
                                     count("model_stream_text")
                                 if choice.finish_reason:
                                     reason = choice.finish_reason
@@ -680,6 +750,7 @@ class VoicePipeline:
                     count("stale_output_frames")
                     return
                 if isinstance(frame, TTSAudioRawFrame):
+                    pipeline.mark("firstPublishedAudio")
                     count("published_audio")
                 await self.push_frame(frame, direction)
 
@@ -876,6 +947,7 @@ class VoicePipeline:
             ),
             params=PipelineParams(audio_in_sample_rate=16000, audio_out_sample_rate=24000),
             rtvi_processor=PublicRTVI(),
+            observers=[SetupObserver()],
             idle_timeout_secs=None,
             setup_timeout_secs=voice.startup_seconds,
             start_timeout_secs=voice.startup_seconds,
@@ -883,13 +955,16 @@ class VoicePipeline:
         )
 
         async def started(worker: Any, frame: Any) -> None:
+            self.mark("pipelineStarted")
             self.started.set()
 
         async def joined(transport: Any, data: Any) -> None:
+            self.mark("dailyJoined")
             self.joined.set()
 
         async def client_ready(rtvi: Any) -> None:
             if not self.revoked and not self.client_ready.is_set():
+                self.mark("clientReady")
                 self.client_ready.set()
                 self.state_sequence += 1
                 await self.send_state()
@@ -995,6 +1070,7 @@ class VoicePipeline:
         self.worker.add_event_handler("on_pipeline_error", pipeline_error)
         self.worker.add_event_handler("on_pipeline_finished", finished)
         self.worker.add_event_handler("on_pipeline_timeout", pipeline_timeout)
+        self.worker.add_event_handler("on_setup_timeout", lambda worker: failed())
         self.worker.rtvi.add_event_handler("on_client_ready", client_ready)
         self.worker.rtvi.add_event_handler("on_client_message", client_message)
         aggregators.user().add_event_handler("on_user_turn_started", user_started)
@@ -1018,6 +1094,7 @@ class VoicePipeline:
                 end()
 
         self.task.add_done_callback(completed)
+        self.mark("constructionComplete")
 
     async def ready(self) -> None:
         await self.started.wait()
