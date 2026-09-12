@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -27,8 +28,10 @@ from app.voice_tools import (
     canonical,
     conversation,
     conversation_messages,
+    response_guidance,
     tool_parameters,
 )
+from scripts.dialogue_checks import check_turn
 
 CASES = {
     "timing": [
@@ -70,13 +73,59 @@ CASES = {
         "I need to check the client money has actually arrived before relying on it for rent. "
         "Otherwise the rent still isn't covered. Got it, thanks.",
     ],
+    "debts": [
+        "I've got 12000 rupees available today. Two separate loan EMIs are unpaid: "
+        "scooter 2000 and appliance 2000, both due September 16, 2026. "
+        "My HDFC card minimum is 500, I plan to pay 1500, and the total balance is 20000. "
+        "My SBI card minimum is 1000, I plan to pay 2000, and the total balance is 30000. "
+        "Both cards are due September 18, 2026. No automatic debits. "
+        "That's all my unpaid costs and debts for thirty days, no income or other spending.",
+        "One of those two loan EMIs might be 2500, but I can't remember which. "
+        "Don't change either amount until we work out which one.",
+        "It's the scooter one. Make that 2500 exactly, not the appliance loan.",
+        "Yes, scooter 2500, appliance 2000. Those amounts are right.",
+    ],
+    "missing": [
+        "I have 8000 rupees today. Rent is 3000 but I don't know its due date. "
+        "Electricity is due September 16, 2026; I don't know how much it is and can't "
+        "check now. Both are unpaid. I haven't listed everything yet.",
+        "Found the bills: electricity is 1200 exactly. Rent is due September 15, 2026.",
+    ],
+    "conflict": [
+        "I have 10000 rupees today. My unpaid rent is due September 15, 2026. "
+        "One message says 6000 rupees, another says 8000; I don't know which is right. "
+        "Those are conflicting reports for the same rent, not two payments. "
+        "No income, debts or other spending for the next thirty days.",
+        "The landlord confirmed a third amount: 7000 rupees exactly. "
+        "Neither of those messages was right. Please correct that rent.",
+    ],
 }
+
+
+def fingerprint() -> dict[str, str]:
+    """Identify the actual source, corpus, configuration and lockfile used for a run."""
+    paths = [
+        *sorted((ROOT / "backend" / "app").glob("*.py")),
+        Path(__file__),
+        Path(__file__).with_name("dialogue_checks.py"),
+        ROOT / "config.toml",
+        ROOT / "backend" / "uv.lock",
+    ]
+    return {
+        str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths
+    }
 
 
 async def verify(output: Path, selected: list[str]) -> None:
     """Replay selected synthetic dialogues through the real model and save response evidence."""
     from loguru import logger
 
+    if (
+        not selected
+        or len(set(selected)) != len(selected)
+        or any(case not in CASES for case in selected)
+    ):
+        raise ValueError("Select distinct known conversation cases")
     logger.disable("pipecat")
     config = load_config()
     values = dotenv_values(ROOT / ".env", interpolate=False)
@@ -97,10 +146,19 @@ async def verify(output: Path, selected: list[str]) -> None:
         "mode": "realModelSyntheticText",
         "model": config.voice.model,
         "promptSha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        "afterToolsSha256": hashlib.sha256(AFTER_TOOLS.encode()).hexdigest(),
+        "sources": fingerprint(),
+        "corpusSha256": hashlib.sha256(json.dumps(CASES, sort_keys=True).encode()).hexdigest(),
+        "runAt": datetime.now(UTC).isoformat(),
+        "selected": selected,
+        "settings": config.voice.model_dump(mode="json"),
         "anchor": "2026-09-12",
         "limits": "Text only; no STT, TTS, Daily, authenticated memory or acoustic barge-in.",
         "status": "incomplete",
+        "deterministic": {"status": "incomplete"},
+        "judgment": {"status": "notRun"},
         "requests": 0,
+        "responseModels": [],
         "usage": {
             "reportedRequests": 0,
             "promptTokens": 0,
@@ -120,6 +178,15 @@ async def verify(output: Path, selected: list[str]) -> None:
                 required=parameters.get("required", []),
             )
         )
+    evidence["toolsSha256"] = hashlib.sha256(
+        json.dumps(
+            [
+                (name, tool_parameters(model), description)
+                for name, model, description in TOOL_DEFINITIONS
+            ],
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
     llm = AzureLLMService(
         endpoint=environment.azure_openai_endpoint,
         api_key=environment.azure_openai_api_key.get_secret_value(),
@@ -163,7 +230,9 @@ async def verify(output: Path, selected: list[str]) -> None:
 
                     tools = VoiceTools(store, case, uuid4(), refresh)
                     for index, text in enumerate(CASES[case]):
+                        before = canonical(await store.get(case))
                         refresh(await store.get(case))
+                        started = time.monotonic()
                         row = {
                             "case": case,
                             "turn": index + 1,
@@ -182,14 +251,21 @@ async def verify(output: Path, selected: list[str]) -> None:
                         evidence["turns"].append(row)
                         needs_tools = True
                         for step in range(config.voice.max_tool_rounds + 1):
-                            if evidence["requests"] >= 40:
-                                raise RuntimeError("Forty-request evaluation budget exhausted")
+                            if evidence["requests"] >= 64:
+                                raise RuntimeError("64-request evaluation budget exhausted")
                             evidence["requests"] += 1
                             messages = conversation_messages(
                                 context.get_messages(), config.voice.history_turns
                             )
                             if step:
-                                messages.append({"role": "developer", "content": AFTER_TOOLS})
+                                messages.append(
+                                    {
+                                        "role": "developer",
+                                        "content": response_guidance(
+                                            json.loads(messages[0]["content"].split("\n", 1)[1])
+                                        ),
+                                    }
+                                )
                             request = LLMContext(
                                 messages,
                                 tools=context.tools,
@@ -201,6 +277,11 @@ async def verify(output: Path, selected: list[str]) -> None:
                                 stream = await llm.get_chat_completions(request)
                                 async with stream:
                                     async for chunk in stream:
+                                        if (
+                                            chunk.model
+                                            and chunk.model not in evidence["responseModels"]
+                                        ):
+                                            evidence["responseModels"].append(chunk.model)
                                         if chunk.usage is not None:
                                             evidence["usage"]["reportedRequests"] += 1
                                             evidence["usage"]["promptTokens"] += (
@@ -227,6 +308,8 @@ async def verify(output: Path, selected: list[str]) -> None:
                                                     )
                             message = {"role": "assistant", "content": None if calls else spoken}
                             if calls:
+                                if step == config.voice.max_tool_rounds:
+                                    raise RuntimeError("Per-turn tool budget exhausted")
                                 message["tool_calls"] = [
                                     {
                                         "id": call["id"],
@@ -271,6 +354,10 @@ async def verify(output: Path, selected: list[str]) -> None:
                                 row["assistant"] = spoken
                                 snapshot = await store.get(case)
                                 row["canonical"] = canonical(snapshot)
+                                row["elapsedSeconds"] = round(time.monotonic() - started, 3)
+                                row["checks"] = check_turn(
+                                    case, index + 1, row["canonical"], before, row["tools"]
+                                )
                                 row["status"] = "completed"
                                 print(
                                     json.dumps(
@@ -289,10 +376,16 @@ async def verify(output: Path, selected: list[str]) -> None:
             finally:
                 await store.close()
         evidence["status"] = "completed"
+        evidence["deterministic"]["status"] = (
+            "passed"
+            if all(check["passed"] for row in evidence["turns"] for check in row["checks"])
+            else "failed"
+        )
     finally:
         try:
             await llm._client.close()
         finally:
+            evidence["sourceStable"] = evidence["sources"] == fingerprint()
             await asyncio.to_thread(output.parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(
                 output.write_text, json.dumps(evidence, indent=2), encoding="utf-8"
@@ -309,6 +402,9 @@ def main() -> None:
     if not args.allow_billable:
         parser.error("Real Azure usage requires --allow-billable; no provider calls made")
     asyncio.run(verify(args.output, args.case or list(CASES)))
+    evidence = json.loads(args.output.read_text(encoding="utf-8"))
+    if evidence["deterministic"]["status"] != "passed" or not evidence["sourceStable"]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

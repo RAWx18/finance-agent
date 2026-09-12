@@ -138,7 +138,7 @@ def stream(text="", *, name=None, arguments=None, usage=True):
     [
         ([], 2),
         (["--help"], 0),
-        (["--allow-billable", "--case", "missing"], 2),
+        (["--allow-billable", "--case", "unsupported"], 2),
     ],
 )
 def test_cli_rejection_never_invokes_verification(monkeypatch, tmp_path, offline, arguments, code):
@@ -164,6 +164,7 @@ def test_cli_passes_valid_cases_and_output(monkeypatch, tmp_path, offline, selec
     """Verify valid CLI arguments forward the selected cases and output path to verification."""
     verify = AsyncMock()
     output = tmp_path / "evidence.json"
+    output.write_text(json.dumps({"deterministic": {"status": "passed"}, "sourceStable": True}))
     monkeypatch.setattr(verify_dialogue, "verify", verify)
     monkeypatch.setattr(
         "sys.argv",
@@ -232,6 +233,13 @@ async def test_cases_use_explicit_financial_input_and_isolated_state(
     )
     assert evidence["anchor"] == "2026-09-12"
     assert evidence["model"] == config.voice.model
+    assert evidence["responseModels"] == ["synthetic"]
+    assert evidence["sourceStable"] is True
+    assert evidence["sources"]["backend/app/voice_tools.py"]
+    assert evidence["toolsSha256"] and evidence["afterToolsSha256"]
+    assert evidence["corpusSha256"] and evidence["settings"]
+    assert evidence["judgment"] == {"status": "notRun"}
+    assert evidence["deterministic"] == {"status": "failed"}
     rows = evidence["turns"]
     assert [(row["case"], row["turn"], row["user"]) for row in rows] == [
         (case, index + 1, text)
@@ -268,7 +276,7 @@ async def test_cases_use_explicit_financial_input_and_isolated_state(
         assert following.tool_choice == "auto"
         assert following.get_messages()[-1] == {
             "role": "developer",
-            "content": verify_dialogue.AFTER_TOOLS,
+            "content": verify_dialogue.response_guidance(row["canonical"]),
         }
         if row["turn"] == 1:
             assert len(request.get_messages()) == 2
@@ -315,10 +323,54 @@ async def test_timing_replays_only_the_heard_prefix(tmp_path, model):
     assert evidence["usage"]["reportedRequests"] == 4
 
 
-async def test_request_cap_stops_before_request_41_and_retains_partial_evidence(
+async def test_dropped_rent_cannot_pass_financial_evaluation(tmp_path, model):
+    """Reject a fluent tool-using conversation that never captures the reported rent."""
+    model.get_chat_completions.side_effect = [
+        response
+        for _ in verify_dialogue.CASES["enough"]
+        for response in (
+            stream(name="read_state"),
+            stream("Yes, your rent is covered. Take care."),
+        )
+    ]
+    output = tmp_path / "evidence.json"
+    await verify_dialogue.verify(output, ["enough"])
+    evidence = json.loads(output.read_text())
+    assert evidence.get("deterministic", {}).get("status") == "failed"
+    checks = {item["name"]: item["passed"] for item in evidence["turns"][0]["checks"]}
+    assert checks["processingToolUsed"] and checks["lastToolSucceeded"]
+    assert not checks["reportedCash"] and not checks["reportedRecords"]
+    assert evidence["turns"][0]["canonical"]["snapshot"]["facts"]["records"] == []
+
+
+@pytest.mark.parametrize("selected", [[], ["enough", "enough"], ["unsupported"]])
+async def test_invalid_selection_prevents_provider_access(offline, tmp_path, selected):
+    """A vacuous or repeated run cannot earn an apparently valid comparison verdict."""
+    with pytest.raises(ValueError, match="distinct known"):
+        await verify_dialogue.verify(tmp_path / "evidence.json", selected)
+    offline.assert_not_called()
+    verify_dialogue.dotenv_values.assert_not_called()
+
+
+@pytest.mark.parametrize("status,stable", [("failed", True), ("passed", False)])
+def test_cli_fails_on_financial_error_or_source_drift(monkeypatch, tmp_path, status, stable):
+    """Execution completion alone must not give CI or a reviewer a zero exit code."""
+    output = tmp_path / "evidence.json"
+    output.write_text(json.dumps({"deterministic": {"status": status}, "sourceStable": stable}))
+    monkeypatch.setattr(verify_dialogue, "verify", AsyncMock())
+    monkeypatch.setattr(
+        "sys.argv",
+        ["verify_dialogue", "--allow-billable", "--case", "enough", "--output", str(output)],
+    )
+    with pytest.raises(SystemExit) as error:
+        verify_dialogue.main()
+    assert error.value.code == 1
+
+
+async def test_request_cap_stops_before_request_65_and_retains_partial_evidence(
     tmp_path, model, stores
 ):
-    """Verify the forty-request limit preserves partial evidence and closes resources."""
+    """Verify the bounded request limit preserves partial evidence and closes resources."""
 
     def respond(request):
         """Return tool calls twice before each synthetic spoken reply."""
@@ -330,13 +382,13 @@ async def test_request_cap_stops_before_request_41_and_retains_partial_evidence(
 
     model.get_chat_completions.side_effect = respond
     output = tmp_path / "evidence.json"
-    with pytest.raises(RuntimeError, match="Forty-request evaluation budget exhausted"):
+    with pytest.raises(RuntimeError, match="64-request evaluation budget exhausted"):
         await verify_dialogue.verify(output, list(verify_dialogue.CASES))
     evidence = json.loads(output.read_text())
-    assert model.get_chat_completions.await_count == evidence["requests"] == 40
+    assert model.get_chat_completions.await_count == evidence["requests"] == 64
     assert evidence["status"] == "incomplete"
-    assert evidence["usage"]["reportedRequests"] == 40
-    assert sum(row["status"] == "completed" for row in evidence["turns"]) == 13
+    assert evidence["usage"]["reportedRequests"] == 64
+    assert sum(row["status"] == "completed" for row in evidence["turns"]) == 21
     assert evidence["turns"][-1]["status"] == "incomplete"
     assert evidence["turns"][-1]["assistant"] == ""
     stores[0].close.assert_awaited_once()
