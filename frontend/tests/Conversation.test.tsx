@@ -122,6 +122,32 @@ beforeEach(() => {
 });
 
 describe('owned lifecycle deadlines and background cleanup', () => {
+  it.each(['timeout', 'connected', 'ready'] as const)('bounds active transport reconnection and handles %s', async outcome => {
+    const view = show(); await start(); ready();
+    const events = sdk.options!.callbacks!;
+    const microphone = sdk.tracks().local.audio as MediaStreamTrack;
+    vi.useFakeTimers();
+    try {
+      act(() => events.onTransportStateChanged!('connecting'));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Reconnecting$/);
+      await act(async () => vi.advanceTimersByTimeAsync(1000));
+      act(() => events.onTransportStateChanged!('connecting'));
+      if (outcome === 'connected') act(() => events.onConnected!());
+      else if (outcome === 'ready') act(() => events.onTransportStateChanged!('ready'));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceStartupSeconds * 1000 - 1000));
+      if (outcome === 'timeout') {
+        expect(screen.getByRole('alert', { name: 'Connection timed out' })).toBeVisible();
+        expect(microphone.stop).toHaveBeenCalled();
+        expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+        expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      } else {
+        expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+        expect(microphone.stop).not.toHaveBeenCalled(); expect(api.endCall).not.toHaveBeenCalled();
+      }
+      expect(api.startCall).toHaveBeenCalledOnce();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
   it.each(['response', 'before connect'] as const)('ends expired media credentials at %s without discarding the plan', async stage => {
     if (stage === 'response') vi.mocked(api.startCall).mockRejectedValueOnce(new ApiError(410, { code: 'callExpired', message: 'Call expired.' }));
     else vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() - 1).toISOString() });
@@ -398,6 +424,28 @@ describe('server-controlled conversation waiting', () => {
   function state(state: 'active' | 'waiting', sequence: number) {
     act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state, sequence }));
   }
+
+  it.each([false, true])('rejects late captions until Continue is acknowledged (pending: %s)', async continuing => {
+    const view = show(); await start(); ready(); state('active', 1);
+    const events = sdk.options!.callbacks!;
+    act(() => events.onBotOutput!({ text: 'Your saved figures', segment_id: 1, spoken_status: 'in-progress',
+      spoken_progress: { accumulated_text: 'Your saved figures', remaining_text: ' are ready.' } }));
+    state('waiting', 2);
+    if (continuing) await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    const transcript = structuredClone(view.transcript);
+    act(() => {
+      events.onUserTranscript!({ text: 'Delayed final', timestamp: 'late-final', user_id: 'me', final: true });
+      events.onUserTranscript!({ text: 'Delayed interim', timestamp: 'late-interim', user_id: 'me', final: false });
+      events.onBotOutput!({ text: 'Obsolete amount: 9000', segment_id: 2, spoken_status: 'completed' });
+    });
+    expect(view.transcript).toEqual(transcript);
+    expect(screen.getByRole('region', { name: 'Live caption' })).toHaveTextContent('Your saved figures');
+    if (!continuing) await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    state('active', 3);
+    act(() => events.onBotOutput!({ text: 'Current response', segment_id: 3, spoken_status: 'completed' }));
+    expect(screen.getByRole('region', { name: 'Live caption' })).toHaveTextContent('Current response');
+    expect(sdk.connect).toHaveBeenCalledOnce(); expect(api.endCall).not.toHaveBeenCalled();
+  });
 
   it('distinguishes an unfinished response from inactivity without claiming a connection failure', async () => {
     const view = show(); await start(); ready(); state('active', 1);

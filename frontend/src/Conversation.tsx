@@ -415,7 +415,10 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
       const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
       const client = new PipecatClient({ transport, enableMic: true, enableCam: false, callbacks: {
-        onConnected: () => update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false }),
+        onConnected: () => {
+          if (live() && current?.ready) clearTimeout(current.startupTimer);
+          update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false });
+        },
         onBotReady: () => { if (live() && current) { mark('bot-ready'); clearTimeout(current.startupTimer); current.ready = true; setPhase('active'); update({ reconnecting: false }); updateTracks(); } },
         onBotConnected: (participant) => {
           if (!live() || !current || participant.local) return;
@@ -429,8 +432,14 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         },
         onTransportStateChanged: (state) => {
           if (!live()) return;
-          if (state === 'connecting' && current?.ready) update({ reconnecting: true, connected: false, user: false, bot: false, interrupted: false });
-          if (state === 'ready' && current?.ready) update({ reconnecting: false });
+          if (state === 'connecting' && current?.ready && !current.activity.reconnecting) {
+            update({ reconnecting: true, connected: false, user: false, bot: false, interrupted: false });
+            deadline();
+          }
+          if (state === 'ready' && current?.ready) {
+            clearTimeout(current.startupTimer);
+            update({ reconnecting: false });
+          }
           if (state === 'error') fail(callError(new TypeError()));
           if (state === 'disconnected') disconnected();
         },
@@ -510,7 +519,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         onUserMuteStarted: () => update({ paused: true, user: false, interrupted: false }),
         onUserMuteStopped: () => update({ paused: false }),
         onUserTranscript: (data) => {
-          if (!live()) return;
+          if (!live() || current?.activity.waiting) return;
           if (!data.final) {
             if (!data.text.trim()) return;
             interimTime.current ??= Date.now();
@@ -528,7 +537,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
             : [...items, { id, speaker: 'You', text: data.text, time }]);
         },
         onBotOutput: (data) => {
-          if (!live() || data.will_be_spoken === false) return;
+          if (!live() || current?.activity.waiting || data.will_be_spoken === false) return;
           if (data.spoken_status === 'new') { if (data.segment_id === undefined) spokenId = undefined; return; }
           if (data.spoken_status !== 'in-progress' && data.spoken_status !== 'completed') return;
           const text = data.spoken_progress?.accumulated_text ?? (data.spoken_status === 'completed' ? data.text : '');
