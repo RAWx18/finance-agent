@@ -193,7 +193,7 @@ function Workspace() {
           </ol>
         </aside>}
         {view !== 'landing' && <div className="financial-pane">
-          <FinancialContext snapshot={snapshot} stale={!!snapshot && stale} mode={reviewing ? view as 'review' | 'finished' : 'live'}
+          <FinancialContext snapshot={snapshot} stale={!!snapshot && stale}
             locked={locked} onCommand={operation => perform('save', operation)} proposalActive={conversationVisible} />
         </div>}
       </div>

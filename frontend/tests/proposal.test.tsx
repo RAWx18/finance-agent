@@ -44,8 +44,9 @@ function deferred<T>() {
 async function review(router = appRouter()) {
   projectWorkspace(saved);
   render(<RouterProvider router={router} />);
-  await userEvent.click(await screen.findByRole('button', { name: /Review saved picture/ }));
   await waitFor(() => expect(Stream.instances).toHaveLength(1));
+  act(() => Stream.instances[0].emit('snapshot', saved));
+  await userEvent.click(screen.getByRole('button', { name: 'Start conversation' }));
   return Stream.instances[0];
 }
 
@@ -54,8 +55,9 @@ describe('App inline financial actions', () => {
     const response = deferred<Snapshot>();
     vi.mocked(api.save).mockReturnValueOnce(response.promise);
     const stream = await review();
+    act(() => stream.onerror?.());
     const picture = screen.getByRole('region', { name: 'Your financial picture' });
-    const proposal = within(picture).getByRole('region', { name: 'Spending change preview' });
+    const proposal = within(picture).getByRole('article', { name: 'Plan changes' });
     const consent = within(proposal).getByRole('checkbox');
     const accept = within(proposal).getByRole('button', { name: 'Accept planning assumptions' });
     const reject = within(proposal).getByRole('button', { name: 'Reject preview' });
@@ -70,10 +72,8 @@ describe('App inline financial actions', () => {
     expect(consent).toBeEnabled();
     expect(reject).toBeEnabled();
     expect(accept).toBeDisabled();
-    await userEvent.click(screen.getByRole('button', { name: 'Review proposed change' }));
-    expect(within(proposal).getByRole('heading', { name: 'Spending change preview' })).toHaveFocus();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(consent).toHaveAccessibleName(/including removals, unconditionally—not dependent on uncertain income or payee agreement/);
+    expect(consent).toHaveAccessibleName(/all amounts and removals shown, unconditionally—not dependent on uncertain income or payee agreement/);
     await userEvent.click(accept);
     expect(api.save).not.toHaveBeenCalled();
     await userEvent.click(consent);
@@ -86,8 +86,8 @@ describe('App inline financial actions', () => {
     });
     expect(consent).not.toBeChecked();
     for (const control of [consent, accept, reject]) expect(control).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Finish review' })).toBeDisabled();
-    expect(within(picture).getByRole('article', { name: 'Dated cash requirements' })).toHaveTextContent('₹10,000.00');
+    expect(within(picture).getByRole('button', { name: 'Edit Cash at plan start' })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(picture).getByLabelText('Projected closing cash')).toHaveTextContent('₹10,000');
 
     const accepted = structuredClone(saved);
     accepted.sequence++; accepted.revision++;
@@ -95,10 +95,10 @@ describe('App inline financial actions', () => {
     accepted.preview = null;
     for (const adjustment of accepted.accepted!.adjustments) adjustment.acceptedRevision = accepted.revision;
     await act(async () => response.resolve(projectWorkspace(accepted)));
-    expect(within(picture).queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument();
-    expect(within(picture).getByRole('article', { name: 'Dated cash requirements' })).toHaveTextContent('₹12,000.00');
-    expect(within(picture).getByRole('article', { name: /Accepted planning assumptions/ })).toHaveTextContent('Accepted does not mean paid');
-    expect(screen.getByRole('button', { name: 'Finish review' })).toBeEnabled();
+    expect(within(proposal).queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(within(picture).getByLabelText('Projected closing cash')).toHaveTextContent('₹12,000');
+    expect(proposal).toHaveTextContent('Saved assumptions · not paid');
+    expect(within(picture).getByRole('button', { name: 'Edit Cash at plan start' })).toHaveAttribute('aria-disabled', 'false');
     expect(api.options).not.toHaveBeenCalled();
     expect(PipecatClient).not.toHaveBeenCalled();
     expect(DailyTransport).not.toHaveBeenCalled();
@@ -108,21 +108,21 @@ describe('App inline financial actions', () => {
   it('rejects the inline preview without sending consent or replacing the reported picture', async () => {
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     expect(within(proposal).getByRole('checkbox')).not.toBeChecked();
     await userEvent.click(within(proposal).getByRole('button', { name: 'Reject preview' }));
     expect(api.save).toHaveBeenCalledExactlyOnceWith({ commandId: expect.any(String), expectedRevision: saved.revision,
       operation: { type: 'rejectPreview', previewId: saved.preview!.id } });
-    expect(screen.queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Plan changes' })).not.toBeInTheDocument();
     const picture = screen.getByRole('region', { name: 'Your financial picture' });
-    expect(within(picture).getByRole('article', { name: 'Dated cash requirements' })).toHaveTextContent('₹10,000.00');
-    expect(within(picture).queryByRole('article', { name: /Accepted planning assumptions/ })).not.toBeInTheDocument();
+    expect(within(picture).getByLabelText('Projected closing cash')).toHaveTextContent('₹10,000');
+    expect(picture).not.toHaveTextContent('Saved assumptions · not paid');
   });
 
   it.each(['reconnecting', 'unavailable'] as const)('disables reviewed inline actions when updates become %s', async connection => {
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     const consent = within(proposal).getByRole('checkbox');
     const accept = within(proposal).getByRole('button', { name: 'Accept planning assumptions' });
     const reject = within(proposal).getByRole('button', { name: 'Reject preview' });
@@ -137,14 +137,14 @@ describe('App inline financial actions', () => {
       expect(control).toBeDisabled();
       await userEvent.click(control);
     }
-    expect(screen.getByRole('button', { name: 'Finish review' })).toBeDisabled();
+    expect(within(screen.getByRole('region', { name: 'Your financial picture' })).getByRole('button', { name: 'Edit Cash at plan start' })).toHaveAttribute('aria-disabled', 'true');
     expect(api.save).not.toHaveBeenCalled();
   });
 
   it('hides the background proposal in Money and requires fresh consent on each review surface', async () => {
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     const consent = within(proposal).getByRole('checkbox');
     await userEvent.click(consent);
     expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
@@ -152,7 +152,7 @@ describe('App inline financial actions', () => {
     expect(proposal).not.toBeVisible();
     expect(consent).not.toBeChecked();
     expect(consent).toBeDisabled();
-    expect(within(proposal.closest('.journey-layout') as HTMLElement).getByRole('button', { name: 'Review proposed change', hidden: true })).not.toBeVisible();
+    expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions', hidden: true })).not.toBeVisible();
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Plan changes' }));
     expect(screen.getByRole('main')).toHaveAttribute('data-route', '/money/changes');
     const comparison = within(screen.getByRole('region', { name: 'Plan changes content' })).getByRole('region', { name: 'Spending change preview' });
@@ -174,7 +174,7 @@ describe('App inline financial actions', () => {
     const router = appRouter();
     const stream = await review(router);
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     await userEvent.click(within(proposal).getByRole('checkbox'));
     expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
@@ -207,7 +207,7 @@ describe('App inline financial actions', () => {
     await userEvent.click(within(correction).getByRole('button', { name: /Close correct cash/ }));
     await userEvent.click(within(correction).getByRole('button', { name: 'Discard correction' }));
     expect(screen.queryByRole('dialog', { name: /Correct cash on/ })).not.toBeInTheDocument();
-    expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹5,000.00');
+    expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹5,000');
     await userEvent.click(screen.getByRole('link', { name: 'Continue conversation' }));
     expect(screen.getByRole('main')).toHaveAttribute('data-route', '/app');
     expect(proposal).toBeVisible();
@@ -215,7 +215,7 @@ describe('App inline financial actions', () => {
     expect(within(proposal).getByRole('checkbox')).not.toBeChecked();
     expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
     expect(within(proposal).getByRole('button', { name: 'Reject preview' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Finish review' })).toBeEnabled();
+    expect(screen.getByRole('main')).toHaveAttribute('data-view', 'ready');
     expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' })).not.toHaveAccessibleDescription();
     expect(api.save).not.toHaveBeenCalled();
   });
@@ -225,7 +225,7 @@ describe('App inline financial actions', () => {
     vi.mocked(api.delete).mockReturnValueOnce(response.promise);
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
     await userEvent.click(screen.getByRole('button', { name: 'Plan tools' }));
     await userEvent.click(within(screen.getByRole('dialog', { name: 'Plan tools' })).getByRole('button', { name: 'Delete plan' }));
@@ -240,13 +240,13 @@ describe('App inline financial actions', () => {
     expect(screen.queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument();
     expect(api.save).not.toHaveBeenCalled();
     await act(async () => response.resolve({ deleted: true }));
-    expect(screen.queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Plan changes' })).not.toBeInTheDocument();
   });
 
   it('requires fresh inline consent after a newer proposal and ignores older snapshots', async () => {
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
     const consent = within(proposal).getByRole('checkbox');
     await userEvent.click(consent);
     expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
@@ -254,15 +254,15 @@ describe('App inline financial actions', () => {
     corrected.sequence++;
     corrected.preview = scenario('replacement');
     corrected.preview.plan.closingPaise = 234567;
+    corrected.preview.plan.firstGap = { date: '2026-09-16', amountPaise: 123456 };
     act(() => stream.emit('snapshot', corrected));
     expect(consent).not.toBeChecked();
     expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
     act(() => stream.emit('snapshot', saved));
     expect(consent).not.toBeChecked();
-    const after = within(proposal).getByRole('region', { name: 'After · preview' });
-    await userEvent.click(within(after).getByText('More calculated results', { selector: 'summary' }));
-    expect(within(after).getByText('Assumed closing cash').parentElement).toHaveTextContent('₹2,345.67');
-    expect(within(after).getByText('Assumed closing cash').parentElement).toBeVisible();
+    const impact = within(proposal).getByLabelText('First shortfall impact');
+    expect(impact).toHaveTextContent('₹1,234.56 · 16 Sept');
+    expect(impact).toBeVisible();
     expect(api.save).not.toHaveBeenCalled();
     vi.mocked(api.save).mockResolvedValueOnce(projectWorkspace({ ...corrected, revision: 1, sequence: 2, accepted: corrected.preview, preview: null }));
     await userEvent.click(consent);
@@ -282,8 +282,9 @@ describe('App inline financial actions', () => {
       .mockRejectedValueOnce(new TypeError('Response lost again')).mockReturnValueOnce(response.promise);
     const stream = await review();
     act(() => stream.emit('snapshot', saved));
-    await userEvent.click(screen.getByRole('button', { name: 'Return to conversation' }));
-    const answer = screen.getByRole('button', { name: 'I cannot confirm this now' });
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Check payment terms' }));
+    const answer = screen.getByRole('button', { name: 'I can’t confirm or take this step now' });
     await userEvent.click(answer);
     const notice = await screen.findByRole('alert', { name: 'Save not confirmed' });
     await waitFor(() => expect(within(notice).getByRole('button', { name: 'Retry same action' })).toBeEnabled());
@@ -292,20 +293,21 @@ describe('App inline financial actions', () => {
     expect(command).toEqual({ commandId: expect.any(String), expectedRevision: saved.revision,
       operation: { type: 'respondToAction', actionId: 'verifyRent', response: 'unavailable' } });
     expect(answer).toBeDisabled();
-    const proposal = screen.getByRole('region', { name: 'Spending change preview' });
-    expect(within(proposal).getByRole('checkbox')).toBeDisabled();
-    expect(within(proposal).getByRole('button', { name: 'Reject preview' })).toBeDisabled();
+    const proposal = screen.getByRole('article', { name: 'Plan changes', hidden: true });
+    expect(within(proposal).getByRole('checkbox', { hidden: true })).toBeDisabled();
+    expect(within(proposal).getByRole('button', { name: 'Reject preview', hidden: true })).toBeDisabled();
     expect(notice).toBeVisible();
     expect(within(screen.getByRole('complementary', { name: 'Notifications' })).getByRole('alert', { name: 'Save not confirmed' })).toBe(notice);
-    expect(within(screen.getByRole('region', { name: 'Your financial picture' })).queryByRole('alert', { hidden: true })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Your financial picture', hidden: true })).queryByRole('alert', { hidden: true })).not.toBeInTheDocument();
     expect(within(screen.getByRole('main')).queryByText('Your action is not confirmed. Retry the same action before making another change.')).not.toBeInTheDocument();
 
+    await userEvent.click(screen.getByRole('button', { name: 'Close your next step' }));
     await userEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
     const money = within(screen.getByRole('region', { name: 'Money content' }));
     expect(screen.getByRole('main')).toHaveAttribute('data-route', '/money');
-    expect(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Money' })).toHaveAttribute('aria-current', 'page');
+    expect(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Overview' })).toHaveAttribute('aria-current', 'page');
     expect(money.getByRole('button', { name: 'Correct starting cash' })).toBeDisabled();
-    expect(money.getByRole('button', { name: 'I cannot confirm this now' })).toBeDisabled();
+    expect(answer).toBeDisabled();
     expect(money.queryByRole('region', { name: 'Custom changes' })).not.toBeInTheDocument();
     expect(money.queryByRole('alert', { hidden: true })).not.toBeInTheDocument();
     expect(money.queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument();
@@ -322,7 +324,7 @@ describe('App inline financial actions', () => {
     corrected.plan.decisionAssessment!.actions![0].id = 'verifyCurrentTerms';
     corrected.plan.decisionAssessment!.nextActionId = 'verifyCurrentTerms';
     act(() => stream.emit('snapshot', corrected));
-    expect(screen.getByRole('button', { name: 'I cannot confirm this now' })).toBeDisabled();
+    expect(within(proposal).getByRole('checkbox')).toBeDisabled();
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     act(() => stream.onerror?.());
     expect(within(screen.getByRole('alert', { name: 'Save not confirmed' })).getByRole('button', { name: 'Retry same action' })).toBeDisabled();
@@ -342,13 +344,17 @@ describe('App inline financial actions', () => {
     await act(async () => response.resolve(projectWorkspace({ ...saved, revision: 1, sequence: 1, preview: null })));
     expect(screen.queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument();
     expect(screen.queryByRole('alert', { name: 'Save not confirmed' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'I cannot confirm this now' })).toBeEnabled();
-    const after = within(proposal).getByRole('region', { name: 'After · preview' });
+    expect(within(proposal).getByRole('checkbox')).not.toBeChecked();
+    expect(within(proposal).getByRole('checkbox')).toBeEnabled();
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Check payment terms' }));
+    expect(screen.getByRole('button', { name: 'I can’t confirm or take this step now' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Close your next step' }));
+    await userEvent.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Plan changes' }));
+    const after = screen.getByRole('region', { name: 'After · preview' });
     await userEvent.click(within(after).getByText('More calculated results', { selector: 'summary' }));
     expect(within(after).getByText('Assumed closing cash').parentElement).toHaveTextContent('₹2,345.67');
     expect(within(after).getByText('Assumed closing cash').parentElement).toBeVisible();
-    expect(within(proposal).getByRole('checkbox')).not.toBeChecked();
-    expect(within(proposal).getByRole('checkbox')).toBeEnabled();
     expect(api.options).not.toHaveBeenCalled();
     expect(PipecatClient).not.toHaveBeenCalled();
     expect(DailyTransport).not.toHaveBeenCalled();

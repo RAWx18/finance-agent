@@ -5,26 +5,27 @@ import type { Command, Snapshot } from './api';
 import type { Fact } from './WorkspaceDetails';
 import { ConflictReview, incomeChecks, reasons } from './WorkspaceDetails';
 import { Details } from './Dialog';
-import { dateLabel, money } from './money';
+import { amountLabel, amountStatus, budgetDescription, dateLabel, money, scheduleLabel } from './money';
+import { MoneySources } from './MoneyValues';
 import { MoneyIcon } from './MoneyIcon';
 import { PagedList } from './PagedList';
 import type { EditTarget } from './MoneyEdit';
 import { moneyIssues } from './MoneyChecks';
 
 export const coverageLabels = { notDiscussed: 'Not checked', reported: 'Some shared', unknown: 'Not sure', reviewed: 'Reviewed', none: 'None reported' };
-const recurrence = { once: 'Once', weekly: 'Weekly', fortnightly: 'Every two weeks', monthly: 'Monthly' };
-export const amountStatus = { exact: 'Reported', estimate: 'Estimated', unknown: 'Unknown' };
+export { amountStatus } from './money';
 
 export function factStatus(snapshot: Snapshot, field: 'opening' | 'amount' | 'target' | 'outstanding' | 'schedule.date', record?: Fact) {
   if (snapshot.facts.conflicts?.some(item => item.recordId === (record?.id ?? null) && item.field === field)) return 'Conflicting reports';
   if (field === 'schedule.date') return record?.schedule.date ? amountStatus[record.schedule.certainty] : 'Unknown';
+  if (field === 'amount' && record?.schedule.amounts?.length) return 'Varies by occurrence';
   const value = field === 'opening' ? snapshot.facts.opening : record?.[field];
   return value ? amountStatus[value.status] : 'Not supplied';
 }
 
 export function needsCheck(record: Fact, snapshot: Snapshot) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
-  return record.amount.status !== 'exact' || !!record.schedule.date && record.schedule.certainty !== 'exact'
+  return (record.schedule.amounts?.length ? record.schedule.amounts.some(amount => amount.status !== 'exact' || amount.conversion && (amount.conversion.rateStatus !== 'exact' || amount.conversion.feeStatus !== 'exact')) : record.amount.status !== 'exact') || !!record.schedule.date && record.schedule.certainty !== 'exact'
     || record.kind === 'income' && record.reliability !== 'reliable'
     || !!record.target && record.target.status !== 'exact' || !!record.outstanding && record.outstanding.status !== 'exact'
     || snapshot.facts.conflicts?.some(item => item.recordId === record.id)
@@ -43,14 +44,14 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
   const exclusions = [...new Set(snapshot.workspace?.contributions?.filter(item => item.recordId === record.id && !item.included && !item.id.startsWith('proposal:'))
     .map(item => reasons[item.reason]).filter(Boolean))];
   const fieldAmount = (field: 'amount' | 'target' | 'outstanding') => <>
-    <strong>{record[field] ? money(record[field].amountPaise) : 'Not supplied'}</strong>
-    <span className="money-meta">{record[field] || conflicts.some(item => item.field === field) ? factStatus(snapshot, field, record) : ''}</span>
+    <strong>{field === 'amount' && record.schedule.amounts?.length ? 'Varies by occurrence' : record[field] ? amountLabel(record[field]) : 'Not supplied'}</strong>
+    <span className="money-meta">{field === 'amount' && record.schedule.amounts?.length ? '' : record[field] || conflicts.some(item => item.field === field) ? factStatus(snapshot, field, record) : ''}{field === 'amount' && record.schedule.recurrence === 'monthlyBudget' && ' · per calendar month'}</span>
   </>;
   return <li className="money-record" aria-label={record.label}>
     <div className="money-record-head"><div><h3>{record.label}</h3><p className="money-meta">
-      {record.kind === 'income' ? 'Expected' : 'Due'} {record.schedule.date ? dateLabel(record.schedule.date) : 'date unknown'}
+      {record.schedule.recurrence === 'monthlyBudget' ? 'Budget starts' : record.kind === 'income' ? 'Expected' : 'Due'} {record.schedule.date ? dateLabel(record.schedule.date) : 'date unknown'}
       {conflicts.some(item => item.field === 'schedule.date') ? ' · Conflicting dates' : record.schedule.date ? ` · ${amountStatus[record.schedule.certainty]}` : ''}
-      {record.schedule.recurrence !== 'once' && ` · ${recurrence[record.schedule.recurrence]}`}
+      {` · ${scheduleLabel(record.schedule)}`}
     </p></div><div className="money-row-actions no-print">
       <button className="icon-button" disabled={blocked} aria-label={`Edit ${record.label}`} title={`Edit ${record.label}`} onClick={() => onEdit({ recordId: record.id, field: 'amount' })}><MoneyIcon name="edit" /></button>
       <button className="icon-button" disabled={blocked} aria-label={`Remove ${record.label}`} title={`Remove ${record.label}`} onClick={() => onEdit({ recordId: record.id, field: 'delete' })}><MoneyIcon name="remove" /></button>
@@ -61,6 +62,8 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
       <div><dt>Outstanding balance</dt><dd>{fieldAmount('outstanding')}</dd></div>
     </dl> : <p className="money-record-amount">{fieldAmount('amount')}
       {record.kind !== 'income' && <span className="money-meta">{record.kind === 'essential' ? 'Essential' : 'Other spending'}</span>}</p>}
+    {!record.schedule.amounts?.length && <MoneySources record={record} snapshot={snapshot} />}
+    {record.schedule.recurrence === 'monthlyBudget' && <p className="money-meta">{budgetDescription}</p>}
     {events.filter(event => event.amountBasis === 'assumed').map(event => <p className="money-meta" key={event.id}>Current plan: {money(event.amountPaise)} on {dateLabel(event.date)} · Saved assumption, not paid. Reported {record.target ? 'intended payment' : 'amount'} stays unchanged.</p>)}
     {record.kind === 'income' && <p className="money-meta">
       {events.length && events.every(item => item.included) ? 'Included in projected balances · not marked received'
@@ -70,7 +73,8 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
     {missingDate && <p className="money-warning">Date needed · not in dated balances.</p>}
     {!!conflicts.length && <p className="money-warning">Conflicting reports need your check.</p>}
     <Details compact label={`Details for ${record.label}`}>
-      <p>{record.kind === 'debt' ? record.debtType === 'card' ? 'Credit card' : record.debtType === 'loan' ? 'Loan' : record.debtType === 'informal' ? 'Informal borrowing' : 'Debt type not confirmed' : record.kind === 'income' ? 'Expected income' : record.kind === 'essential' ? 'Essential spending' : 'Other spending'} · {recurrence[record.schedule.recurrence]}</p>
+      <p>{record.kind === 'debt' ? record.debtType === 'card' ? 'Credit card' : record.debtType === 'loan' ? 'Loan' : record.debtType === 'informal' ? 'Informal borrowing' : 'Debt type not confirmed' : record.kind === 'income' ? 'Expected income' : record.kind === 'essential' ? 'Essential spending' : 'Other spending'} · {scheduleLabel(record.schedule)}</p>
+      {!!record.schedule.amounts?.length && <MoneySources record={record} snapshot={snapshot} />}
       {record.kind === 'income' ? <><p>{incomeChecks(record).join(' · ') || 'Amount, date and receipt reliability reported.'}</p>{exclusions.map(reason => <p key={reason}>{reason}.</p>)}</>
         : <p>{record.controllability === 'committed' ? 'Already committed' : record.controllability === 'controllable' ? 'Changeable and not committed' : 'Whether this spending can change is not confirmed'}.</p>}
       {record.autoDebit && <p>Automatic debit reported</p>}

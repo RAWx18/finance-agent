@@ -7,14 +7,14 @@ export const settings: Settings = {
   assistantName: 'Isha',
   currency: 'INR', timezone: 'Asia/Kolkata', today: '2026-09-11', horizonDays: 30,
   retentionHours: 24, maxRecords: 200, maxMoneyPaise: 1000000000000, maxRequestBytes: 131072,
-  recurrence: ['once', 'weekly', 'fortnightly', 'monthly'], voiceAvailable: false,
+  recurrence: ['once', 'daily', 'weekly', 'fortnightly', 'monthly', 'monthlyBudget'], voiceAvailable: false,
   voiceStartupSeconds: 45, voiceShutdownSeconds: 10,
   voiceUnavailableReason: 'Missing setup: AZURE_OPENAI_API_KEY, AZURE_OPENAI_ENDPOINT, DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION.', openingBasis: 'Enter available cash and only unpaid or future items.',
 };
 
 export function snapshot(): Snapshot {
   return {
-    sessionId: '51e107ab-efc3-4c40-ac5b-9b7f3a1678a0', revision: 0, sequence: 0,
+    sessionId: '51e107ab-efc3-4c40-ac5b-9b7f3a1678a0', conversationSlug: null, revision: 0, sequence: 0,
     createdAt: '2026-09-11T04:00:00Z', asOf: '2026-09-11T04:00:00Z', expiresAt: '2026-09-12T04:00:00Z',
     anchorDate: '2026-09-11', endDateExclusive: '2026-10-11', currency: 'INR',
     workspace: { cards: [], questions: [], issues: [], results: [], contributions: [], actions: [], choices: [], change: null },
@@ -88,7 +88,7 @@ export function planningSnapshot(): Snapshot {
         revisit: 'Recalculate after a receipt correction, changed obligation or provider response; accepted assumptions are not completed actions.' },
     } };
   saved.facts.records = [{ id: 'rent', label: 'Rent', kind: 'essential', amount: { status: 'exact', amountPaise: 1200000 }, schedule: { date: '2026-09-13', recurrence: 'once', certainty: 'exact' }, autoDebit: false, controllability: 'committed' }];
-  saved.plan.events = [{ id: 'rent:2026-09-13', recordId: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-13', originalDueDate: '2026-09-13', amountPaise: 1200000, amountBasis: 'reported', included: true, overdue: false, autoDebit: false, balancePaise: -700000 }];
+  saved.plan.events = [{ id: 'rent:2026-09-13', recordId: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-13', originalDueDate: '2026-09-13', amountPaise: 1200000, amountBasis: 'reported', amountStatus: 'exact', requiredPaise: null, requiredStatus: 'unknown', source: null, scheduleIndex: 0, included: true, overdue: false, autoDebit: false, balancePaise: -700000 }];
   return projectWorkspace(saved);
 }
 
@@ -131,6 +131,7 @@ export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceO
   saved.plan.events.push({ id: option.eventId, recordId: option.recordId, label: option.label,
     kind: kind === 'reduceOptional' ? 'optional' : 'debt', date: option.date, originalDueDate: option.date,
     amountPaise: option.originalPaise, amountBasis: 'reported', included: true, overdue: false, autoDebit: false,
+    amountStatus: 'exact', requiredPaise: kind === 'cardMinimum' ? option.minimumPaise : null, requiredStatus: kind === 'cardMinimum' ? 'exact' : 'unknown', source: null, scheduleIndex: 0,
     balancePaise: saved.plan.closingPaise });
   saved.plan.decisionAssessment = { ...saved.plan.decisionAssessment,
     choices: [{ id: 'spending-choice', kind, eventIds: [option.eventId], prerequisiteIds: [],

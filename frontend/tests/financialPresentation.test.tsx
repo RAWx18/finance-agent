@@ -10,7 +10,7 @@ import { MoneyChanges } from '../src/MoneyChanges';
 import { MoneyOverview } from '../src/MoneyOverview';
 import { MoneyPrint } from '../src/MoneyPrint';
 import { RecordRow } from '../src/MoneyRecords';
-import { ConflictReview, Correction, ResultDetails } from '../src/WorkspaceDetails';
+import { ConflictReview, ResultDetails } from '../src/WorkspaceDetails';
 import { choiceSnapshot, planningSnapshot, scenario, settings } from './fixtures';
 import { projectWorkspace } from './workspace';
 
@@ -32,17 +32,26 @@ it.each([false, true])('preserves reserve risk on the overview and print (cash g
   saved.facts.reservePaise = 500000;
   saved.plan.reserveShortfallPaise = 200000;
   saved.plan.firstGap = cashGap ? { date: '2026-09-13', amountPaise: 100000 } : null;
-  saved.plan.decisionAssessment!.consequences!.push({ id: 'reserve:breach', kind: 'reserveBreach', eventIds: [], date: '2026-09-13', amountPaise: 100000 });
+  saved.plan.peakGapPaise = cashGap ? 100000 : 0;
+  saved.plan.peakGapDate = cashGap ? '2026-09-13' : null;
+  saved.plan.projectionPartial = false;
+  saved.plan.decisionAssessment!.consequences = [
+    ...(cashGap ? [{ id: 'cash:2026-09-13', kind: 'cashExposure' as const, eventIds: ['rent:2026-09-13'], date: '2026-09-13', amountPaise: 100000 }] : []),
+    { id: 'reserve:breach', kind: 'reserveBreach', eventIds: [], date: '2026-09-13', amountPaise: 100000 },
+  ];
+  saved.plan.decisionAssessment!.outcome = { ...saved.plan.decisionAssessment!.outcome!, branch: cashGap ? 'gap' : 'uncertain',
+    summary: cashGap ? 'Rent needs ₹1,000 on 13 Sept; the cash buffer is also at risk.' : 'Dated payments fit, but the cash buffer is not protected.' };
+  if (!cashGap) { saved.plan.decisionAssessment!.nextActionId = null; saved.workspace!.actions = []; }
   render(<MemoryRouter><MoneyOverview snapshot={saved} blocked={false} onEdit={vi.fn()} onChecks={vi.fn()} onCommand={vi.fn()} /><MoneyPrint snapshot={saved} /></MemoryRouter>);
   const overview = screen.getByRole('region', { name: 'What needs attention' });
-  expect(overview).toHaveTextContent('Cash to keep aside: ₹5,000.00. Largest reserve shortfall: ₹2,000.00');
-  expect(overview).toHaveTextContent('First falls below the reserve on 13 Sept 2026');
+  expect(overview).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer · 13 Sept. Separate from payment shortfalls.');
   expect(overview).not.toHaveTextContent('Some details still need checking');
-  if (cashGap) expect(within(overview).getByRole('heading', { name: 'First funding gap' })).toBeVisible();
-  else expect(within(overview).getByRole('heading', { name: 'Cash to keep aside is not covered' })).toBeVisible();
+  expect(within(overview).getByRole('heading', { name: saved.plan.decisionAssessment!.outcome.summary })).toBeVisible();
+  if (cashGap) expect(within(overview).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 13 Sept');
+  else expect(within(overview).queryByLabelText('First shortfall')).not.toBeInTheDocument();
   const printed = document.querySelector('.money-print')!;
-  expect(printed).toHaveTextContent('Largest reserve shortfall: ₹2,000.00');
-  expect(printed).toHaveTextContent('First falls below the reserve on 13 Sept 2026');
+  expect(printed.querySelector('.plan-reserve')).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer · 13 Sept. Separate from payment shortfalls.');
+  expect(printed.querySelector('.plan-reserve')).not.toHaveTextContent('₹1,000 below');
   expect(printed).not.toHaveTextContent('No gap in the dated figures');
 });
 
@@ -66,45 +75,33 @@ it('shows only accepted occurrence amounts beside unchanged reported facts', () 
 it('keeps estimated minimum-only and automatic-debit qualifiers in the live timeline', () => {
   const saved = choiceSnapshot('cardMinimum');
   const card = saved.facts.records.find(item => item.kind === 'debt')!;
-  card.amount.status = 'estimate'; card.target = { amountPaise: null, status: 'unknown' };
-  saved.plan.events = saved.plan.events.filter(item => item.recordId === card.id).map(item => ({ ...item, amountPaise: card.amount.amountPaise, amountBasis: 'requiredOnly', autoDebit: true }));
-  render(<FinancialContext snapshot={projectWorkspace(saved)} locked={false} stale={false} mode="live" proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
-  const timeline = screen.getByRole('article', { name: 'Dated cash requirements' });
-  expect(timeline).toHaveTextContent('Estimated requirement');
-  expect(timeline).toHaveTextContent('Required / minimum only · intended payment unknown');
-  expect(timeline).toHaveTextContent('Automatic debit reported');
-  expect(timeline).not.toHaveTextContent('Reported requirement');
+  card.amount.status = 'estimate'; card.target = { amountPaise: null, status: 'unknown' }; card.autoDebit = true;
+  saved.plan.events = saved.plan.events.filter(item => item.recordId === card.id).map(item => ({ ...item, amountPaise: card.amount.amountPaise, amountBasis: 'requiredOnly', amountStatus: 'estimate', requiredPaise: card.amount.amountPaise, requiredStatus: 'estimate', autoDebit: true }));
+  render(<FinancialContext snapshot={projectWorkspace(saved)} locked={false} stale={false} proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
+  const row = within(screen.getByRole('article', { name: 'Next & commitments' })).getByRole('listitem', { name: card.label });
+  expect(within(row).getByRole('button', { name: `Edit ${card.label} required amount` })).toHaveTextContent('Est.');
+  expect(within(row).getByRole('button', { name: `Edit ${card.label} target` })).toHaveTextContent('Unknown');
+  expect(row).toHaveTextContent('Minimum only · Target unknown');
+  expect(row).toHaveTextContent('Auto-debit');
 });
 
-it.each(['rejected', 'unconfirmed'] as const)('keeps a correction draft after a %s save, then closes after confirmation', async failure => {
+it('keeps a pending inline cash edit open and prevents another submission', async () => {
   const saved = planningSnapshot();
-  const onCommand = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(saved);
-  if (failure === 'rejected') onCommand.mockReset().mockRejectedValueOnce(new Error('Save rejected')).mockResolvedValueOnce(saved);
-  render(<Correction snapshot={saved} record={saved.facts.records[0]} blocked={false} onCommand={onCommand} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Correct Rent' }));
-  await userEvent.clear(screen.getByLabelText('Amount (₹)')); await userEvent.type(screen.getByLabelText('Amount (₹)'), '6000');
-  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-  expect(screen.getByRole('dialog')).toBeVisible();
-  expect(screen.getByLabelText('Amount (₹)')).toHaveValue('6000');
-  expect(screen.getByRole('alert')).toHaveTextContent('Your entry is kept');
-  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-  expect(onCommand).toHaveBeenCalledTimes(2);
-});
-
-it('keeps a pending correction open and prevents another submission', async () => {
-  const saved = planningSnapshot();
+  const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++; receipt.facts.opening.amountPaise = 600000;
   let confirm!: (value: Snapshot) => void;
   const onCommand = vi.fn(() => new Promise<Snapshot>(resolve => { confirm = resolve; }));
-  render(<Correction snapshot={saved} blocked={false} onCommand={onCommand} />);
-  await userEvent.click(screen.getByRole('button', { name: 'Correct available cash' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-  expect(screen.getByRole('dialog')).toBeVisible();
-  expect(screen.getByRole('button', { name: 'Save correction' })).toBeDisabled();
-  await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-  expect(onCommand).toHaveBeenCalledOnce();
-  await act(async () => confirm(saved));
+  render(<FinancialContext snapshot={saved} locked={false} stale={false} proposalActive onCommand={onCommand} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+  fireEvent.change(screen.getByRole('textbox', { name: 'Cash at plan start' }), { target: { value: '6000' } });
+  await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+  expect(screen.getByRole('form', { name: 'Edit Cash at plan start' })).toBeVisible();
+  expect(screen.getByRole('button', { name: 'Save Cash at plan start' })).toBeDisabled();
+  await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+  expect(onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: saved.revision, opening: { amount: '6000', status: 'exact' } } });
+  await act(async () => { confirm(receipt); });
+  expect(screen.queryByRole('form')).not.toBeInTheDocument();
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Edit Cash at plan start' })).toHaveFocus();
 });
 
 it.each(['amount', 'schedule.date'] as const)('resolves %s with another reported value and preserves estimate certainty after rejection', async field => {
@@ -154,8 +151,13 @@ it('labels estimated calculations in the live card and its explanation', async (
   const saved = planningSnapshot();
   const result = saved.workspace!.results!.find(item => item.id === 'closing')!;
   result.state = 'estimated';
-  const { unmount } = render(<FinancialContext snapshot={saved} locked={false} stale={false} mode="live" proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
-  expect(screen.getByRole('article', { name: 'Dated cash requirements' })).toHaveTextContent('Calculated · Estimated');
+  saved.plan.projectionPartial = true;
+  result.qualifications = ['Uses estimated Rent (INR 12000.00).'];
+  saved.facts.records[0].amount.status = 'estimate'; saved.plan.events[0].amountStatus = 'estimate';
+  const { unmount } = render(<FinancialContext snapshot={saved} locked={false} stale={false} proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
+  const closing = within(screen.getByRole('article', { name: 'Cash & timing' })).getByLabelText('Projected closing cash');
+  expect(closing).toHaveTextContent('Incomplete forecast · Includes estimates · Not a spending allowance');
+  expect(closing).toHaveTextContent('Uses estimated Rent (INR 12000.00).');
   unmount();
   render(<ResultDetails snapshot={saved} result={result} />);
   await userEvent.click(screen.getByRole('button', { name: 'Why this result?' }));

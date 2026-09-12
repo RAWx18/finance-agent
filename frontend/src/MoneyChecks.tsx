@@ -17,6 +17,8 @@ const issueFields: Partial<Record<string, EditTarget['field']>> = {
   amount: 'amount', target: 'target', outstanding: 'outstanding', 'schedule.date': 'schedule.date',
   reliability: 'reliability', controllability: 'controllability', recurrence: 'recurrence', schedule: 'schedule.date',
   'schedule.certainty': 'schedule.date', 'schedule.recurrence': 'recurrence', autoDebit: 'autoDebit', debtType: 'debtType',
+  'schedule.endDate': 'recurrence', 'schedule.count': 'recurrence', 'schedule.amounts': 'amount',
+  'amount.conversion': 'amount',
 };
 
 export function MoneyChecks({ snapshot, open, blocked, onClose, onEdit, onCommand }: {
@@ -30,7 +32,7 @@ export function MoneyChecks({ snapshot, open, blocked, onClose, onEdit, onComman
       {issue.beforeDate && <p className="money-meta">Before {dateLabel(issue.beforeDate)}</p>}
       {issue.recordIds.map(id => {
         const record = snapshot.facts.records.find(item => item.id === id);
-        const field = issueFields[issue.field];
+        const field = issueFields[issue.field] ?? (issue.field.startsWith('schedule.amounts.') || issue.field.startsWith('amount.conversion.') ? 'amount' : undefined);
         return record && field && <button key={id} className="icon-button" disabled={blocked} title={`Edit ${record.label}`} aria-label={`Edit ${record.label}`} onClick={() => { onClose(); onEdit({ recordId: id, field }); }}><MoneyIcon name="edit" /></button>;
       })}
       {issue.field === 'opening' && <button className="icon-button" disabled={blocked} title="Correct starting cash" aria-label="Correct starting cash" onClick={() => { onClose(); onEdit({ field: 'opening' }); }}><MoneyIcon name="edit" /></button>}

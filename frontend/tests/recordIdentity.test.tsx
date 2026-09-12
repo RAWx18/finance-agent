@@ -29,9 +29,9 @@ it.each([true, false])('requires a fresh correction without overwriting the late
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace(confirmed));
   const user = userEvent.setup();
   render(<App />);
-  await user.click(await screen.findByRole('button', { name: /Review saved picture/ }));
   await waitFor(() => expect(Stream.instances).toHaveLength(1));
   act(() => Stream.instances[0].emit('snapshot', saved));
+  await user.click(screen.getByRole('button', { name: 'Start conversation' }));
   await user.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
   await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
   await user.clear(screen.getByRole('textbox', { name: 'Amount (₹)' }));
@@ -59,7 +59,7 @@ it.each([true, false])('requires a fresh correction without overwriting the late
   await user.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Bills & spending' }));
   const office = within(screen.getByRole('listitem', { name: 'Office rent' }));
   expect(office.getByText('₹7,500.00')).toBeVisible();
-  expect(office.getByText('Due 19 Sept 2026 · Reported')).toBeVisible();
+  expect(office.getByText(/Due 19 Sept 2026/)).toBeVisible();
 });
 
 it('keeps an SSE identity conflict through an unrelated manual save and clears it only with corrected server state', async () => {
@@ -93,26 +93,24 @@ it('keeps an SSE identity conflict through an unrelated manual save and clears i
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace(edited));
   const user = userEvent.setup();
   render(<App />);
-  await user.click(await screen.findByRole('button', { name: /Review saved picture/ }));
   await waitFor(() => expect(Stream.instances).toHaveLength(1));
   const stream = Stream.instances[0];
   act(() => { stream.onopen?.(); stream.emit('snapshot', conflict); });
+  await user.click(screen.getByRole('button', { name: 'Start conversation' }));
   const picture = screen.getByRole('region', { name: 'Your financial picture' });
-  const focus = within(picture).getByRole('article', { name: 'Qualified outlook' });
-  const next = within(picture).getByRole('article', { name: 'Information that changes the plan' });
-  expect(focus).toHaveTextContent(reason);
-  expect(focus).toHaveTextContent('Needs checking');
-  expect(focus).not.toHaveTextContent('Known commitments look covered');
-  expect(next).toHaveTextContent(question);
-  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000.00');
-  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept 2026');
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹8,000.00');
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('18 Sept 2026');
-  expect(next).toHaveTextContent(reason);
+  expect(picture).not.toHaveTextContent('Known commitments look covered');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹8,000');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('18 Sept');
 
   const moneyLink = within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
   await waitFor(() => expect(moneyLink).not.toHaveAttribute('aria-disabled', 'true'));
   await user.click(moneyLink);
+  await user.click(screen.getByRole('button', { name: '2 details to review' }));
+  const next = screen.getByRole('dialog', { name: 'Needs your check' });
+  expect(next).toHaveTextContent(question); expect(next).toHaveTextContent(reason);
+  await user.click(within(next).getByRole('button', { name: 'Close needs your check' }));
   await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
   const cash = screen.getByRole('textbox', { name: 'Amount (₹)' });
   await user.clear(cash);
@@ -124,9 +122,9 @@ it('keeps an SSE identity conflict through an unrelated manual save and clears i
   expect(vi.mocked(api.save).mock.calls[0][0]).toEqual({ commandId: expect.any(String), expectedRevision: 1,
     operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '100', status: 'exact' } } } });
   await user.click(await screen.findByRole('button', { name: 'Done' }));
-  await user.click(screen.getByRole('link', { name: 'Continue conversation' }));
-  expect(focus).toBeVisible();
-  expect(focus).toHaveTextContent(reason);
+  await user.click(screen.getByRole('button', { name: '2 details to review' }));
+  expect(next).toBeVisible();
+  expect(next).toHaveTextContent(reason);
   expect(next).toHaveTextContent(question);
   act(() => stream.emit('snapshot', edited));
   expect(next).toHaveTextContent(question);
@@ -138,18 +136,18 @@ it('keeps an SSE identity conflict through an unrelated manual save and clears i
   corrected.facts.records[1].schedule.date = '2026-09-19';
   corrected.plan = structuredClone(saved.plan);
   act(() => stream.emit('snapshot', corrected));
-  expect(focus).not.toHaveTextContent(reason);
+  expect(next).not.toHaveTextContent(reason);
   expect(next).toHaveTextContent(corrected.plan.decisionAssessment!.actions![0].question);
   expect(next).not.toHaveTextContent(question);
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹7,500.00');
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('19 Sept 2026');
-  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000.00');
-  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept 2026');
   act(() => { stream.emit('snapshot', edited); stream.emit('snapshot', conflict); });
-  expect(focus).not.toHaveTextContent(reason);
+  expect(next).not.toHaveTextContent(reason);
   expect(next).not.toHaveTextContent(question);
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹7,500.00');
-  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('19 Sept 2026');
+  await user.click(within(next).getByRole('button', { name: 'Close needs your check' }));
+  await user.click(screen.getByRole('link', { name: 'Continue conversation' }));
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹7,500');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('19 Sept');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept');
   await user.click(moneyLink);
   await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
   expect(screen.getByRole('textbox', { name: 'Amount (₹)' })).toHaveValue('100.00');

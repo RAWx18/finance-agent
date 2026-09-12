@@ -1,139 +1,245 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Command, Snapshot } from '../src/api';
-import { FinancialContext } from '../src/FinancialContext';
+import type { components } from '../src/contracts';
+import { changeNotes, FinancialContext } from '../src/FinancialContext';
+import { cardDate } from '../src/cardFields';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
-import { projectWorkspace } from './workspace';
 
-const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>().mockResolvedValue(planningSnapshot()), stale: false, mode: 'live' as const };
-beforeEach(() => controls.onCommand.mockClear());
+const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>(), stale: false };
+beforeEach(() => { controls.onCommand.mockReset().mockResolvedValue(undefined); });
 const salary = (): Snapshot['facts']['records'][number] => ({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 2500000 }, schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact' }, reliability: 'reliable', autoDebit: false });
-const picture = () => { const saved = planningSnapshot(); saved.facts.records.push(salary()); return projectWorkspace(saved); };
 
-function conflictPicture(field: 'amount' | 'schedule.date' = 'amount') {
-  const saved = picture();
-  saved.facts = { ...saved.facts, conflicts: [{ id: 'conflict-internal', recordId: 'salary', field, values: field === 'amount'
-    ? [{ id: 'first-internal', amountPaise: 2500000, status: 'exact' }, { id: 'second-internal', amountPaise: 3000000, status: 'estimate' }]
-    : [{ id: 'first-internal', date: '2026-09-25', status: 'exact' }, { id: 'second-internal', date: '2026-09-28', status: 'estimate' }] }] };
-  if (field === 'amount') saved.facts.records[1].amount = { status: 'unknown', amountPaise: null };
-  else saved.facts.records[1].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly' };
-  return projectWorkspace(saved);
+// Membership is supplied explicitly; financial calculations and ranking belong to the server.
+function companion(saved: Snapshot): Snapshot {
+  const cards: components['schemas']['WorkspaceCard'][] = [];
+  const add = (template: 'cash' | 'timeline' | 'questions' | 'proposal', title: string, section: components['schemas']['WorkspaceCard']['section']) => {
+    const card: components['schemas']['WorkspaceCard'] = { id: template, template, title, section, state: 'known', recordIds: [], eventIds: [], resultIds: [], issueIds: [], rows: [], dependencies: [] };
+    cards.push(card); return card;
+  };
+  add('cash', 'Cash & timing', 'facts').resultIds = ['opening', 'firstGap', 'closing', 'reserveShortfall'];
+  if (saved.facts.records.length) {
+    const card = add('timeline', 'Next & commitments', 'timeline');
+    card.recordIds = saved.facts.records.map(record => record.id);
+    card.eventIds = (saved.accepted?.plan ?? saved.plan).events.map(event => event.id);
+  }
+  if (saved.workspace?.issues?.length) add('questions', 'Important uncertainty', 'issues').issueIds = [saved.workspace.issues[0].id];
+  if (saved.preview || saved.accepted || saved.invalidatedAssumptions?.length) add('proposal', 'Plan changes', 'decisions');
+  saved.workspace!.cards = cards;
+  return saved;
 }
+const picture = () => { const saved = planningSnapshot(); saved.facts.records.push(salary()); return companion(saved); };
 
-describe('server financial workspace', () => {
-  it.each([null, snapshot()])('keeps blank sessions free of cards, metrics and generic questions', saved => {
+describe('financial companion', () => {
+  it.each([null, snapshot()])('starts with one quiet line and no invented figures', saved => {
     const { container } = render(<FinancialContext {...controls} snapshot={saved} />);
-    expect(screen.getByRole('heading', { name: 'No figures yet' })).toBeVisible();
+    expect(screen.getByText('Figures appear as you talk')).toBeVisible();
     expect(screen.queryByRole('article')).not.toBeInTheDocument();
-    expect(container).not.toHaveTextContent(/₹|What cash was available|Plan focus/);
+    expect(container).not.toHaveTextContent(/₹|coverage|What cash|No figures yet/);
   });
-  it('uses only server card membership, progressively adding and removing grouped facts', () => {
+
+  it('adds and removes only canonical server cards as facts arrive', () => {
     const saved = picture(); saved.workspace!.cards = [];
     const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
     expect(screen.queryByText('Salary')).not.toBeInTheDocument();
-    const learned = projectWorkspace(structuredClone(saved)); rerender(<FinancialContext {...controls} snapshot={learned} />);
-    expect(screen.getByRole('article', { name: 'Expected income' })).toHaveTextContent('Salary');
-    expect(screen.getByRole('article', { name: 'Qualified outlook' })).toHaveTextContent('still taking shape');
-    learned.workspace!.cards = learned.workspace!.cards!.filter(card => card.template !== 'income');
-    rerender(<FinancialContext {...controls} snapshot={{ ...learned }} />);
-    expect(screen.queryByRole('article', { name: 'Expected income' })).not.toBeInTheDocument();
+    rerender(<FinancialContext {...controls} snapshot={companion(structuredClone(saved))} />);
+    expect(screen.getByRole('article', { name: 'Next & commitments' })).toHaveTextContent('Salary');
+    expect(screen.getAllByRole('article')).toHaveLength(2);
+    saved.workspace!.cards = [{ id: 'cash', template: 'cash', title: 'Cash & timing', section: 'facts', state: 'known', resultIds: ['opening'] }];
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved }} />);
+    expect(screen.queryByText('Salary')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Why this result|Your outlook|What you’ve shared/)).not.toBeInTheDocument();
   });
-  it('shows all estimated reliable income exclusions and never substitutes zero for unknown', () => {
-    const saved = picture(); saved.facts.records[1].amount.status = 'estimate'; saved.facts.records[1].schedule.certainty = 'estimate';
-    saved.facts.records[0].amount = { status: 'unknown', amountPaise: null }; saved.facts.records[0].schedule.date = null;
-    render(<FinancialContext {...controls} snapshot={projectWorkspace(saved)} />);
-    const income = screen.getByRole('listitem', { name: 'Salary' }); expect(income).toHaveTextContent('Reliable receipt');
-    expect(income).toHaveTextContent('Excluded from balances: Amount is estimated; Date is estimated or unconfirmed');
-    const rent = screen.getByRole('listitem', { name: 'Rent' }); expect(rent).toHaveTextContent('Unknown'); expect(rent).toHaveTextContent('Date unknown'); expect(rent).not.toHaveTextContent('₹0.00');
-    expect(screen.getByRole('article', { name: 'Available opening cash' })).not.toHaveTextContent('Reserve floor');
-  });
-  it.each(['amount', 'schedule.date'] as const)('resolves %s only with a supplied alternative and explicit confirmation', async field => {
-    const saved = conflictPicture(field); const { rerender, container } = render(<FinancialContext {...controls} snapshot={saved} />);
-    await userEvent.click(screen.getByRole('button', { name: /^Resolve Salary/ }));
-    expect(screen.getByRole('button', { name: 'Confirm selected report' })).toBeDisabled();
-    await userEvent.click(screen.getByRole('radio', { name: /^Report 2/ })); expect(controls.onCommand).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Confirm selected report' }));
-    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', changes: { expectedRevision: saved.revision, resolutions: [{ conflictId: 'conflict-internal', value: { id: 'second-internal', status: 'estimate', ...(field === 'amount' ? { amount: '30000.00' } : { date: '2026-09-28' }) } }] } });
-    expect(screen.getByRole('button', { name: /^Resolve Salary/ })).toBeVisible();
-    const resolved = structuredClone(saved); resolved.facts = { ...resolved.facts, conflicts: [] }; resolved.revision++;
-    rerender(<FinancialContext {...controls} snapshot={projectWorkspace(resolved)} />);
-    expect(screen.queryByRole('button', { name: /^Resolve Salary/ })).not.toBeInTheDocument();
-    expect(container).not.toHaveTextContent(/conflict-internal|second-internal|workspace.results|conditionalReceipt/);
-  });
-  it('retains focus, scroll and server correction deltas across coalesced snapshots', async () => {
-    const saved = picture(); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
-    const row = screen.getByRole('listitem', { name: 'Salary' }); const button = screen.getByRole('button', { name: 'Correct Salary' }); button.focus();
-    const scroll = screen.getByRole('region', { name: 'Financial picture details' }); scroll.scrollTop = 200;
-    const corrected = structuredClone(saved); corrected.sequence = 4; corrected.revision = 2; corrected.facts.records[1].amount.amountPaise = 3000000;
-    corrected.workspace!.change = { id: 'change-one', revision: 2, items: [
-      { id: 'salary', state: 'updated', fields: [{ reference: 'facts.records.salary.amount.amountPaise', before: 2500000, after: 3000000 }], recordIds: ['salary'], cardIds: ['income', 'timeline'], resultIds: ['closing'] },
-      { id: 'closing', state: 'updated', fields: [{ reference: 'workspace.results.closing.amountPaise', before: 1000000, after: 1500000 }], recordIds: [], cardIds: ['timeline'], resultIds: ['closing'] },
-    ] };
-    corrected.workspace!.results!.find(result => result.id === 'closing')!.amountPaise = 1500000;
-    rerender(<FinancialContext {...controls} snapshot={corrected} />);
-    expect(screen.getByRole('listitem', { name: 'Salary' })).toBe(row); expect(button).toHaveFocus(); expect(scroll.scrollTop).toBe(200);
-    expect(screen.getByRole('article', { name: 'Expected income' })).toHaveAttribute('data-changed', 'true');
-    rerender(<FinancialContext {...controls} snapshot={{ ...corrected, sequence: 5, workspace: { ...corrected.workspace, change: null } }} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Recent changes' }));
-    const dialog = screen.getByRole('dialog', { name: 'Recent changes' }); expect(dialog).toHaveTextContent('Projected closing cash: ₹10,000.00 → ₹15,000.00'); expect(dialog).toHaveTextContent('earlier cash gap amount and date are unchanged');
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Close recent changes' })); expect(screen.getByRole('button', { name: 'Recent changes' })).toHaveFocus();
-  });
-  it('sends targeted rupee corrections and protects drafts across revision changes', async () => {
-    const saved = picture(); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Correct Salary' }));
-    const dialog = within(screen.getByRole('dialog', { name: 'Correct Salary' }));
-    await userEvent.clear(dialog.getByLabelText('Amount (₹)')); await userEvent.type(dialog.getByLabelText('Amount (₹)'), '31000.25');
-    await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', changes: { expectedRevision: 0, records: [{ id: 'salary', delete: false, distinct: false, amount: { status: 'exact', amount: '31000.25' } }] } });
-    await userEvent.click(screen.getByRole('button', { name: 'Correct Salary' })); rerender(<FinancialContext {...controls} snapshot={{ ...saved, revision: 1 }} />);
-    expect(screen.getByRole('button', { name: 'Save correction' })).toBeDisabled(); expect(screen.getByRole('alert')).toHaveTextContent('Saved figures changed');
-  });
-  it.each(['locked', 'stale'] as const)('blocks conflict confirmation and refusal while %s', async reason => {
-    const saved = conflictPicture(); saved.preview = scenario(); projectWorkspace(saved); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
-    await userEvent.click(screen.getByRole('button', { name: /^Resolve Salary/ })); await userEvent.click(screen.getByRole('radio', { name: /^Report 2/ }));
-    rerender(<FinancialContext {...controls} snapshot={saved} {...{ [reason]: true }} />);
-    expect(screen.getByRole('button', { name: 'Confirm selected report' })).toBeDisabled(); await userEvent.keyboard('{Escape}');
-    expect(screen.getByRole('button', { name: 'Correct Salary' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Reject preview' })).toBeDisabled(); expect(controls.onCommand).not.toHaveBeenCalled();
-  });
-  it.each(['opening', 'closing', 'firstGap'] as const)('explains %s using server contributions and assumptions', async id => {
-    const saved = picture(); saved.plan.events = [{ id: 'rent-event', recordId: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-13', originalDueDate: '2026-09-13', amountPaise: 1200000, amountBasis: 'reported', included: true, overdue: false, autoDebit: false, balancePaise: -700000 }]; projectWorkspace(saved);
-    const result = saved.workspace!.results!.find(result => result.id === id)!; result.amountPaise = 123456;
-    saved.workspace!.contributions!.push({ id: 'excluded', recordId: 'salary', eventId: null, date: null, amountPaise: 2500000, included: false, reason: 'unknownDate', references: [] }); result.excludedIds.push('excluded');
+
+  it('keeps the supplied priority order, four rows and one deduplicated material issue', async () => {
+    const saved = picture();
+    saved.facts.records.push(...Array.from({ length: 4 }, (_, index) => ({ ...salary(), id: `extra${index}`, label: `Receipt ${index}` })));
+    saved.workspace!.issues = [{ id: 'uncertain-extra', kind: 'uncertain', field: 'reliability', recordIds: ['extra3'], priority: 1, changes: [], blocks: [], question: 'Is Receipt 3 confirmed?', reason: 'Receipt 3 is not assured and cannot fund the earlier payment.' }];
+    companion(saved);
+    const order = ['salary', 'rent', 'extra1', 'extra0', 'extra3', 'extra2'];
+    saved.workspace!.cards!.find(card => card.id === 'timeline')!.recordIds = order;
     render(<FinancialContext {...controls} snapshot={saved} />);
-    const card = screen.getByRole('article', { name: id === 'opening' ? 'Available opening cash' : id === 'closing' ? 'Dated cash requirements' : 'Cash gap and timing risk' });
-    await userEvent.click(within(card).getAllByRole('button', { name: 'Why this result?' })[0]);
-    const dialog = screen.getByRole('dialog'); expect(dialog).toHaveTextContent('₹1,234.56'); expect(dialog).toHaveTextContent('Opening cash'); expect(dialog).toHaveTextContent('Date is unknown; not in dated balances'); expect(dialog).toHaveTextContent('Unreported amounts are unknown, not zero'); expect(dialog).not.toHaveTextContent(/rent-event|unknownDate/);
+    const list = screen.getByRole('list', { name: 'Next commitments' });
+    expect(within(list).getAllByRole('listitem').map(row => row.getAttribute('aria-label'))).toEqual(['Salary', 'Rent', 'Receipt 1', 'Receipt 0']);
+    const uncertainty = screen.getByRole('article', { name: 'Important uncertainty' });
+    expect(uncertainty).toHaveTextContent('Receipt 3 · Receipt');
+    expect(screen.queryByText('Is Receipt 3 confirmed?')).not.toBeInTheDocument();
+    const reason = within(uncertainty).getByText('Receipt 3 is not assured and cannot fund the earlier payment.');
+    expect(reason).not.toBeVisible();
+    await userEvent.click(within(uncertainty).getByText('Why this matters', { selector: 'summary' }));
+    expect(reason).toBeVisible();
+    const salaryRow = within(list).getByRole('listitem', { name: 'Salary' });
+    screen.getByRole('button', { name: 'Show 2 more' }).focus(); await userEvent.keyboard('{Enter}');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(6);
+    expect(within(list).getByRole('listitem', { name: 'Salary' })).toBe(salaryRow);
+    expect(screen.queryByRole('article', { name: 'Important uncertainty' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show fewer commitments' })).toHaveAttribute('aria-expanded', 'true');
   });
-  it.each(['rejectPreview', 'discardPreview'] as const)('distinguishes %s and waits for server confirmation', async type => {
-    const saved = picture(); saved.preview = scenario(); projectWorkspace(saved); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
-    await userEvent.click(screen.getByRole('button', { name: type === 'rejectPreview' ? 'Reject preview' : 'Close preview' }));
-    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type, previewId: saved.preview.id }); expect(screen.getByRole('region', { name: 'Spending change preview' })).toBeVisible();
-    const completed = structuredClone(saved); completed.preview = null; completed.workspace!.change = { id: 'decision', revision: 0, items: [{ id: 'preview', state: type === 'rejectPreview' ? 'rejected' : 'discarded', fields: [], cardIds: [], resultIds: [], recordIds: [] }] };
-    rerender(<FinancialContext {...controls} snapshot={projectWorkspace(completed)} />);
-    expect(screen.queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument(); expect(screen.getByRole('status')).toHaveTextContent(type === 'rejectPreview' ? 'refusal saved' : 'not a refusal');
+
+  it('shows cash basis and the first shortfall once, without spendable or completed claims', () => {
+    const saved = picture(); saved.anchorDate = '2026-09-12'; saved.facts.opening.amountPaise = 60000000;
+    saved.plan.firstGap = { date: '2026-09-13', amountPaise: 800000 };
+    saved.workspace!.results!.find(result => result.id === 'firstGap')!.amountPaise = 800000;
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(cash).toHaveTextContent('₹6,00,000'); expect(cash).not.toHaveTextContent('₹6,00,000.00');
+    expect(cash).toHaveTextContent(`As of ${cardDate(saved.anchorDate)} · Reported, not a bank feed`);
+    expect(screen.getAllByLabelText('First shortfall')).toHaveLength(1);
+    const summary = screen.getByRole('region', { name: 'What needs attention' });
+    expect(within(summary).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
+    expect(within(summary).getByLabelText('First shortfall')).toHaveTextContent('₹8,000First shortfall · 13 Sept');
+    expect(within(cash).queryByLabelText('First shortfall')).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText('Projected closing cash')).toHaveLength(1);
+    expect(within(screen.getByLabelText('Projected closing cash')).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(screen.getByLabelText('First shortfall')).queryByRole('button')).not.toBeInTheDocument();
+    expect(cash).not.toHaveTextContent(/available to spend|paid|Keep aside/);
   });
-  it.each(['sequence', 'revision', 'stale', 'locked', 'proposalActive'] as const)('resets exact proposal consent after %s changes', async field => {
-    const saved = picture(); saved.preview = scenario(); projectWorkspace(saved); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
-    await userEvent.click(screen.getByRole('checkbox')); expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
-    const updated = structuredClone(saved); if (field === 'sequence' || field === 'revision') updated[field]++;
-    rerender(<FinancialContext {...controls} snapshot={updated} {...(field === 'stale' || field === 'locked' ? { [field]: true } : field === 'proposalActive' ? { proposalActive: false } : {})} />); rerender(<FinancialContext {...controls} snapshot={saved} />);
-    expect(screen.getByRole('checkbox')).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled(); expect(controls.onCommand).not.toHaveBeenCalled();
+
+  it('distinguishes zero, unknown and estimated sources without global decimal formatting changes', () => {
+    const saved = picture(); saved.facts.records[0].amount = { amountPaise: 0, status: 'exact' };
+    saved.facts.records[1].amount = { amountPaise: 2500025, status: 'estimate' };
+    saved.facts.records[1].schedule = { ...saved.facts.records[1].schedule, date: null, certainty: 'unknown' };
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.getByRole('button', { name: 'Edit Rent amount' })).toHaveTextContent('₹0');
+    expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('₹25,000.25');
+    expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('Est.');
+    expect(screen.getByRole('button', { name: 'Edit Salary series start' })).toHaveTextContent('Expected Unknown');
   });
-  it('saves exact consent and keeps accepted and invalidated assumptions separate from facts', async () => {
-    const saved = picture(); saved.preview = scenario(); projectWorkspace(saved); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+
+  it.each(['amount', 'date', 'name'] as const)('sends only the inline %s correction with human provenance', async field => {
+    const saved = picture(); const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    if (field === 'amount') receipt.facts.records[0].amount.amountPaise = 1230025;
+    else if (field === 'date') receipt.facts.records[0].schedule.date = '2026-09-18';
+    else receipt.facts.records[0].label = 'Home rent';
+    controls.onCommand.mockResolvedValue(receipt);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: `Edit Rent ${field}` }));
+    const input = screen.getByLabelText(`Rent ${field}`, { selector: 'input' });
+    fireEvent.change(input, { target: { value: field === 'amount' ? '12300.25' : field === 'date' ? '2026-09-18' : 'Home rent' } });
+    await userEvent.click(screen.getByRole('button', { name: `Save Rent ${field}` }));
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0, records: [{ id: 'rent', delete: false, distinct: false,
+      ...(field === 'amount' ? { amount: { amount: '12300.25', status: 'exact' } } : field === 'date' ? { schedule: { date: '2026-09-18', certainty: 'exact' } } : { label: 'Home rent' }),
+    }] } });
+    expect(screen.queryByRole('form')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: `Edit Rent ${field}` })).toHaveFocus();
+    expect(screen.getByRole('listitem', { name: 'Rent' })).toBeVisible();
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(screen.getByRole('listitem', { name: field === 'name' ? 'Home rent' : 'Rent' })).toBeVisible();
+  });
+
+  it('keeps editing and scroll stable on background updates and blocks a stale draft', async () => {
+    const saved = picture(); const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    const row = screen.getByRole('listitem', { name: 'Salary' });
+    const scroll = screen.getByRole('region', { name: 'Financial picture details' }); scroll.scrollTop = 150;
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Salary amount' }));
+    const input = screen.getByLabelText('Salary amount', { selector: 'input' });
+    fireEvent.change(input, { target: { value: '31000.25' } }); input.focus();
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, sequence: 1 }} />);
+    expect(input).toHaveValue('31000.25'); expect(input).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Save Salary amount' })).toBeEnabled();
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, revision: 1, sequence: 2 }} />);
+    expect(input).toHaveValue('31000.25'); expect(screen.getByRole('button', { name: 'Save Salary amount' })).toBeDisabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('Saved figures changed');
+    expect(row).toBe(screen.getByRole('listitem', { name: 'Salary' })); expect(scroll.scrollTop).toBe(150);
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Salary amount' }));
+    expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveFocus(); expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('shows a monthly source budget once, with a series start instead of daily due rows', async () => {
+    const saved = picture(); const record = saved.facts.records[0]; record.schedule.recurrence = 'monthlyBudget'; record.schedule.date = '2026-08-01';
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const row = screen.getByRole('listitem', { name: 'Rent' });
+    expect(row).toHaveTextContent('₹12,000/month'); expect(row).toHaveTextContent('Daily forecast · not a payment due');
+    expect(within(row).getByRole('button', { name: 'Edit Rent series start' })).toHaveTextContent(`Starts ${cardDate('2026-08-01')}`);
+    await userEvent.click(within(row).getByRole('button', { name: 'Edit Rent series start' }));
+    expect(screen.getByLabelText('Rent series start', { selector: 'input' })).toHaveValue('2026-08-01');
+  });
+
+  it('keeps debt required, target and outstanding values in their own editable fields', () => {
+    const saved = picture(); saved.facts.records[0] = { ...saved.facts.records[0], kind: 'debt', debtType: 'card', target: { amountPaise: null, status: 'unknown' }, outstanding: { amountPaise: 8000000, status: 'exact' } };
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.getByRole('button', { name: 'Edit Rent target' })).toHaveTextContent('Unknown');
+    expect(screen.getByRole('button', { name: 'Edit Rent required amount' })).toHaveTextContent('₹12,000');
+    expect(screen.getByRole('button', { name: 'Edit Rent outstanding' })).toHaveTextContent('₹80,000');
+    expect(screen.getByRole('listitem', { name: 'Rent' })).toHaveTextContent('Target · includes minimum');
+  });
+
+  it('uses the selected event scheduleIndex for an inline foreign occurrence correction', async () => {
+    const saved = picture();
+    const conversion = { currency: 'USD', rate: '83.5', rateStatus: 'estimate' as const, rateDate: '2026-09-12', fee: '50.25', feeStatus: 'exact' as const };
+    saved.facts.records[1].schedule.amounts = [{ amount: '100', status: 'exact', conversion }, { amount: '200.25', status: 'estimate', conversion }];
+    saved.facts.records[1].amount = { amountPaise: null, status: 'unknown' };
+    saved.plan.events.push({ ...saved.plan.events[0], id: 'salary:second', recordId: 'salary', kind: 'income', label: 'Salary', amountPaise: 1667063, amountStatus: 'estimate', scheduleIndex: 1, date: '2026-09-25', source: saved.facts.records[1].schedule.amounts[1] });
+    companion(saved); saved.workspace!.cards!.find(card => card.id === 'timeline')!.eventIds = ['rent:2026-09-13', 'salary:second'];
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const row = screen.getByRole('listitem', { name: 'Salary' });
+    expect(row).toHaveTextContent('USD 200.25'); expect(row).toHaveTextContent('Occurrence 2 of 2');
+    expect(screen.getByLabelText('Salary calculated net INR')).toHaveTextContent('₹16,670.63');
+    expect(within(screen.getByLabelText('Salary calculated net INR')).queryByRole('button')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Salary occurrence 2 amount' }));
+    const input = screen.getByRole('textbox', { name: 'Salary occurrence 2 amount (USD)' }); expect(input).toHaveValue('200.25');
+    fireEvent.change(input, { target: { value: '225.75' } }); await userEvent.click(screen.getByRole('button', { name: 'Save Salary occurrence 2 amount' }));
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0, records: [{ id: 'salary', delete: false, distinct: false, schedule: { amounts: [saved.facts.records[1].schedule.amounts[0], { amount: '225.75', status: 'estimate', conversion }] } }] } });
+    expect(screen.getByLabelText('Salary calculated net INR')).toHaveTextContent('₹16,670.63');
+  });
+
+  it('preserves MoneyPage changeNotes formatting and the earlier-gap qualification', () => {
+    const saved = picture();
+    const change: components['schemas']['WorkspaceChange'] = { id: 'change', revision: 1, items: [{ id: 'closing', state: 'updated', fields: [{ reference: 'workspace.results.closing.amountPaise', before: 1000000, after: 1500000 }] }] };
+    expect(changeNotes(saved, change)).toEqual(['The earlier cash gap amount and date are unchanged.', 'Projected closing cash: ₹10,000.00 → ₹15,000.00']);
+  });
+});
+
+describe('compact plan changes', () => {
+  it('requires every change and removal to be visible before unconditional whole-proposal consent', async () => {
+    const saved = picture(); saved.preview = scenario(); saved.accepted = scenario('accepted');
+    saved.accepted.adjustments[0] = { ...saved.accepted.adjustments[0], eventId: 'removed', label: 'Prior purchase' };
+    saved.preview.adjustments = Array.from({ length: 3 }, (_, index) => ({ ...saved.preview!.adjustments[0], eventId: `change${index}`, label: `Purchase ${index}` }));
+    saved.preview.removedAssumptionIds = ['removed']; companion(saved);
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
+    expect(within(proposal).getAllByRole('listitem')).toHaveLength(2); expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Show 2 more changes' }));
+    expect(proposal).toHaveTextContent('Purchase 2'); expect(proposal).toHaveTextContent('Prior purchase'); expect(proposal).toHaveTextContent('Remove saved assumption');
+    expect(screen.getByRole('checkbox')).toHaveAccessibleName(/unconditionally—not dependent on uncertain income or payee agreement/);
     await userEvent.click(screen.getByRole('checkbox')); await userEvent.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
     expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'acceptPreview', previewId: saved.preview.id, confirmed: true, consentScope: 'unconditional' });
-    const accepted = structuredClone(saved); accepted.accepted = accepted.preview; accepted.preview = null; accepted.accepted!.adjustments[0].acceptedRevision = 1;
-    rerender(<FinancialContext {...controls} snapshot={projectWorkspace(accepted)} />); expect(screen.getByRole('article', { name: /Accepted planning assumptions/ })).toHaveTextContent('Accepted does not mean paid');
-    accepted.invalidatedAssumptions = [{ eventId: 'optional:2026-09-27', reason: 'The reported amount changed; confirm a fresh proposal.' }];
-    rerender(<FinancialContext {...controls} snapshot={projectWorkspace({ ...accepted })} />); expect(screen.getByRole('article', { name: 'Assumptions need confirmation again' })).toHaveTextContent('The reported amount changed');
+    expect(proposal).toHaveTextContent('First shortfall · Calculated'); expect(proposal).not.toHaveTextContent('Projected closing cash');
+    expect(screen.getByRole('alert')).toHaveTextContent('Decision not confirmed');
   });
-  it('bounds grouped records with keyboard-operable pagination', async () => {
-    const saved = picture(); saved.facts.records = Array.from({ length: 25 }, (_, index) => ({ ...salary(), id: `income${index}`, label: `Income ${index}` })); render(<FinancialContext {...controls} snapshot={projectWorkspace(saved)} />);
-    const group = screen.getByRole('article', { name: 'Expected income' }); expect(within(group).getAllByRole('listitem')).toHaveLength(20);
-    within(group).getByRole('button', { name: 'Next' }).focus(); await userEvent.keyboard('{Enter}'); expect(within(group).getByRole('listitem', { name: 'Income 24' })).toBeVisible(); expect(within(group).getAllByRole('listitem')).toHaveLength(5);
+
+  it.each(['sequence', 'revision', 'stale', 'locked', 'proposalActive'] as const)('invalidates consent after %s changes', async field => {
+    const saved = picture(); saved.preview = scenario(); companion(saved);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('checkbox')); expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    const changed = structuredClone(saved); if (field === 'revision' || field === 'sequence') changed[field]++;
+    rerender(<FinancialContext {...controls} snapshot={changed} {...(field === 'locked' || field === 'stale' ? { [field]: true } : field === 'proposalActive' ? { proposalActive: false } : {})} />);
+    expect(screen.getByRole('checkbox')).not.toBeChecked(); expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    rerender(<FinancialContext {...controls} snapshot={saved} />); expect(screen.getByRole('checkbox')).not.toBeChecked();
+  });
+
+  it.each(['rejectPreview', 'discardPreview'] as const)('keeps %s distinct and displays only the authoritative decision state', async type => {
+    const saved = picture(); saved.preview = scenario(); companion(saved);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: type === 'rejectPreview' ? 'Reject preview' : 'Close preview' }));
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type, previewId: saved.preview.id });
+    expect(screen.getByRole('article', { name: 'Plan changes' })).toBeVisible();
+    const receipt = structuredClone(saved); receipt.preview = null;
+    receipt.workspace!.change = { id: 'receipt', revision: 0, items: [{ id: 'preview', state: type === 'rejectPreview' ? 'rejected' : 'discarded' }] };
+    rerender(<FinancialContext {...controls} snapshot={companion(receipt)} />);
+    expect(screen.queryByRole('article', { name: 'Plan changes' })).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(type === 'rejectPreview' ? 'refusal saved' : 'not a refusal');
+  });
+
+  it('merges saved and invalidated assumptions into one card without source edit buttons', () => {
+    const saved = picture(); saved.accepted = scenario('accepted'); saved.invalidatedAssumptions = [{ eventId: 'rent:2026-09-13', reason: 'Amount changed.' }]; companion(saved);
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const proposal = screen.getByRole('article', { name: 'Plan changes' });
+    expect(proposal).toHaveTextContent('Saved assumptions · not paid'); expect(proposal).toHaveTextContent('Needs fresh consent');
+    expect(within(proposal).queryByRole('button', { name: /^Edit / })).not.toBeInTheDocument(); expect(within(proposal).queryByRole('checkbox')).not.toBeInTheDocument();
   });
 });

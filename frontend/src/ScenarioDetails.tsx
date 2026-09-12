@@ -4,8 +4,9 @@ import { useId, useState } from 'react';
 import type { Ref } from 'react';
 import type { Command, Plan, Scenario, Snapshot } from './api';
 import { Details, Dialog } from './Dialog';
-import { dateLabel, money } from './money';
+import { amountLabel, dateLabel, money, scheduleLabel, sourceDescription } from './money';
 import { PagedList } from './PagedList';
+import { GapFigure } from './PlanSummary';
 
 type Action = NonNullable<NonNullable<Plan['decisionAssessment']>['actions']>[number];
 export const outcomeLabels = {
@@ -26,13 +27,18 @@ export function ActionDetails({ action, plan, facts }: { action: Action; plan: P
     {action.beforeDate && <p>Before {dateLabel(action.beforeDate)}</p>}
     {action.recordIds.map(id => {
       const record = facts.records.find(item => item.id === id);
-      return record && <p key={id}>{record.label} · {record.kind === 'debt' ? 'Required / minimum' : 'Reported'} {money(record.amount.amountPaise)}
-        {record.schedule.date ? <> · {record.kind === 'income' ? 'Expected' : 'Due'} {dateLabel(record.schedule.date)}</> : ' · Date unknown'}
+      return record && <p key={id}>{record.label} · {record.kind === 'debt' ? 'Required / minimum' : 'Reported'} {record.schedule.amounts?.length ? 'Varies by occurrence' : amountLabel(record.amount)}
+        {record.schedule.date ? <> · {record.schedule.recurrence === 'monthlyBudget' ? 'Budget starts' : record.kind === 'income' ? 'Expected' : 'Due'} {dateLabel(record.schedule.date)}</> : ' · Date unknown'}
+        {' · '}{scheduleLabel(record.schedule)}{record.schedule.recurrence === 'monthlyBudget' && ' · Amount per calendar month, distributed as a daily estimate, not a payment due'}
+        {record.amount.source?.conversion && <> · {sourceDescription(record.amount.source)}</>}
       </p>;
     })}
     {(plan.decisionAssessment?.consequences ?? []).filter(item => action.consequenceIds.includes(item.id) && item.kind !== 'conditionalIncome').map(item => <p key={item.id}>
-      {item.kind === 'cashExposure' ? 'Unmet commitments' : 'Reserve shortfall'}: {money(item.amountPaise)}{item.date && <> on {dateLabel(item.date)}</>}
-      {action.ifDeclinedConsequenceIds.includes(item.id) && <> · Remains if the payee declines; no agreement is assumed.</>}
+      {item.kind === 'cashExposure' ? plan.timingRisks?.some(risk => risk.date === item.date) ? 'Timing exposure' : 'Unmet commitments' : 'Reserve shortfall'}: {money(item.amountPaise)}{item.date && <> on {dateLabel(item.date)}</>}
+      {action.ifDeclinedConsequenceIds.includes(item.id) && (['contactPayee', 'verifyTerms', 'followUp'].includes(action.kind)
+        ? <> · Remains if payment terms do not change; no agreement is assumed.</>
+        : action.kind === 'seekSupport' ? <> · Still needs funding; support is not confirmed.</>
+          : <> · Remains unless a workable change is confirmed.</>)}
     </p>)}
     {choice && <>
       {choice.adjustmentAmounts.map(item => {
@@ -72,7 +78,7 @@ export function PlanComparison({ baseline, assumed, reserve, label, beforeLabel 
       {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p>These balances are not available to spend.</p>}
       <p className="money-meta">Calculated</p>
       <dl className="comparison-values">
-        <div><dt>First cash gap</dt><dd>{plan.firstGap ? <>{money(plan.firstGap.amountPaise)} · {dateLabel(plan.firstGap.date)}</> : plan.closingPaise === null ? 'Unknown' : 'None in dated figures'}</dd></div>
+        <div><dt>{plan.timingRisks?.some(item => item.date === plan.firstGap?.date) ? 'Timing risk' : 'First cash gap'}</dt><dd>{plan.firstGap ? <GapFigure plan={plan} /> : plan.closingPaise === null ? 'Unknown' : 'None in dated figures'}</dd></div>
       </dl>
       <details className="money-comparison-details"><summary>More calculated results</summary><dl className="comparison-values">
         <div><dt>Largest cash gap</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div>

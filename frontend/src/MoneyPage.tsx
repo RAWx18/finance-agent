@@ -44,22 +44,22 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
   return <section className="money-page" hidden={!active} aria-labelledby="money-heading">
     <header className="money-heading"><div className="money-title">
       {route !== '/money' && <Link to="/money" className="button icon-button" aria-label="Back to Money" title="Back to Money"><MoneyIcon name="back" /></Link>}
-      <div><h1 id="money-heading" tabIndex={-1}>{title}</h1><p className="money-meta">{snapshot ? <>30-day plan · {dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</> : 'Your next 30 days'}</p></div>
-    </div><div className="money-heading-actions no-print"><Link className="button money-continue" to="/app" aria-label="Continue conversation" title="Continue conversation"><MoneyIcon name="talk" /><span>Continue conversation</span></Link>
+      <div><h1 id="money-heading" tabIndex={-1}>{title}</h1><p className="money-meta">{snapshot ? <>{snapshot.anchorDate.slice(0, 4) === lastDate(snapshot.endDateExclusive).slice(0, 4) ? dateLabel(snapshot.anchorDate).replace(/ \d{4}$/, '') : dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</> : 'Your next 30 days'}</p></div>
+    </div><div className="money-heading-actions no-print"><Link className="button money-continue" to="/app" aria-label="Continue conversation" title="Continue conversation"><MoneyIcon name="talk" /><span>Talk it through</span></Link>
       {snapshot && <button className="icon-button" title="Plan tools" aria-label="Plan tools" aria-haspopup="dialog" onClick={() => setTools(true)}><MoneyIcon name="more" /></button>}
     </div></header>
     <div className="money-layout">
-      <nav className="money-nav no-print" aria-label="Money navigation">{Object.entries(moneyRoutes).map(([path, label]) => <NavLink end key={path} to={path}>{label}</NavLink>)}</nav>
-      <label className="money-mobile-nav no-print"><span className="sr-only">Browse Money</span><select value={route} onChange={event => void navigate(event.target.value)}>{Object.entries(moneyRoutes).map(([path, label]) => <option key={path} value={path}>{label}</option>)}</select></label>
+      <nav className="money-nav no-print" aria-label="Money navigation">{Object.entries(moneyRoutes).map(([path, label]) => <NavLink end key={path} to={path}>{path === '/money' ? 'Overview' : label}</NavLink>)}</nav>
+      <label className="money-mobile-nav no-print"><span className="sr-only">Browse Money</span><select value={route} onChange={event => void navigate(event.target.value)}>{Object.entries(moneyRoutes).map(([path, label]) => <option key={path} value={path}>{path === '/money' ? 'Overview' : label}</option>)}</select></label>
       <div className="money-content" role="region" aria-label={`${title} content`}>
         {state.phase === 'loading' && <p role="status">Loading your saved plan…</p>}
         {state.phase === 'empty' && <section className="money-panel money-empty"><h2>No plan yet</h2><p>Talk through your money or start a blank plan and add what you know.</p><button className="primary" disabled={state.busy || voiceBusy} onClick={() => void perform('start')}>{state.busy ? 'Starting…' : 'Start a blank plan'}</button></section>}
         {snapshot && settings && <>
           <div className="money-context">
-            <p className="money-basis">Reported by you · not a live bank balance</p>
+            <p className="money-basis">Based on what you’ve shared</p>
             {stale && <p className="money-warning" role="status">Updates paused · showing your saved plan</p>}
             {state.messageKind === 'status' && !edit && <p role="status" className="sr-only">{state.message}</p>}
-            {!!notes.length && <div className="money-update"><span>Saved changes</span><p role="status" className="sr-only">{notes[0]}</p><Details compact label="Recent changes"><PagedList label="Recent changes" className="money-checks" pageSize={6}>{notes.map(note => <li key={note}>{note}</li>)}</PagedList></Details></div>}
+            {!!notes.length && <div className="money-update"><p role="status" className="sr-only">{notes[0]}</p><Details label="Recent changes"><PagedList label="Recent changes" className="money-checks" pageSize={6}>{notes.map(note => <li key={note}>{note}</li>)}</PagedList></Details></div>}
           </div>
           <div className="money-views" data-page={route} tabIndex={0} aria-label={`${title} details`} role="region">
             {route === '/money' && <MoneyOverview snapshot={snapshot} blocked={blocked} onEdit={openEdit} onChecks={() => setChecks(true)} onCommand={command} />}

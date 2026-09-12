@@ -18,7 +18,54 @@ export function parseAmount(value: string, limit: number): bigint | null {
 }
 
 export function moneyInput(value: components['schemas']['Money']): MoneyInput {
-  return { amount: value.amountPaise === null ? null : decimal(value.amountPaise), status: value.status };
+  return value.source ? structuredClone(value.source) : { amount: value.amountPaise === null ? null : decimal(value.amountPaise), status: value.status };
+}
+
+export const amountStatus = { exact: 'Reported', estimate: 'Estimated', unknown: 'Unknown' };
+export const recurrenceLabels: Record<components['schemas']['Schedule']['recurrence'], string> = {
+  once: 'Once', daily: 'Daily', weekly: 'Weekly', fortnightly: 'Every two weeks', monthly: 'Monthly', monthlyBudget: 'Monthly budget · spread across calendar days',
+};
+export const budgetDescription = 'An estimated cash budget spread evenly across each calendar month’s actual days, not a scheduled payment or lender due date. Only days within the plan and start/end dates count.';
+
+export function sourceDescription(source: MoneyInput): string {
+  const conversion = source.conversion;
+  if (!conversion) return '';
+  return `${conversion.currency} ${source.amount ?? 'Unknown amount'} · ${amountStatus[source.status]} original amount; `
+    + `Rate: ${conversion.rate == null ? 'Unknown' : `₹${conversion.rate} per 1 ${conversion.currency}`} · ${conversion.rateStatus === 'exact' ? 'Fixed / confirmed' : amountStatus[conversion.rateStatus]}`
+    + `${conversion.rateDate ? ` · as of ${dateLabel(conversion.rateDate)}` : ' · as-of date not supplied'}; `
+    + `INR deduction: ${conversion.fee == null ? 'Unknown' : `₹${conversion.fee}`} · ${amountStatus[conversion.feeStatus]}`;
+}
+
+export function amountLabel(value: components['schemas']['Money']): string {
+  return value.source?.conversion ? `${value.source.conversion.currency} ${value.source.amount ?? 'Unknown amount'} · Calculated INR: ${money(value.amountPaise)}` : money(value.amountPaise);
+}
+
+export function scheduleLabel(schedule: components['schemas']['Schedule']): string {
+  return [recurrenceLabels[schedule.recurrence], schedule.endDate ? `Through ${dateLabel(schedule.endDate)} (inclusive)` : null,
+    schedule.count != null ? `${schedule.count} ${schedule.recurrence === 'monthlyBudget' ? 'calendar months' : 'occurrences'}` : null,
+    schedule.amounts?.length ? `${schedule.amounts.length} ordered amounts · varies by occurrence` : null].filter(Boolean).join(' · ');
+}
+
+export function submittedMoney(value: MoneyInput): MoneyInput {
+  return { ...value, amount: value.status === 'unknown' ? null : value.amount,
+    ...(value.conversion ? { conversion: { ...value.conversion,
+      rate: value.conversion.rateStatus === 'unknown' ? null : value.conversion.rate,
+      fee: value.conversion.feeStatus === 'unknown' ? null : value.conversion.fee,
+    } } : {}),
+  };
+}
+
+export function moneyError(value: MoneyInput, limit: number): string | null {
+  if (value.status !== 'unknown' && parseAmount(value.amount ?? '', limit) === null)
+    return value.conversion ? 'Enter a non-negative original currency amount with up to two decimal places.' : 'Enter a non-negative rupee amount with up to two decimal places.';
+  const conversion = value.conversion;
+  if (!conversion) return null;
+  if (!/^[A-Z]{3}$/.test(conversion.currency) || conversion.currency === 'INR') return 'Enter a three-letter foreign currency code, or select INR.';
+  if (conversion.rateStatus !== 'unknown' && (!/^(0|[1-9][0-9]{0,12})(\.[0-9]{1,8})?$/.test(conversion.rate ?? '') || !/[1-9]/.test(conversion.rate ?? '')))
+    return 'Enter a rate greater than zero with up to eight decimal places, or mark it unknown.';
+  if (conversion.feeStatus !== 'unknown' && parseAmount(conversion.fee ?? '', limit) === null)
+    return 'Enter the INR deduction with up to two decimal places, including 0 for no deduction, or mark it unknown.';
+  return null;
 }
 
 export function draftFacts(snapshot: Snapshot): FactsInput {
@@ -34,7 +81,7 @@ export function draftFacts(snapshot: Snapshot): FactsInput {
       cost: cost ? moneyInput(cost) : null,
     })),
     records: snapshot.facts.records.map(({ amount, target, outstanding, ...record }) => ({
-      ...record, schedule: { ...record.schedule }, amount: moneyInput(amount),
+      ...record, schedule: structuredClone(record.schedule), amount: moneyInput(amount),
       target: target ? moneyInput(target) : null,
       outstanding: outstanding ? moneyInput(outstanding) : null,
     })),

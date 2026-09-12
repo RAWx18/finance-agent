@@ -1,11 +1,13 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useState } from 'react';
-import type { Command, Snapshot } from './api';
+import type { Command, MoneyInput, Snapshot } from './api';
 import type { components } from './contracts';
 import type { State } from './session';
 import { Dialog } from './Dialog';
-import { dateLabel, decimal, parseAmount } from './money';
+import { amountLabel, dateLabel, decimal, moneyError, moneyInput, submittedMoney } from './money';
+import { MoneyFields } from './MoneyFields';
+import { RecordAmountFields, ScheduleFields, scheduleAmounts, scheduleDraft, scheduleError, schedulePatch } from './ScheduleFields';
 
 type Field = 'opening' | 'reserve' | 'amount' | 'target' | 'outstanding' | 'schedule.date' | 'reliability' | 'controllability' | 'label' | 'recurrence' | 'autoDebit' | 'debtType' | 'delete' | 'add' | 'coverage';
 export type EditTarget = { recordId?: string; kind?: 'income' | 'essential' | 'optional' | 'debt'; field: Field };
@@ -19,24 +21,34 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
   const record = snapshot.facts.records.find(item => item.id === target.recordId);
   const [field, setField] = useState(target.field);
   function read(field: Field) {
-    if (field === 'reserve') return { value: decimal(snapshot.facts.reservePaise), status: 'exact' };
-    const amount = field === 'opening' ? snapshot.facts.opening : record?.[field as 'amount' | 'target' | 'outstanding'];
-    if (['opening', 'amount', 'target', 'outstanding'].includes(field)) return { value: amount?.amountPaise == null ? '' : decimal(amount.amountPaise), status: amount?.status ?? 'absent' };
+    if (['opening', 'reserve', 'amount', 'target', 'outstanding'].includes(field)) return { value: '', status: 'exact' };
     if (field === 'schedule.date') return { value: record?.schedule.date ?? '', status: record?.schedule.certainty ?? 'unknown' };
     return { value: field === 'coverage' ? snapshot.facts.coverage[target.kind!] ?? 'notDiscussed' : field === 'recurrence' ? record?.schedule.recurrence ?? 'once'
       : field === 'autoDebit' ? String(record?.autoDebit ?? false) : field === 'add' ? '' : String(record?.[field as 'label' | 'debtType' | 'reliability' | 'controllability'] ?? 'unknown'), status: 'exact' };
   }
   const [initial, setInitial] = useState(() => read(target.field));
   const [input, setInput] = useState(initial);
+  function readAmount(field: Field): MoneyInput | null {
+    if (field === 'reserve') return { amount: decimal(snapshot.facts.reservePaise), status: 'exact' };
+    const value = field === 'opening' ? snapshot.facts.opening : record?.[field as 'amount' | 'target' | 'outstanding'];
+    return value && typeof value === 'object' && 'amountPaise' in value ? moneyInput(value) : null;
+  }
+  const [initialAmount, setInitialAmount] = useState(() => readAmount(target.field));
+  const [amount, setAmount] = useState(initialAmount);
+  const [initialSchedule, setInitialSchedule] = useState(() => scheduleDraft(record?.schedule ?? { date: null, certainty: 'unknown', recurrence: 'once' }));
+  const [schedule, setSchedule] = useState(initialSchedule);
+  const [clearTarget, setClearTarget] = useState(false);
   const [kind, setKind] = useState(target.kind ?? 'essential');
   const [error, setError] = useState('');
   const [discarding, setDiscarding] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const changed = input.value !== initial.value || input.status !== initial.status || kind !== target.kind && field === 'add';
+  const changed = input.value !== initial.value || input.status !== initial.status || kind !== target.kind && field === 'add'
+    || JSON.stringify(amount) !== JSON.stringify(initialAmount) || JSON.stringify(schedule) !== JSON.stringify(initialSchedule) || clearTarget;
   const obsolete = revision !== snapshot.revision || !!target.recordId && !record;
   const blocked = state.connection !== 'live' || state.phase !== 'ready' || state.busy || !!state.pending || obsolete;
   const disputed = (field: Field) => snapshot.facts.conflicts?.some(item => item.recordId === (target.recordId ?? null) && item.field === field);
-  const fields: Field[] = record ? ['amount', 'schedule.date', 'label', 'recurrence', ...(record.kind === 'income' ? ['reliability'] as const : ['controllability', 'autoDebit'] as const), ...(record.kind === 'debt' ? ['target', 'outstanding', 'debtType'] as const : [])] : [target.field];
+  const fields: Field[] = record ? ['amount', 'schedule.date', 'label', 'recurrence', ...(record.kind === 'income' ? ['reliability'] as const : ['controllability'] as const),
+    ...(record.kind !== 'income' && record.schedule.recurrence !== 'monthlyBudget' ? ['autoDebit'] as const : []), ...(record.kind === 'debt' ? ['target', 'outstanding', 'debtType'] as const : [])] : [target.field];
   const moneyField = ['opening', 'reserve', 'amount', 'target', 'outstanding'].includes(field);
   const title = target.field === 'delete' ? `Remove ${record?.label ?? 'this item'}?` : target.field === 'add' ? 'Add an item' : target.field === 'coverage' ? 'Review this category' : target.field === 'reserve' ? 'Cash to keep aside' : `Correct ${record?.label ?? `cash on ${dateLabel(snapshot.anchorDate)}`}`;
   const saved = submitted && !state.busy && !state.pending && state.messageKind === 'status'
@@ -53,14 +65,35 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
       if (snapshot.facts.records.length >= state.settings!.maxRecords) { setError('This plan has reached its item limit. Remove an item before adding another.'); return; }
       changes.records = [{ kind, label: input.value.trim(), delete: false, distinct: true }];
     } else if (moneyField) {
-      if (!['unknown', 'absent'].includes(input.status) && parseAmount(input.value, state.settings!.maxMoneyPaise) === null) { setError('Enter a non-negative rupee amount with up to two decimal places.'); return; }
-      const amount = input.status === 'absent' ? null : { amount: input.status === 'unknown' ? null : input.value, status: input.status as 'exact' | 'estimate' | 'unknown' };
-      if (field === 'reserve') changes.reserve = input.value;
-      else if (field === 'opening') changes.opening = amount!;
-      else { Object.assign(patch, { [field]: amount }); changes.records = [patch]; }
+      const variable = field === 'amount' && !!schedule.amounts.length;
+      const error = field === 'amount' && record ? scheduleError(schedule, record, state.settings!.maxMoneyPaise) : null;
+      if (error) { setError(error); return; }
+      if (variable && record?.target && (!clearTarget || disputed('target'))) { setError('Explicitly clear the single intended payment before saving varying required payments. Resolve any conflicting target first.'); return; }
+      if (field === 'target' && record?.schedule.amounts?.length && amount) { setError('Varying required payments cannot have a single intended payment. Use Amount to switch to one amount first, or choose Not supplied.'); return; }
+      if (!variable && amount) {
+        const error = moneyError(amount, state.settings!.maxMoneyPaise);
+        if (error) { setError(error); return; }
+      }
+      const value = variable ? { amount: null, status: 'unknown' as const, conversion: null } : amount ? submittedMoney(amount) : null;
+      if (field === 'reserve') changes.reserve = value!.amount!;
+      else if (field === 'opening') changes.opening = value!;
+      else {
+        Object.assign(patch, { [field]: value });
+        if (field === 'amount' && record) {
+          const changes = schedulePatch(schedule, record.schedule);
+          if (variable) changes.amounts = scheduleAmounts(schedule.amounts);
+          if (Object.keys(changes).length) patch.schedule = changes;
+          if (variable && clearTarget) patch.target = null;
+        }
+        changes.records = [patch];
+      }
     } else {
       if (field === 'schedule.date') patch.schedule = { date: input.value || null, certainty: input.value ? input.status === 'estimate' ? 'estimate' : 'exact' : 'unknown' };
-      else if (field === 'recurrence') patch.schedule = { recurrence: input.value as Snapshot['facts']['records'][number]['schedule']['recurrence'] };
+      else if (field === 'recurrence') {
+        const error = scheduleError(schedule, record!, state.settings!.maxMoneyPaise);
+        if (error) { setError(error); return; }
+        patch.schedule = schedulePatch(schedule, record!.schedule);
+      }
       else if (field === 'label') {
         if (!input.value.trim()) { setError('Enter a name.'); return; }
         patch.label = input.value.trim();
@@ -94,25 +127,31 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
           <legend className="sr-only">Correction</legend>
           {record && target.field !== 'delete' && <label>Detail<select value={field} disabled={changed} onChange={event => {
             const field = event.target.value as Field; const input = read(field); setField(field); setInput(input); setInitial(input); setError('');
+            const amount = readAmount(field); setAmount(amount); setInitialAmount(amount);
+            const schedule = scheduleDraft(record.schedule); setSchedule(schedule); setInitialSchedule(schedule); setClearTarget(false);
           }}>{fields.map(field => <option key={field} value={field} disabled={disputed(field)}>{field === 'amount' && record.kind === 'debt' ? 'Required / minimum payment' : labels[field]}</option>)}</select></label>}
           {disputed(field) ? <p>Resolve conflicting reports from this item’s details instead of overwriting them.</p>
             : target.field === 'delete' ? <p>Remove this exact item and its occurrences from your plan? Other items with the same name stay unchanged.</p>
               : field === 'add' ? <><label>Item name<input value={input.value} maxLength={120} onChange={event => setInput({ ...input, value: event.target.value })} /></label>
                 <label>Category<select value={kind} onChange={event => setKind(event.target.value as typeof kind)}><option value="income">Income</option><option value="essential">Essential spending</option><option value="optional">Other spending</option><option value="debt">Loan or card</option></select></label>
                 <p className="hint">Amounts and dates remain unknown until you share them. This creates a separate item, even if another has the same name.</p></>
-                : moneyField || field === 'schedule.date' ? <>
-                  <label>{moneyField ? 'Amount (₹)' : 'Date'}<input type={moneyField ? 'text' : 'date'} inputMode={moneyField ? 'decimal' : undefined} value={input.value} disabled={moneyField && ['unknown', 'absent'].includes(input.status)} onChange={event => setInput({ ...input, value: event.target.value, status: !moneyField ? event.target.value ? input.status === 'estimate' ? 'estimate' : 'exact' : 'unknown' : input.status })} /></label>
-                  {field !== 'reserve' && <label>{moneyField ? 'Amount certainty' : 'Date certainty'}<select value={input.status} onChange={event => setInput({ ...input, status: event.target.value })}>
-                    {['target', 'outstanding'].includes(field) && <option value="absent">Not supplied</option>}
-                    <option value="unknown" disabled={!moneyField && !!input.value}>Unknown</option><option value="exact" disabled={!moneyField && !input.value}>{moneyField ? 'Exact amount' : 'Exact date'}</option><option value="estimate" disabled={!moneyField && !input.value}>{moneyField ? 'Estimated amount' : 'Estimated date'}</option>
-                  </select></label>}
-                  {record?.kind === 'income' && <p className="hint">Only exact amounts with exact dates and reliable receipts count in projected balances.</p>}
+                : moneyField ? <>
+                  {field === 'amount' && record ? <RecordAmountFields record={record} amount={amount!} draft={schedule} clearTarget={clearTarget} onAmount={setAmount} onSchedule={setSchedule} onClearTarget={setClearTarget} />
+                    : <MoneyFields value={amount} onChange={setAmount} optional={['target', 'outstanding'].includes(field)} certainty={field !== 'reserve'} />}
+                  {field === 'amount' && record?.amount.source?.conversion && !record.schedule.amounts?.length && <p className="hint">Last saved: {amountLabel(record.amount)}. Recalculated only after saving.</p>}
+                  {record?.kind === 'income' && <p className="hint">Only exact amounts and conversion assumptions with exact dates and reliable receipts count in projected balances.</p>}
                   {field === 'target' && <p className="hint">The intended payment includes the minimum. It is not an additional payment.</p>}
-                </> : field === 'label' ? <label>Item name<input value={input.value} maxLength={120} onChange={event => setInput({ ...input, value: event.target.value })} /></label>
+                  {field === 'target' && !!record?.schedule.amounts?.length && <p className="hint">Varying required payments cannot use a single intended payment. Switch to one amount in the Amount detail first, or choose Not supplied.</p>}
+                </> : field === 'schedule.date' ? <>
+                  <label>Date<input type="date" value={input.value} onChange={event => setInput({ value: event.target.value, status: event.target.value ? input.status === 'estimate' ? 'estimate' : 'exact' : 'unknown' })} /></label>
+                  <label>Date certainty<select value={input.status} onChange={event => setInput({ ...input, status: event.target.value })}>
+                    <option value="unknown" disabled={!!input.value}>Unknown</option><option value="exact" disabled={!input.value}>Exact date</option><option value="estimate" disabled={!input.value}>Estimated date</option>
+                  </select></label>
+                </> : field === 'recurrence' ? <ScheduleFields record={record!} draft={schedule} onChange={setSchedule} />
+                  : field === 'label' ? <label>Item name<input value={input.value} maxLength={120} onChange={event => setInput({ ...input, value: event.target.value })} /></label>
                   : <label>{labels[field]}<select value={input.value} onChange={event => setInput({ ...input, value: event.target.value })}>
                     {field === 'coverage' ? <><option value="notDiscussed">Not checked</option><option value="reported">Some shared</option><option value="unknown">Not sure</option><option value="reviewed" disabled={!snapshot.facts.records.some(item => item.kind === target.kind)}>Reviewed all items</option><option value="none" disabled={snapshot.facts.records.some(item => item.kind === target.kind)}>None reported</option></>
-                      : field === 'recurrence' ? <><option value="once">Once</option><option value="weekly">Weekly</option><option value="fortnightly">Every two weeks</option><option value="monthly">Monthly</option></>
-                        : field === 'autoDebit' ? <><option value="false">Not reported</option><option value="true">Automatic debit reported</option></>
+                      : field === 'autoDebit' ? <><option value="false">Not reported</option><option value="true" disabled={record?.schedule.recurrence === 'monthlyBudget'}>Automatic debit reported</option></>
                           : field === 'debtType' ? <><option value="unknown">Not confirmed</option><option value="card">Credit card</option><option value="loan">Loan</option><option value="informal">Informal borrowing</option></>
                             : <><option value="unknown">Not confirmed</option>{field === 'reliability' ? <><option value="reliable">Reliable</option><option value="uncertain">Uncertain</option></> : <><option value="controllable">Changeable and not committed</option><option value="committed">Already committed</option></>}</>}
                   </select></label>}

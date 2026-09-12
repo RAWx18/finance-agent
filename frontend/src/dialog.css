@@ -17,6 +17,11 @@ dialog::backdrop { background: rgb(27 44 34 / 30%); }
 .dialog-body .card { padding: 1rem; }
 .dialog .notice { font-size: .82rem; padding: .75rem; }
 .dialog .comparison.card { border: 0; padding: 0; }
+.dialog .money-edit-fields, .amount-sequence fieldset { display: grid; gap: .85rem; min-width: 0; }
+.amount-sequence { padding-left: 1.5rem; }
+.amount-sequence > li { padding-block: .65rem; border-bottom: 1px solid var(--line); }
+.amount-sequence legend { font-weight: 600; }
+.dialog .money-edit-fields :is(label, input, select) { min-width: 0; }
 @media (max-width: 700px) {
   dialog.dialog, dialog.dialog-wide { width: calc(100% - 1rem); height: calc(100dvh - 1rem); border-radius: 12px; }
   .dialog-heading { padding: .5rem .9rem; }

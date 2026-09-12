@@ -56,7 +56,7 @@ export async function browse(page: Page, route: MoneyRoute) {
   await expect(page.locator('#money-heading')).toBeVisible();
   const select = page.getByRole('combobox', { name: 'Browse Money', exact: true });
   if (await select.isVisible()) await select.selectOption(route);
-  else await page.getByRole('navigation', { name: 'Money navigation' }).getByRole('link', { name: moneyRoutes[route], exact: true }).click();
+  else await page.getByRole('navigation', { name: 'Money navigation' }).getByRole('link', { name: route === '/money' ? 'Overview' : moneyRoutes[route], exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`${route}$`));
   await expect(page.getByRole('heading', { level: 1, name: moneyRoutes[route], exact: true })).toBeVisible();
 }
@@ -92,14 +92,14 @@ export async function golden(page: Page, cardTarget = false) {
       { label: 'Optional purchase', kind: 'optional', distinct: true, delete: false, controllability: 'controllable', amount: { status: 'exact', amount: '2000' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact' } },
     ] } });
   await page.goto('/money');
-  await expect(page.getByRole('region', { name: 'What needs attention' })).toContainText('₹7,000.00');
+  await expect(page.getByRole('region', { name: 'What needs attention' })).toContainText('₹7,000');
   return saved;
 }
 
 export async function checkClosing(page: Page, amount: string) {
   await browse(page, '/money');
-  await page.getByRole('button', { name: 'Plan details', exact: true }).click();
+  await page.getByRole('button', { name: 'View calculation', exact: true }).click();
   const detail = page.getByRole('dialog', { name: 'Plan details', exact: true });
-  await expect(detail.getByText('Projected closing cash · Calculated', { exact: true }).locator('..')).toContainText(amount);
+  await expect(detail.getByText('Projected closing cash', { exact: true }).locator('..')).toContainText(amount.replace(/\.00$/, ''));
   await detail.getByRole('button', { name: 'Close plan details' }).click();
 }

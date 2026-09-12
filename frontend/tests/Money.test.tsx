@@ -59,7 +59,7 @@ it('renders labels as text, signed saved balances and excluded income in current
   saved.facts.records = [{ ...saved.facts.records[0], id: 'income', kind: 'income', label: '<img src=x onerror=alert(1)>',
     amount: { amountPaise: 10000, status: 'estimate' }, reliability: 'uncertain' }];
   saved.plan.events = [{ ...saved.plan.events[0], id: 'income:2026-09-20', recordId: 'income', kind: 'income',
-    label: saved.facts.records[0].label, date: '2026-09-20', originalDueDate: '2026-09-20', amountPaise: 10000, included: false, balancePaise: -100 }];
+    label: saved.facts.records[0].label, date: '2026-09-20', originalDueDate: '2026-09-20', amountPaise: 10000, amountStatus: 'estimate', included: false, balancePaise: -100 }];
   render(<MemoryRouter><MoneyUpcoming snapshot={saved} /></MemoryRouter>);
   expect(screen.queryByRole('img')).not.toBeInTheDocument();
   const event = screen.getByRole('listitem', { name: saved.facts.records[0].label });
@@ -88,27 +88,27 @@ it.each(['/figures', '/money/bills', '/money/debts/private-id', '/money/unknown'
 it('leads with the early gap even with a positive closing result and gives one selected action', async () => {
   await open();
   const attention = screen.getByRole('region', { name: 'What needs attention' });
-  expect(within(attention).getByText('₹7,000.00', { selector: 'strong' })).toBeVisible();
-  expect(attention).toHaveTextContent('short on 13 Sept 2026');
+  expect(within(attention).getByText('₹7,000', { selector: 'strong' })).toBeVisible();
+  expect(attention).toHaveTextContent('short on 13 Sept');
   expect(attention).toHaveTextContent('Discuss payment options');
-  await userEvent.click(within(attention).getByRole('button', { name: 'What to check' }));
-  expect(screen.getByRole('dialog', { name: 'What to check' })).toHaveTextContent('Contact the provider before the due date.');
-  await userEvent.click(screen.getByRole('button', { name: 'Close what to check' }));
-  for (const amount of screen.queryAllByText('₹10,000.00')) expect(amount).not.toBeVisible();
-  await userEvent.click(within(attention).getByRole('button', { name: 'Plan details' }));
+  await userEvent.click(within(attention).getByRole('button', { name: 'Discuss payment options' }));
+  expect(screen.getByRole('dialog', { name: 'Your next step' })).toHaveTextContent('Contact the provider before the due date.');
+  await userEvent.click(screen.getByRole('button', { name: 'Close your next step' }));
+  expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Left at the end₹10,000');
+  await userEvent.click(screen.getByRole('button', { name: 'View calculation' }));
   const detail = screen.getByRole('dialog', { name: 'Plan details' });
-  expect(detail).toHaveTextContent('₹10,000.00'); expect(detail).toHaveTextContent('₹16,000.00');
+  expect(detail).toHaveTextContent('₹10,000'); expect(detail).toHaveTextContent('₹16,000');
   expect(detail).toHaveTextContent('not amounts to add together');
 });
 
-it('shows cash at the original plan date, included income and at most three events', async () => {
+it('shows cash at the original plan date, included income and distinct upcoming records', async () => {
   const saved = planningSnapshot();
   saved.plan.events = Array.from({ length: 8 }, (_, index) => ({ ...saved.plan.events[0], id: `rent-${index}` }));
   await open('/money', projectWorkspace(saved));
   const cash = screen.getByRole('region', { name: 'Money in this plan' });
-  expect(cash).toHaveTextContent('Cash at plan start · 11 Sept 2026');
-  expect(cash).toHaveTextContent('Expected, not marked received');
-  expect(within(screen.getByRole('region', { name: 'Next money and payments' })).getAllByRole('listitem')).toHaveLength(3);
+  expect(cash).toHaveTextContent('Starting cash₹5,00011 Sept');
+  expect(cash).toHaveTextContent('Money coming in');
+  expect(within(screen.getByRole('region', { name: 'Next money and payments' })).getAllByRole('listitem')).toHaveLength(1);
   expect(cash).not.toHaveTextContent(/today|Current balance|verified/);
 });
 
@@ -118,7 +118,7 @@ it('keeps all ordinary views on the accepted plan, never the preview', async () 
   saved.accepted.plan.events[0].balancePaise = -345600;
   saved.preview.plan.firstGap = null; saved.preview.plan.closingPaise = 9999900;
   const router = await open('/money', projectWorkspace(saved));
-  expect(screen.getByRole('region', { name: 'What needs attention' })).toHaveTextContent('₹3,456.00');
+  expect(screen.getByRole('region', { name: 'What needs attention' })).toHaveTextContent('₹3,456');
   await act(async () => { await router.navigate('/money/upcoming'); });
   expect(screen.getByRole('region', { name: 'Upcoming money and payments' })).toHaveTextContent('-₹3,456.00');
   expect(screen.getByRole('region', { name: 'Upcoming money and payments' })).not.toHaveTextContent('₹99,999.00');
@@ -306,7 +306,7 @@ it('requires exact item removal confirmation without deleting similarly named re
 
 it('corrects the cash buffer without replacing starting cash or financial facts', async () => {
   await open();
-  await userEvent.click(screen.getByRole('button', { name: 'Cash to keep aside' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Set a cash buffer' }));
   const dialog = screen.getByRole('dialog', { name: 'Cash to keep aside' });
   expect(dialog).toHaveTextContent('not another expense or extra money');
   expect(screen.queryByLabelText('Amount certainty')).not.toBeInTheDocument();
@@ -321,7 +321,7 @@ it('keeps exactness distinct from provenance in income corrections', async () =>
   await userEvent.click(screen.getByRole('button', { name: 'Edit Rent' }));
   expect(screen.getByRole('option', { name: 'Exact amount' })).toBeInTheDocument();
   expect(screen.getByRole('option', { name: 'Estimated amount' })).toBeInTheDocument();
-  expect(screen.getByRole('dialog')).toHaveTextContent('Only exact amounts with exact dates and reliable receipts count');
+  expect(screen.getByRole('dialog')).toHaveTextContent('Only exact amounts and conversion assumptions with exact dates and reliable receipts count');
 });
 
 it('bounds item creation using the configured limit without sending a mutation', async () => {
@@ -424,11 +424,11 @@ it('shows unknown opening and undated items without fabricated zero balances', a
   saved.plan.budgetBasis = { datedProjectionComplete: false, unresolvedAmounts: [{ recordId: 'rent', reason: 'missingDate', amount: { amountPaise: null, status: 'unknown' }, recurrence: 'once' }] };
   await open('/money', projectWorkspace(saved));
   const cash = screen.getByRole('region', { name: 'Money in this plan' });
-  expect(cash).toHaveTextContent('Cash at plan start · 11 Sept 2026Unknown');
+  expect(cash).toHaveTextContent('Starting cashUnknown11 Sept');
   const attention = screen.getByRole('region', { name: 'What needs attention' });
   for (const value of within(attention).queryAllByText('₹0.00', { exact: true })) expect(value).not.toBeVisible();
-  expect(within(attention).getByRole('heading', { name: 'Your picture needs a check' })).toBeVisible();
-  expect(screen.getByRole('link', { name: '1 item needs a date' })).toBeVisible();
+  expect(within(attention).getByRole('heading', { name: 'Start with the cash you have' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '1 item needs a date' })).toBeVisible();
 });
 
 it('distinguishes loading, empty and failed reads, with no automatic data creation', async () => {
@@ -463,8 +463,7 @@ it('does not resurface a filtered refusal or unavailable question through raw ou
   expect(within(attention).queryByRole('heading', { name: 'Next step' })).not.toBeInTheDocument();
   expect(attention).not.toHaveTextContent('Compare the refused purchase again.');
   expect(screen.queryByRole('button', { name: 'Compare change' })).not.toBeInTheDocument();
-  expect(screen.getByRole('region', { name: 'Needs your check' })).toHaveTextContent('Still unresolved');
-  expect(screen.getByRole('button', { name: 'Review checks' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '1 detail to review' })).toBeVisible();
   view.rerender(<MoneyChecks snapshot={saved} open blocked={false} onClose={vi.fn()} onEdit={vi.fn()} onCommand={vi.fn()} />);
   expect(screen.getByRole('dialog', { name: 'Needs your check' })).toHaveTextContent(source.plan.decisionAssessment!.uncertainties![0].question);
 });
@@ -473,8 +472,8 @@ it('chooses an eligible workspace action when the raw selected choice was refuse
   const saved = moneyProjection(choiceSnapshot(), ['contact:rent:2026-09-13']);
   render(<MemoryRouter><MoneyOverview snapshot={saved} blocked={false} onEdit={vi.fn()} onChecks={vi.fn()} onCommand={vi.fn()} /></MemoryRouter>);
   expect(screen.getByRole('region', { name: 'What needs attention' })).toHaveTextContent('Discuss payment options');
-  await userEvent.click(screen.getByRole('button', { name: 'What to check' }));
-  expect(screen.getByRole('dialog', { name: 'What to check' })).toHaveTextContent('Contact the provider before the due date.');
+  await userEvent.click(screen.getByRole('button', { name: 'Discuss payment options' }));
+  expect(screen.getByRole('dialog', { name: 'Your next step' })).toHaveTextContent('Contact the provider before the due date.');
   expect(screen.queryByRole('button', { name: 'Compare change' })).not.toBeInTheDocument();
 });
 
@@ -497,7 +496,8 @@ it.each([
 ] as const)('labels %s amounts using their own basis (%s minimum, %s target)', (basis, minimumStatus, targetStatus, status, label) => {
   const source = choiceSnapshot('cardMinimum');
   const record = source.facts.records[1];
-  const event = { ...source.plan.events[1], amountBasis: basis, amountPaise: basis === 'requiredOnly' || basis === 'assumed' ? 200000 : 400000 };
+  const event = { ...source.plan.events[1], amountBasis: basis, amountPaise: basis === 'requiredOnly' || basis === 'assumed' ? 200000 : 400000,
+    amountStatus: basis === 'requiredOnly' ? minimumStatus : targetStatus, requiredPaise: 200000, requiredStatus: minimumStatus };
   const saved = moneyProjection({ ...source, facts: { ...source.facts, records: [{ ...record,
     amount: { status: minimumStatus, amountPaise: 200000 }, target: { status: targetStatus, amountPaise: targetStatus === 'unknown' ? null : 400000 } }] },
     accepted: basis === 'assumed' ? { ...scenario('saved'), adjustments: [{ ...scenario().adjustments[0], eventId: event.id, recordId: record.id, kind: 'card', amountPaise: 200000, minimumPaise: 200000 }], plan: { ...source.plan, events: [event] } } : null,
@@ -541,8 +541,8 @@ it('separates elapsed requirements at evaluatedOn, preserving backend order and 
   const saved = moneyProjection({ ...source, plan: { ...source.plan, evaluatedOn: '2026-09-15', events } });
   const view = render(<MemoryRouter><MoneyOverview snapshot={saved} blocked={false} onEdit={vi.fn()} onChecks={vi.fn()} onCommand={vi.fn()} /></MemoryRouter>);
   const next = screen.getByRole('region', { name: 'Next money and payments' });
-  expect(within(next).getAllByRole('listitem').map(item => item.getAttribute('aria-label'))).toEqual(['First same-day payment', 'Second same-day payment', 'Later income']);
-  expect(within(next).getByRole('link', { name: '1 earlier requirement' })).toBeVisible();
+  expect(within(next).getAllByRole('listitem').map(item => item.getAttribute('aria-label'))).toEqual(['First same-day payment']);
+  expect(within(next).getByRole('link', { name: '1 earlier item · status unconfirmed' })).toBeVisible();
   view.rerender(<MemoryRouter><MoneyUpcoming snapshot={saved} /></MemoryRouter>);
   expect(screen.queryByRole('listitem', { name: 'Earlier rent' })).not.toBeInTheDocument();
   expect(screen.getByRole('listitem', { name: 'First same-day payment' })).toHaveTextContent('-₹123.00');

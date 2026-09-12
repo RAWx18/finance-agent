@@ -1,63 +1,19 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
-import type { Command, Snapshot } from './api';
+import { useId, useState } from 'react';
+import type { Command, Plan, Snapshot } from './api';
 import type { components } from './contracts';
-import { Details } from './Dialog';
-import { dateLabel, decimal, lastDate, money } from './money';
-import { PagedList } from './PagedList';
-import { ActionDetails, actionLabels, Assumptions, outcomeLabels, ProposalReview } from './ScenarioDetails';
-import { ConflictReview, Correction, fieldLabels, incomeChecks, reasons, ResultDetails, resultLabels, resultStates } from './WorkspaceDetails';
+import { CardField, ChangedValue } from './CardField';
+import { CardProposal } from './CardProposal';
+import { cardDate, cardMoney, cardStatus, fieldConflict, fieldDraft, sourceAmount } from './cardFields';
+import type { CardTarget } from './cardFields';
+import { dateLabel, lastDate, money, recurrenceLabels } from './money';
+import { PlanSummary, ResultQualification } from './PlanSummary';
+import { fieldLabels, resultLabels } from './WorkspaceDetails';
 import type { Fact, WorkspaceCard } from './WorkspaceDetails';
 import './financialCards.css';
 
-const states = { known: 'Reported', estimated: 'Estimated', uncertain: 'Uncertain', missing: 'Not yet known', conflicting: 'Conflicting reports', proposed: 'Proposed · not saved', accepted: 'Saved assumption', unresolved: 'Needs checking' };
-const sections = { facts: 'What you’ve shared', issues: 'Needs attention', timeline: 'Upcoming dates', decisions: 'Decisions & assumptions', outcome: 'Your outlook' };
-const recurrence = { once: 'One time', weekly: 'Every week', fortnightly: 'Every two weeks', monthly: 'Every month' };
 const changeStates = { created: 'Saved', updated: 'Corrected', deleted: 'Removed', merged: 'Duplicate combined', resolved: 'Conflict resolved', proposed: 'Proposal ready to review', accepted: 'Planning assumptions saved · no payment made', rejected: 'Proposal rejected · refusal saved', invalidated: 'Assumptions need fresh consent', discarded: 'Preview closed · not a refusal' };
-
-function FinancialCard({ card, changed, fingerprint, children }: { card: WorkspaceCard; changed: boolean; fingerprint: string; children: ReactNode }) {
-  const element = useRef<HTMLElement>(null);
-  useEffect(() => {
-    if (!element.current?.animate || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
-    const animation = element.current.animate([
-      { boxShadow: 'inset 0 0 0 100vmax rgb(38 111 79 / 10%)' },
-      { boxShadow: 'inset 0 0 0 100vmax rgb(38 111 79 / 0%)' },
-    ], { duration: 650, easing: 'ease-out', iterations: 1 });
-    return () => animation.cancel();
-  }, [fingerprint]);
-  return <article ref={element} className={`workspace-card workspace-${card.template}`} aria-label={card.title} data-changed={changed}>
-    <header className="workspace-card-heading"><h4>{card.title}</h4><span className="state-label" data-state={card.state}>{states[card.state]}</span></header>
-    {children}
-  </article>;
-}
-
-function FactRow({ record, snapshot, blocked, onCommand }: { record: Fact; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined> }) {
-  const conflicts = snapshot.facts.conflicts!.filter(item => item.recordId === record.id);
-  const checks = record.kind === 'income' ? incomeChecks(record) : [];
-  const exclusions = [...new Set(snapshot.workspace?.contributions?.filter(item => item.recordId === record.id && !item.included && !item.id.startsWith('proposal:')).map(item => reasons[item.reason]).filter(reason => !!reason))];
-  const issues = snapshot.workspace?.issues?.filter(item => item.recordIds.includes(record.id)) ?? [];
-  return <li className="fact-row" aria-label={record.label}>
-    <div className="fact-row-heading"><h5>{record.label}</h5><p className="fact-amount">{money(record.amount.amountPaise)} <span>{conflicts.some(item => item.field === 'amount') ? 'Conflicting' : record.amount.status === 'estimate' ? 'Estimated' : record.amount.status === 'unknown' ? 'Not yet known' : 'Reported'}</span></p></div>
-    {record.kind === 'debt' && <p>Required / minimum payment</p>}
-    <p>{record.schedule.date ? <>{dateLabel(record.schedule.date)} · {record.schedule.certainty === 'exact' ? 'Confirmed date' : 'Estimated date'}</> : 'Date unknown · not included in dated balances'} · {recurrence[record.schedule.recurrence]}</p>
-    {record.kind === 'income' ? <>
-      <p>{record.reliability === 'reliable' ? 'Reliable receipt' : record.reliability === 'uncertain' ? 'Uncertain receipt' : 'Receipt reliability unknown'}</p>
-      {checks.length > 0 && <p className="field-warning">Excluded from balances: {checks.join('; ')}.</p>}
-      {exclusions.map(reason => <p className="field-warning" key={reason}>{reason}.</p>)}
-    </> : <>
-      <p>{record.kind === 'essential' ? 'Essential spending' : record.kind === 'optional' ? 'Optional spending' : record.debtType === 'card' ? 'Credit card' : record.debtType === 'unknown' ? 'Debt type not confirmed' : 'Loan or borrowing'} · {record.autoDebit ? 'Automatic debit reported' : 'Automatic debit not reported'}</p>
-      <p>{record.controllability === 'committed' ? 'Already committed' : record.controllability === 'controllable' ? 'Changeable and not committed' : 'Whether this can change is not confirmed'}</p>
-    </>}
-    {record.target && <p>Selected target: {money(record.target.amountPaise)}{record.target.status === 'estimate' && ' · Estimated'} · Includes the minimum, not an extra payment.</p>}
-    {(snapshot.accepted?.plan.events ?? []).filter(event => event.recordId === record.id && event.amountBasis === 'assumed').map(event => <p key={event.id}>Current plan: {money(event.amountPaise)} on {dateLabel(event.date)} · Saved assumption, not paid. Reported {record.target ? 'intended payment' : 'amount'} stays unchanged.</p>)}
-    {record.outstanding && <p>Reported outstanding: {money(record.outstanding.amountPaise)}{record.outstanding.status === 'estimate' && ' · Estimated'} · Not reduced by planning assumptions.</p>}
-    {conflicts.map(conflict => <ConflictReview key={conflict.id} conflict={conflict} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />)}
-    {issues.length > 0 && <Details label={`Checks for ${record.label}`}><PagedList label={`${record.label} checks`} className="evidence-list">{issues.map(issue => <li key={issue.id}><p>{issue.question}</p><p>{issue.reason}</p></li>)}</PagedList></Details>}
-    <Correction record={record} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />
-  </li>;
-}
 
 export function changeNotes(snapshot: Snapshot, change: components['schemas']['WorkspaceChange'] | null | undefined): string[] {
   if (!change) return [];
@@ -89,141 +45,167 @@ export function changeNotes(snapshot: Snapshot, change: components['schemas']['W
   return [...new Set(notes)].sort((a, b) => priority(a) - priority(b));
 }
 
-export function FinancialContext({ snapshot, stale, mode, locked, onCommand, proposalActive }: {
-  snapshot: Snapshot | null; stale: boolean; mode: 'live' | 'review' | 'finished';
+type Editing = { snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined> };
+
+function AmountField({ target, label, prefix = '', suffix = '', reported = false, ...editing }: Editing & { target: CardTarget; label: string; prefix?: string; suffix?: string; reported?: boolean }) {
+  const draft = fieldDraft(editing.snapshot, target);
+  const conflict = fieldConflict(editing.snapshot, target);
+  return <CardField {...editing} target={target} label={label}>
+    <span className="card-number"><ChangedValue value={`${draft.status === 'unknown' ? '' : prefix}${sourceAmount(draft.source!)}${suffix}`} /></span>
+    {(conflict || reported || draft.status !== 'exact') && <span className="card-badge" data-tone={conflict || draft.status !== 'exact' ? 'caution' : undefined}>{conflict ? 'Conflicting' : cardStatus[draft.status]}</span>}
+  </CardField>;
+}
+
+function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
+  const { snapshot } = editing;
+  const results = snapshot.workspace?.results?.filter(result => card.resultIds?.includes(result.id));
+  const reserve = results?.find(result => result.id === 'reserveShortfall');
+  const closing = results?.find(result => result.id === 'closing');
+  return <>
+    <div className="card-cash"><span className="card-caption">Cash at plan start</span>
+      <AmountField {...editing} target={{ field: 'opening' }} label="Cash at plan start" reported />
+      <span className="card-meta">As of {cardDate(snapshot.anchorDate)} · Reported, not a bank feed</span>
+    </div>
+    {snapshot.facts.reservePaise > 0 && <div className="card-metric"><span className="card-caption">Keep aside</span>
+      <AmountField {...editing} target={{ field: 'reserve' }} label="Reserve floor" />
+      {reserve?.amountPaise != null && reserve.amountPaise > 0 && <span className="card-meta card-caution">Below reserve by <ChangedValue value={cardMoney(reserve.amountPaise)} /> · Calculated</span>}
+    </div>}
+    {closing && <div className="card-closing" aria-label="Projected closing cash"><span className="card-caption">Closing · {cardDate(lastDate(snapshot.endDateExclusive))}</span>
+      <strong><ChangedValue value={cardMoney(closing.amountPaise)} /></strong><ResultQualification snapshot={snapshot} id="closing" />
+    </div>}
+  </>;
+}
+
+function SourceTerms({ target, record, ...editing }: Editing & { target: CardTarget; record: Fact }) {
+  const conversion = fieldDraft(editing.snapshot, target).source?.conversion;
+  if (!conversion || fieldConflict(editing.snapshot, target)) return null;
+  return <details className="card-terms"><summary>{conversion.currency} conversion terms</summary><div className="card-term-fields">
+    <CardField {...editing} target={{ ...target, term: 'rate' }} label={`${record.label} exchange rate`}>
+      <span>Rate {conversion.rate == null ? 'Unknown' : `₹${conversion.rate} / ${conversion.currency}`}</span><span className="card-badge">{cardStatus[conversion.rateStatus]}</span>
+    </CardField>
+    <CardField {...editing} target={{ ...target, term: 'fee' }} label={`${record.label} INR deduction`}>
+      <span>INR deduction {sourceAmount({ amount: conversion.fee ?? null, status: conversion.feeStatus })}</span><span className="card-badge">{cardStatus[conversion.feeStatus]}</span>
+    </CardField>
+    <CardField {...editing} target={{ ...target, term: 'rateDate' }} label={`${record.label} rate date`}>
+      <span>Rate as of {conversion.rateDate ? cardDate(conversion.rateDate) : 'Unknown'}</span>
+    </CardField>
+  </div></details>;
+}
+
+function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?: Plan['events'][number] }) {
+  const { snapshot } = editing;
+  const variable = !!record.schedule.amounts?.length;
+  const budget = record.schedule.recurrence === 'monthlyBudget';
+  const debt = record.kind === 'debt';
+  const index = variable ? event?.scheduleIndex ?? undefined : undefined;
+  const target: CardTarget = { recordId: record.id, field: debt && record.target && !variable ? 'target' : 'amount', ...(index !== undefined ? { index } : {}) };
+  const source = variable && index === undefined ? null : fieldDraft(snapshot, target).source;
+  const date = budget ? record.schedule.date : event ? event.overdue ? event.originalDueDate : event.date : record.schedule.date;
+  const dateFieldLabel = `${record.label} ${record.schedule.recurrence === 'once' ? 'date' : 'series start'}`;
+  const dateConflict = fieldConflict(snapshot, { recordId: record.id, field: 'schedule.date' });
+  const assumed = (snapshot.accepted?.adjustments ?? []).find(item => item.eventId === event?.id);
+  const issue = snapshot.workspace?.issues?.find(item => item.recordIds.includes(record.id) && ['missing', 'conflict', 'uncertain'].includes(item.kind));
+  return <li className="card-record" aria-label={record.label} data-income={record.kind === 'income'}>
+    <CardField {...editing} target={{ recordId: record.id, field: 'label' }} label={`${record.label} name`} className="card-name"><ChangedValue value={record.label} /></CardField>
+    {source ? <div className="card-record-amount">
+      {debt && <span className="card-caption">{target.field === 'target' ? 'Target · includes minimum' : record.debtType === 'card' ? 'Minimum' : 'Required'}</span>}
+      <AmountField {...editing} target={target} label={`${record.label} ${target.field === 'target' ? 'target' : debt ? 'required amount' : index !== undefined ? `occurrence ${index + 1} amount` : 'amount'}`} prefix={record.kind === 'income' ? '+' : '−'} suffix={budget ? '/month' : ''} />
+      {budget && <span className="card-meta">Daily forecast · not a payment due</span>}
+      {index !== undefined && <span className="card-meta">Occurrence {index + 1} of {record.schedule.amounts!.length}</span>}
+      {source.conversion && <span className="card-net" aria-label={`${record.label} calculated net INR`}>Net INR <strong><ChangedValue value={cardMoney(index === undefined ? record.amount.amountPaise : event?.amountPaise ?? null)} /></strong><span className="card-meta">Calculated{(index === undefined ? record.amount.status : event?.amountStatus) === 'estimate' ? ' · Est.' : ''}</span></span>}
+      <SourceTerms {...editing} target={target} record={record} />
+    </div> : <details className="card-terms"><summary>Amounts by occurrence</summary><ol className="card-source-list">{record.schedule.amounts!.map((_, index) => <li key={index}>
+      <span className="card-caption">Occurrence {index + 1}</span><AmountField {...editing} target={{ recordId: record.id, field: 'amount', index }} label={`${record.label} occurrence ${index + 1} amount`} />
+      <SourceTerms {...editing} target={{ recordId: record.id, field: 'amount', index }} record={record} />
+    </li>)}</ol></details>}
+    <CardField {...editing} target={{ recordId: record.id, field: 'schedule.date' }} label={dateFieldLabel} className="card-date">
+      <span><ChangedValue value={`${budget ? 'Starts' : event?.overdue ? 'Overdue' : record.kind === 'income' ? 'Expected' : 'Due'} ${date ? cardDate(date) : 'Unknown'}`} /></span>
+      {(dateConflict || record.schedule.certainty !== 'exact') && <span className="card-badge" data-tone="caution">{dateConflict ? 'Conflicting' : cardStatus[record.schedule.certainty]}</span>}
+      {record.schedule.recurrence !== 'once' && !budget && <span className="card-meta">{recurrenceLabels[record.schedule.recurrence]}</span>}
+    </CardField>
+    {debt && record.target && !variable && <div className="card-secondary"><span className="card-caption">{record.debtType === 'card' ? 'Minimum' : 'Required'}</span>
+      <AmountField {...editing} target={{ recordId: record.id, field: 'amount' }} label={`${record.label} required amount`} /></div>}
+    {debt && record.outstanding && <div className="card-secondary"><span className="card-caption">Outstanding</span>
+      <AmountField {...editing} target={{ recordId: record.id, field: 'outstanding' }} label={`${record.label} outstanding`} /></div>}
+    <div className="card-row-status">
+      {record.autoDebit && <span className="card-badge">Auto-debit</span>}
+      {record.kind === 'income' && (record.reliability !== 'reliable' || event && !event.included) && <span className="card-badge" data-tone="caution">Not counted on{record.reliability !== 'reliable' ? ' · Receipt unconfirmed' : ''}</span>}
+      {event?.amountBasis === 'requiredOnly' && <span className="card-meta">Minimum only · Target unknown</span>}
+      {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-badge">Committed</span>}
+      {debt && !record.target && <span className="card-meta">Target not supplied</span>}
+      {assumed && <span className="card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</span>}
+    </div>
+    {issue?.reason && <details className="card-terms"><summary>Why this needs checking</summary><p>{issue.reason}</p></details>}
+    {(record.schedule.endDate || record.schedule.count || record.schedule.recurrence !== 'once' && record.schedule.date !== date) && <details className="card-terms"><summary>Series terms</summary><p className="card-meta">
+      Series starts {record.schedule.date ? cardDate(record.schedule.date) : 'Unknown'}{record.schedule.endDate && <> · Through {cardDate(record.schedule.endDate)}</>}{record.schedule.count && <> · {record.schedule.count} {budget ? 'months' : 'occurrences'}</>}
+    </p></details>}
+  </li>;
+}
+
+const issueLabels: Record<string, string> = { opening: 'Cash at plan start', amount: 'Amount', target: 'Target', outstanding: 'Outstanding', 'schedule.date': 'Date', reliability: 'Receipt', controllability: 'Changeability', coverage: 'Unreported commitments', providerResponses: 'Payment agreement', recordIdentity: 'Which commitment', currencyConversion: 'Conversion terms', schedule: 'Schedule' };
+function UncertaintyCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
+  const issue = editing.snapshot.workspace?.issues?.find(issue => card.issueIds?.includes(issue.id));
+  if (!issue) return null;
+  const record = editing.snapshot.facts.records.find(record => record.id === issue.recordIds[0]);
+  const field = (['opening', 'amount', 'target', 'outstanding', 'schedule.date'] as const).find(field => field === issue.field);
+  const status = issue.kind === 'conflict' ? 'Conflicting' : issue.kind === 'missing' ? 'Unknown' : 'Unconfirmed';
+  return <div className="card-uncertainty">
+    <span className="card-caption">{record?.label ?? 'Plan'} · {issueLabels[issue.field] ?? 'Unconfirmed detail'}</span>
+    {field && (field === 'opening' || record) && !(field === 'amount' && record?.schedule.amounts?.length) ? field === 'schedule.date'
+      ? <CardField {...editing} target={{ recordId: record!.id, field }} label={`${record!.label} ${record!.schedule.recurrence === 'once' ? 'date' : 'series start'}`}><span>{record!.schedule.date ? cardDate(record!.schedule.date) : 'Unknown'}</span><span className="card-badge" data-tone="caution">{status}</span></CardField>
+      : <AmountField {...editing} target={{ ...(field === 'opening' ? {} : { recordId: record!.id }), field }} label={field === 'opening' ? 'Cash at plan start' : `${record!.label} ${field}`} />
+      : <span className="card-badge" data-tone="caution">{status}</span>}
+    {issue.reason && <details className="card-terms"><summary>Why this matters</summary><p>{issue.reason}</p></details>}
+    {issue.beforeDate && <span className="card-meta">Before {cardDate(issue.beforeDate)}</span>}
+  </div>;
+}
+
+function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActive: boolean }) {
+  const { snapshot } = editing;
+  const [expanded, setExpanded] = useState(false);
+  const [focusedIds, setFocusedIds] = useState<string[] | null>(null);
+  const listId = useId();
+  const cards = snapshot.workspace?.cards ?? [];
+  const timeline = cards.find(card => card.template === 'timeline');
+  // Keep mounted editors and their position until focus leaves the commitment list.
+  const visibleIds = focusedIds ?? timeline?.recordIds?.slice(0, expanded ? undefined : 4) ?? [];
+  const plan = snapshot.accepted?.plan ?? snapshot.plan;
+  return <>{cards.filter(card => ['cash', 'timeline', 'questions', 'proposal'].includes(card.template)).map(card => {
+    if (card.template === 'questions') {
+      const issue = snapshot.workspace?.issues?.find(issue => card.issueIds?.includes(issue.id));
+      if (!issue || issue.recordIds.length > 0 && issue.recordIds.every(id => visibleIds.includes(id)) || ['opening', 'reserve'].includes(issue.field) && cards.some(card => card.template === 'cash')) return null;
+    }
+    return <article key={card.id} className={`companion-card companion-${card.template}`} aria-label={card.title}>
+      <h3>{card.title}</h3>
+      {card.template === 'cash' && <CashCard {...editing} card={card} />}
+      {card.template === 'timeline' && <><ol id={listId} className="card-records" aria-label="Next commitments"
+        onFocusCapture={() => { if (!focusedIds) setFocusedIds(visibleIds); }}
+        onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.querySelector('form')) setFocusedIds(null); }}>{visibleIds.map(id => {
+        const record = snapshot.facts.records.find(record => record.id === id);
+        return record && <FactRow key={id} {...editing} record={record} event={plan.events.find(event => event.recordId === id && card.eventIds?.includes(event.id))} />;
+      })}</ol>{(card.recordIds?.length ?? 0) > 4 && <button className="card-expand" aria-expanded={expanded} aria-controls={listId} onClick={() => { setFocusedIds(null); setExpanded(!expanded); }}>{expanded ? 'Show fewer commitments' : `Show ${card.recordIds!.length - 4} more`}</button>}</>}
+      {card.template === 'questions' && <UncertaintyCard {...editing} card={card} />}
+      {card.template === 'proposal' && <CardProposal {...editing} active={proposalActive} />}
+    </article>;
+  })}</>;
+}
+
+export function FinancialContext({ snapshot, stale, locked, onCommand, proposalActive }: {
+  snapshot: Snapshot | null; stale: boolean;
   locked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>; proposalActive: boolean;
 }) {
-  const proposalHeading = useRef<HTMLHeadingElement>(null);
-  const workspace = snapshot?.workspace;
-  const [recent, setRecent] = useState({ sessionId: snapshot?.sessionId, change: workspace?.change });
-  if (recent.sessionId !== snapshot?.sessionId || workspace?.change && workspace.change.id !== recent.change?.id)
-    setRecent({ sessionId: snapshot?.sessionId, change: workspace?.change });
-  const notes = snapshot ? changeNotes(snapshot, recent.sessionId === snapshot.sessionId ? recent.change : null) : [];
-  const blocked = locked || stale;
-  const plan = snapshot?.accepted?.plan ?? snapshot?.plan;
-  const changed = recent.change?.items.flatMap(item => item.cardIds ?? []) ?? [];
-  const cards = workspace?.cards ?? [];
-  const renderResults = (card: WorkspaceCard, identities: string[]) => card.resultIds?.filter(id => identities.includes(id)).map(id => {
-    const result = workspace!.results!.find(result => result.id === id)!;
-    if (id === 'reserveShortfall' && !snapshot!.facts.reservePaise && !result.amountPaise) return null;
-    return <div className="workspace-result" key={id}><p>{resultLabels[id] ?? 'Proposed result'}</p>
-      <p className="result-value">{money(result.amountPaise)}{result.date && id !== 'closing' && <span> · {dateLabel(result.date)}</span>}</p>
-      {result.state !== 'known' && <p className="hint">{resultStates[result.state]}</p>}
-      <ResultDetails result={result} snapshot={snapshot!} />
-    </div>;
-  });
-  function content(card: WorkspaceCard) {
-    if (!snapshot || !workspace || !plan) return null;
-    switch (card.template) {
-      case 'cash': return <>
-        <p className="result-value">{money(snapshot.facts.opening.amountPaise)}{snapshot.facts.opening.status === 'estimate' && <span> · Estimated</span>}</p>
-        <p>At the start of this plan, before upcoming commitments. Not spare spending money.</p>
-        {snapshot.facts.reservePaise > 0 && <p>Reserve floor: {money(snapshot.facts.reservePaise)} · Cash to keep aside, not spending.</p>}
-        {snapshot.facts.conflicts!.filter(item => item.field === 'opening').map(item => <ConflictReview key={item.id} conflict={item} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />)}
-        <div className="detail-actions"><Correction snapshot={snapshot} blocked={blocked} onCommand={onCommand} />
-          {workspace.results?.find(result => result.id === 'opening') && <ResultDetails snapshot={snapshot} result={workspace.results.find(result => result.id === 'opening')!} />}</div>
-      </>;
-      case 'income': case 'essential': case 'optional': case 'loans': case 'creditCards': return <>
-        <PagedList label={card.title} className="fact-rows" printable={false}>{(card.recordIds ?? []).map(id => {
-          const record = snapshot.facts.records.find(record => record.id === id)!;
-          return <FactRow key={id} record={record} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />;
-        })}</PagedList>
-        <div className="detail-actions">{card.resultIds?.map(id => workspace.results?.find(result => result.id === id)).filter(result => !!result).map(result =>
-          <Details key={result.id} label={resultLabels[result.id] ?? 'Dated figures'}><p>{money(result.amountPaise)} · {resultStates[result.state]}</p><ResultDetails snapshot={snapshot} result={result} /></Details>)}</div>
-      </>;
-      case 'questions': return <ol className="workspace-questions">{workspace.questions?.filter(question => card.issueIds?.includes(question.id)).map(question => {
-        const action = workspace.actions?.find(action => action.id === question.actionId);
-        const issue = workspace.issues?.find(issue => issue.id === question.id);
-        return <li key={question.id}><p className="question-title">{action?.question ?? issue?.question ?? 'Check this reported detail'}</p>
-          <p>{question.why}</p>{question.beforeDate && <p>Before {dateLabel(question.beforeDate)}</p>}
-          {action && ['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button type="button" className="detail-button" disabled={blocked} onClick={() => {
-            if (!blocked) onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' });
-          }}>{['clarify', 'confirmReceipt', 'verifyTerms'].includes(action.kind) ? 'I cannot confirm this now' : 'I cannot take this step now'}</button>}
-        </li>;
-      })}</ol>;
-      case 'timeline': return <>
-        <p>Payments come before income on the same day. Balances show requirements, not completed payments.</p>
-        <PagedList label="Dated requirements" className="timeline-rows" ordered>{plan.events.filter(event => card.eventIds?.includes(event.id)).map(event => {
-          const record = snapshot.facts.records.find(record => record.id === event.recordId);
-          const amount = event.amountBasis === 'requiredOnly' ? record?.amount : record?.target ?? record?.amount;
-          return <li key={event.id}><div className="timeline-date">{dateLabel(event.date)}{record?.schedule.certainty !== 'exact' && <span>Estimated date</span>}</div>
-            <div><strong>{event.label}</strong><p>{event.kind === 'income' ? 'Expected income' : 'Payment due'} · {money(event.amountPaise)}</p>
-              <p>{event.included ? event.amountBasis === 'assumed' ? 'Saved assumption · not paid' : amount?.status === 'estimate' ? 'Estimated requirement' : 'Reported requirement' : 'Excluded from balances'}{event.overdue && <> · Originally due {dateLabel(event.originalDueDate)}</>}</p>
-              {record?.kind === 'debt' && <p>{event.amountBasis === 'requiredOnly' ? 'Required / minimum only · intended payment unknown' : record.target ? 'Intended payment · includes minimum' : 'Required / minimum payment'}</p>}
-              {event.autoDebit && <p>Automatic debit reported</p>}
-              {!event.included && record?.kind === 'income' && <p>{reasons[workspace.contributions?.find(item => item.eventId === event.id && !item.id.startsWith('proposal:'))?.reason ?? '']} {incomeChecks(record).join('; ')}</p>}
-              <p>Balance after: <strong>{money(event.balancePaise)}</strong></p>
-            </div></li>;
-        })}</PagedList>
-        <div className="result-grid">{renderResults(card, ['closing', 'trough'])}</div>
-        <p>Closing cash is not spare spending money. Missing amounts and dates are not treated as zero.</p>
-      </>;
-      case 'gap': {
-        const gap = workspace.results?.find(result => result.id === 'firstGap');
-        const witnesses = workspace.results?.filter(result => card.resultIds?.includes(result.id)).flatMap(result => result.witnessEventIds ?? []) ?? [];
-        return <><div className="result-grid">{renderResults(card, ['firstGap', 'peakGap', 'reserveShortfall'])}</div>
-          {plan.events.filter(event => witnesses.includes(event.id)).map(event => <p key={event.id}><strong>{event.label}</strong> · {money(event.amountPaise)} due {dateLabel(event.date)} brings the balance to {money(event.balancePaise)}.</p>)}
-          {gap?.date && <Details label="Payments and later receipts"><PagedList label="Cash gap timing" className="evidence-list">{workspace.contributions!.filter(item =>
-            gap.contributionIds.includes(item.id) || gap.excludedIds.includes(item.id) && item.date && item.date >= gap.date! && snapshot.facts.records.some(record => record.id === item.recordId && record.kind === 'income'))
-            .map(item => <li key={item.id}><strong>{snapshot.facts.records.find(record => record.id === item.recordId)?.label ?? 'Opening cash'}</strong> · {money(item.amountPaise)}{item.date && <> · {dateLabel(item.date)}</>}
-              <p>{gap.excludedReasons?.[item.id] ? reasons[gap.excludedReasons[item.id]] : item.date && item.date > gap.date! ? 'Later receipt: cannot cover the earlier deadline.' : 'Part of the position at the first gap.'}{!item.included && ' Not counted in balances.'}</p></li>)}</PagedList></Details>}
-        </>;
-      }
-      case 'proposal': return <ProposalReview snapshot={snapshot} active={proposalActive} locked={blocked} onCommand={onCommand} headingRef={proposalHeading} />;
-      case 'assumptions': return snapshot.accepted && <><Assumptions scenario={snapshot.accepted} /><p>Reported facts remain separate. Accepted does not mean paid.</p></>;
-      case 'invalidation': return <><p>These assumptions are no longer included. Review a fresh proposal before consenting again.</p><PagedList label="Affected assumptions" className="evidence-list">{card.rows?.map(row => <li key={row.field}>{typeof row.value === 'string' ? row.value : 'A saved assumption needs checking.'}</li>) ?? []}</PagedList>{snapshot.accepted && <p>Unaffected saved assumptions remain in the picture.</p>}</>;
-      case 'outcome': {
-        const outcome = plan.decisionAssessment?.outcome;
-        return <>{outcome && <>
-          <p className="question-title">{outcome.readiness === 'qualified' ? 'Your picture is still taking shape' : outcomeLabels[outcome.branch]}</p>
-          <p>{outcome.summary}</p><p>{outcome.notCovered}</p>
-          <Details label="Plan details"><p>{outcome.covered}</p><p>{outcome.conditions}</p><p>{outcome.nextStep}</p><p>{outcome.revisit}</p></Details>
-        </>}
-          {!!snapshot.facts.decision?.responses?.length && <p aria-label="Saved answers">{snapshot.facts.decision.responses.some(item => item.response === 'unavailable') && 'Unconfirmed details remain open.'}{snapshot.facts.decision.responses.some(item => item.response === 'declined') && ' Declined cuts are not assumed.'}</p>}
-          {workspace.actions && workspace.actions.some(action => !workspace.questions?.some(question => question.actionId === action.id)) && <section aria-label="Next steps"><h5>Next steps</h5><ol className="workspace-questions">{workspace.actions.filter(action => !workspace.questions?.some(question => question.actionId === action.id)).map(action => {
-            const choice = workspace.choices?.find(choice => choice.id === action.choiceId);
-            const label = action.recordIds.map(id => snapshot.facts.records.find(record => record.id === id)?.label).filter(Boolean).join(', ');
-            return <li key={action.id}><p><strong>{actionLabels[action.kind] ?? 'Next step'}</strong>{label && <> · {label}</>}{action.beforeDate && <> · Before {dateLabel(action.beforeDate)}</>}</p><p>{action.question}</p>
-              <Details label={`Details: ${actionLabels[action.kind] ?? 'Next step'}${label ? ` · ${label}` : ''}`}><ActionDetails action={action} plan={{ ...plan, decisionAssessment: { ...plan.decisionAssessment, choices: workspace.choices } }} facts={snapshot.facts} /></Details>
-              {['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button disabled={blocked} onClick={() => {
-                if (!blocked) onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' });
-              }}>{['clarify', 'confirmReceipt', 'verifyTerms'].includes(action.kind) ? 'I cannot confirm this now' : 'I cannot take this step now'}</button>}
-              {action.kind === 'previewChange' && !!choice?.adjustmentAmounts.length && <button disabled={blocked} onClick={() => {
-                if (!blocked) onCommand({ type: 'respondToAction', actionId: action.id, response: 'declined' });
-              }}>Do not suggest this cut</button>}
-              {action.kind === 'previewChange' && !!choice?.adjustmentAmounts.length && <button disabled={blocked || !!snapshot.preview} onClick={() => {
-                if (!blocked && !snapshot.preview) onCommand({ type: 'previewAdjustments', adjustments: choice.adjustmentAmounts.map(item => ({ eventId: item.eventId, amount: decimal(item.amountPaise) })) });
-              }}>Compare this change</button>}
-            </li>;
-          })}</ol></section>}
-          {!!workspace.issues?.some(issue => !workspace.questions?.some(question => question.id === issue.id)) && <section aria-label="Other open checks"><h5>Still needs checking</h5>
-            <PagedList label="Other open checks" className="evidence-list">{workspace.issues.filter(issue => !workspace.questions?.some(question => question.id === issue.id)).map(issue =>
-              <li key={issue.id}><p className="question-title">{issue.question}</p><p>{issue.reason}</p>{issue.beforeDate && <p>Before {dateLabel(issue.beforeDate)}</p>}<p>Still open · not confirmed</p></li>)}</PagedList>
-          </section>}
-        </>;
-      }
-    }
-  }
+  const change = snapshot?.workspace?.change;
+  const decision = change?.items.find(item => ['accepted', 'rejected', 'discarded', 'invalidated'].includes(item.state));
+  const notes = snapshot && change?.items.some(item => ['updated', 'resolved'].includes(item.state)) ? changeNotes(snapshot, change).slice(0, 2) : [];
   return <section className="financial-context" aria-label="Your financial picture">
-    <header className="context-heading"><h2>{mode === 'live' ? 'Your financial picture' : 'Your 30-day plan'}</h2>
-      {snapshot && <p className="context-period">{dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</p>}
+    <header className="context-heading"><h2>Your financial picture</h2>
+      {snapshot && <p className="context-period">{cardDate(snapshot.anchorDate)} – {cardDate(lastDate(snapshot.endDateExclusive))}</p>}
     </header>
-    <div className="context-updates">
-      <div className="change-note" role="status" aria-live="polite" aria-atomic="true">{stale ? 'Updates paused · showing saved figures' : notes.length > 0 && <><p>Latest saved change</p><ul>{notes.slice(0, 3).map(note => <li key={note}>{note}</li>)}</ul></>}</div>
-      {notes.length > 0 && <Details label="Recent changes"><PagedList label="Recent changes" className="evidence-list">{notes.map(note => <li key={note}>{note}</li>)}</PagedList></Details>}
-      {cards.some(card => card.template === 'proposal') && <button type="button" className="detail-button" disabled={!proposalActive} onClick={() => proposalHeading.current?.focus()}>Review proposed change</button>}
-    </div>
+    <div className="card-update" role="status" aria-live="polite" aria-atomic="true">{stale ? 'Updates paused · showing saved figures' : decision ? changeStates[decision.state] : notes.length ? `Saved · ${notes.join(' · ')}` : ''}</div>
     <div className="context-scroll" tabIndex={0} role="region" aria-label="Financial picture details">
-      {!cards.length && <div className="context-empty"><h3>No figures yet</h3><p>They’ll appear as you talk.</p></div>}
-      {(Object.keys(sections) as (keyof typeof sections)[]).map(section => {
-        const group = cards.filter(card => card.section === section);
-        return group.length > 0 && <section className="workspace-section" aria-label={sections[section]} key={section}><h3>{sections[section]}</h3>
-          {group.map(card => <FinancialCard key={card.id} card={card} changed={changed.includes(card.id)} fingerprint={JSON.stringify([card,
-            snapshot?.facts.records.filter(record => card.recordIds?.includes(record.id)), workspace?.results?.filter(result => card.resultIds?.includes(result.id)),
-            snapshot?.facts.conflicts?.filter(conflict => card.recordIds?.includes(conflict.recordId ?? '') || card.template === 'cash' && conflict.field === 'opening'),
-            plan?.events.filter(event => card.eventIds?.includes(event.id))])}>{content(card)}</FinancialCard>)}
-        </section>;
-      })}
+      {snapshot && !!snapshot.workspace?.cards?.length && <PlanSummary snapshot={snapshot} stale={stale} />}
+      {!snapshot?.workspace?.cards?.length ? <p className="context-empty">Figures appear as you talk</p>
+        : <CompanionCards key={snapshot.sessionId} snapshot={snapshot} blocked={locked || stale} onCommand={onCommand} proposalActive={proposalActive} />}
     </div>
   </section>;
 }

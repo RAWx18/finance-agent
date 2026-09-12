@@ -1,0 +1,19 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.plan-summary { min-width: 0; padding: .8rem .9rem; margin-bottom: .65rem; border: 1px solid var(--line); border-left: 3px solid var(--teal); border-radius: 10px; background: var(--paper); overflow-wrap: anywhere; }
+.plan-summary[data-tone="risk"] { border-left-color: #ad742d; }
+.plan-summary h3 { margin: 0 0 .5rem; font-size: .95rem; line-height: 1.45; font-weight: 600; }
+.plan-summary p { margin: .4rem 0 0; font-size: .85rem; }
+.plan-gap { display: flex; flex-wrap: wrap; gap: .2rem .6rem; align-items: baseline; font-size: .85rem; }
+.plan-gap strong { font-size: 1.3rem; font-variant-numeric: tabular-nums; color: #895019; }
+.plan-gap-explanation { flex-basis: 100%; line-height: 1.5; }
+.result-qualification { display: block; width: 100%; color: var(--muted); font-size: .78rem; line-height: 1.5; font-weight: 400; }
+.result-qualification > span { display: block; }
+.plan-summary .result-qualification { margin-top: .25rem; }
+.plan-next > strong { display: block; font-size: .78rem; color: var(--muted); }
+.plan-conditions { margin-top: .5rem; font-size: .8rem; color: var(--muted); }
+.plan-conditions summary { cursor: pointer; }
+.plan-deadline { display: block; font-size: .78rem; margin-top: .15rem; }
+.plan-basis, .plan-expiry { color: var(--muted); font-size: .78rem; line-height: 1.5; }
+.plan-expiry { margin: .5rem 0; }
+@media print { .plan-summary { break-inside: avoid; } }

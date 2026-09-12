@@ -27,14 +27,16 @@ beforeEach(() => {
 });
 
 async function navigate(user: ReturnType<typeof userEvent.setup>, path: MoneyRoute) {
-  await user.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: moneyRoutes[path] }));
+  const link = within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: path === '/money' ? 'Overview' : moneyRoutes[path] });
+  expect(link).toHaveAttribute('href', path);
+  await user.click(link);
   await waitFor(() => expect(screen.getByRole('main')).toHaveAttribute('data-route', path));
 }
 
 async function open() {
   const user = userEvent.setup();
   render(<App />);
-  await screen.findByRole('button', { name: /Review saved picture/ });
+  await screen.findByRole('button', { name: 'Start conversation' });
   await waitFor(() => expect(api.call).toHaveBeenCalledOnce());
   const money = within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
   await waitFor(() => expect(money).not.toHaveAttribute('aria-disabled', 'true'));
@@ -51,10 +53,13 @@ async function open() {
 
 async function closing(user: ReturnType<typeof userEvent.setup>, amount: string) {
   await navigate(user, '/money');
-  await user.click(within(screen.getByRole('region', { name: 'What needs attention' })).getByRole('button', { name: 'Plan details' }));
+  expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent(`Closing forecast${amount.replace(/\.00$/, '')}`);
+  expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Not a spending allowance');
+  await user.click(within(screen.getByRole('region', { name: 'Cash flow forecast' })).getByRole('button', { name: 'View calculation' }));
   const dialog = screen.getByRole('dialog', { name: 'Plan details' });
-  expect(within(dialog).getByText('Projected closing cash · Calculated').parentElement).toHaveTextContent(amount);
-  expect(dialog).toHaveTextContent('Closing cash is not spare spending money.');
+  expect(within(dialog).getByText('Projected closing cash').parentElement).toHaveTextContent(amount.replace(/\.00$/, ''));
+  expect(dialog).toHaveTextContent('The first and largest shortfalls are not amounts to add together.');
+  expect(dialog).toHaveTextContent('Unconfirmed receipts, amounts and dates are not available money.');
   await user.click(within(dialog).getByRole('button', { name: 'Close plan details' }));
 }
 
@@ -71,7 +76,7 @@ describe('integrated spending comparison', () => {
   it('loads custom choices only on request in Plan changes and shows server next steps with associated records', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('button', { name: /Review saved picture/ });
+    await screen.findByRole('button', { name: 'Start conversation' });
     await waitFor(() => expect(api.call).toHaveBeenCalledOnce());
     const money = within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
     await waitFor(() => expect(money).not.toHaveAttribute('aria-disabled', 'true'));
@@ -80,8 +85,8 @@ describe('integrated spending comparison', () => {
     await waitFor(() => expect(screen.getByRole('main')).toHaveAttribute('data-route', '/money'));
     const steps = page.getByRole('region', { name: 'What needs attention' });
     expect(api.options).not.toHaveBeenCalled();
-    expect(steps).toHaveTextContent('₹7,000.00');
-    expect(steps).toHaveTextContent('13 Sept 2026');
+    expect(within(steps).getByRole('heading')).toHaveTextContent(planningSnapshot().plan.decisionAssessment!.outcome!.summary);
+    expect(within(steps).getByLabelText('First shortfall')).toHaveTextContent('₹7,000First shortfall · 13 Sept');
     expect(steps).toHaveTextContent('Contact the provider before the due date.');
     expect(page.getByRole('region', { name: 'Next money and payments' })).toHaveTextContent('Rent');
     await waitFor(() => expect(Stream.instances).toHaveLength(1));
@@ -105,7 +110,7 @@ describe('integrated spending comparison', () => {
   it('includes assumptions accepted over live updates before the comparison is opened', async () => {
     const user = userEvent.setup();
     render(<App />);
-    await screen.findByRole('button', { name: /Review saved picture/ });
+    await screen.findByRole('button', { name: 'Start conversation' });
     await waitFor(() => expect(api.call).toHaveBeenCalledOnce());
     const money = within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
     await waitFor(() => expect(money).not.toHaveAttribute('aria-disabled', 'true'));
@@ -197,7 +202,7 @@ describe('integrated spending comparison', () => {
     expect(within(before).getByText('Projected closing cash').parentElement).toHaveTextContent('₹10,000.00');
     expect(within(after).getByText('Assumed closing cash').parentElement).toHaveTextContent('₹12,000.00');
     for (const values of [before, after]) {
-      expect(within(values).getByText('First cash gap').parentElement).toHaveTextContent('₹7,000.00 · 13 Sept 2026');
+      expect(within(values).getByText('First cash gap').parentElement).toHaveTextContent('₹7,000First shortfall · 13 Sept');
       expect(within(values).getByText('Largest cash gap').parentElement).toHaveTextContent('₹16,000.00 · 18 Sept 2026');
     }
     expect(preview).toHaveTextContent('Not all costs are included');

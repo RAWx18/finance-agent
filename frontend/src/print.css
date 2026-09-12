@@ -4,7 +4,7 @@
   :root { color: #000; background: #fff; font-size: 10pt; }
   body:has(dialog[open]) { overflow: visible !important; }
   .no-print, .skip-link { display: none !important; }
-  .journey-progress, .header-note { display: none !important; }
+  .header-note { display: none !important; }
   #root { display: block !important; height: auto !important; }
   .product-main { display: block !important; min-height: 0 !important; }
   dialog.dialog { display: none !important; }
