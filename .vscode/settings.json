@@ -1,4 +1,7 @@
 {
     "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv",
-    "python.analysis.extraPaths": ["${workspaceFolder}/backend"]
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}/backend"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }
