@@ -9,6 +9,7 @@ from app.voice_tools import conversation, introduction
 
 
 def test_identity_introduction_and_style_come_from_one_configuration(config):
+    """Verify voice configuration controls identity, introduction, language, and reply limits."""
     voice = VoiceConfig.model_validate(
         {
             **config.voice.model_dump(),
@@ -42,6 +43,7 @@ def test_identity_introduction_and_style_come_from_one_configuration(config):
     ],
 )
 def test_introduction_rejects_nonexistent_or_executable_format_fields(config, template):
+    """Verify introduction templates reject unknown fields, attribute access, and format tricks."""
     with pytest.raises(ValidationError):
         VoiceConfig.model_validate({**config.voice.model_dump(), "introduction": template})
 
@@ -49,6 +51,7 @@ def test_introduction_rejects_nonexistent_or_executable_format_fields(config, te
 @pytest.mark.parametrize("name", ["assistant_name", "introduction", "language", "tone"])
 @pytest.mark.parametrize("value", ["", "  ", "Words\nmore words", "Words\0more words"])
 def test_conversation_copy_is_nonempty_plain_text(config, name, value):
+    """Verify conversational text settings reject blank values and control characters."""
     with pytest.raises(ValidationError):
         VoiceConfig.model_validate({**config.voice.model_dump(), name: value})
 
@@ -69,5 +72,6 @@ def test_conversation_copy_is_nonempty_plain_text(config, name, value):
     ],
 )
 def test_conversation_limits_fail_configuration_instead_of_running_unbounded(config, name, value):
+    """Verify invalid model, speech, turn, and response settings fail configuration validation."""
     with pytest.raises(ValidationError):
         VoiceConfig.model_validate({**config.voice.model_dump(), name: value})

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def owner(request: Request) -> Access:
+    """Require authenticated access attached to the request."""
     access = getattr(request.state, "access", None)
     if not isinstance(access, Access):
         raise AuthProblem(401, "unauthenticated")
@@ -37,10 +38,12 @@ def owner(request: Request) -> Access:
 
 
 def router(auth: Auth, calls: CallManager) -> APIRouter:
+    """Build authentication and account routes for the supplied services."""
     routes = APIRouter()
     secure = auth.environment.public_origin.startswith("https:")
 
     def clear(response: Response, *, session: bool = False) -> None:
+        """Expire the login-flow cookie and, when requested, the session cookie."""
         for name in (COOKIE, FLOW_COOKIE) if session else (FLOW_COOKIE,):
             response.delete_cookie(
                 auth.cookie_name(name), path="/", httponly=True, secure=secure, samesite="lax"
@@ -48,6 +51,7 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.get("/api/auth/settings", response_model=AuthSettings)
     async def settings() -> AuthSettings:
+        """Return public sign-in availability and session duration settings."""
         return AuthSettings(
             google_available=auth.environment.google_available,
             session_hours=auth.config.session_hours,
@@ -55,6 +59,7 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.post("/api/auth/login", response_model=LoginURL)
     async def login(request: Request, response: Response, body: LoginRequest) -> LoginURL:
+        """Start Google sign-in and bind the login flow to the browser."""
         cookies: list[str | None] = []
         for name in (COOKIE, FLOW_COOKIE):
             try:
@@ -78,6 +83,7 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.get("/auth/callback", response_model=None, include_in_schema=False)
     async def callback(request: Request) -> RedirectResponse:
+        """Complete Google sign-in or redirect to a public login failure page."""
         binding = None
         flow = None
         failure = "failed"
@@ -144,14 +150,17 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.get("/api/auth/session", response_model=AuthSession)
     async def session(request: Request) -> AuthSession:
+        """Return the authenticated user's current session."""
         return await auth.session(owner(request))
 
     @routes.post("/api/auth/refresh", response_model=AuthSession)
     async def refresh(request: Request, body: AuthModel) -> AuthSession:
+        """Extend the authenticated session's idle lifetime and return its details."""
         return await auth.session(owner(request), refresh=True)
 
     @routes.post("/api/auth/logout", status_code=204)
     async def logout(request: Request, body: AuthModel) -> Response:
+        """Sign out the browser, clear its cookies, and settle revoked calls."""
         cookies: list[str | None] = []
         for name in (COOKIE, FLOW_COOKIE):
             try:
@@ -166,10 +175,12 @@ def router(auth: Auth, calls: CallManager) -> APIRouter:
 
     @routes.patch("/api/account", response_model=User)
     async def account(request: Request, body: AccountUpdate) -> User:
+        """Change the authenticated user's display name."""
         return await auth.rename(owner(request), body.display_name)
 
     @routes.delete("/api/account", response_model=AccountDeleted)
     async def delete(request: Request, response: Response, body: AccountDelete) -> AccountDeleted:
+        """Delete the account, clear browser access, and attempt Google token revocation."""
         token = await auth.delete(owner(request))
         clear(response, session=True)
         await calls.settle_revoked()

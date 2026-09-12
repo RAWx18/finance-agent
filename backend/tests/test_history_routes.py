@@ -27,6 +27,7 @@ from .test_auth import begin, callback
     ],
 )
 def test_history_deep_link_survives_protected_reload_and_oauth(tmp_path, config, path):
+    """Verify valid chat deep links survive login redirection, OAuth, and protected reloads."""
     (tmp_path / "index.html").write_text("<html>application</html>")
     application = auth_app(config, Environment(data_dir=tmp_path), lambda: NOW, tmp_path)
     with TestClient(application, base_url=ORIGIN, headers={"Origin": ORIGIN}) as client:
@@ -79,6 +80,7 @@ def test_history_deep_link_survives_protected_reload_and_oauth(tmp_path, config,
     ],
 )
 def test_oauth_rejects_history_path_injection(path):
+    """Verify login return paths reject malformed, injected, and external chat destinations."""
     with pytest.raises(ValidationError):
         LoginRequest(returnTo=path)
 
@@ -87,10 +89,12 @@ def test_oauth_rejects_history_path_injection(path):
     "path", ["/history/UPPER", "/history/x/y", "/history/x--y", "/app/UPPER", "/app/x/y"]
 )
 def test_unknown_history_routes_do_not_serve_spa(client, path):
+    """Verify malformed chat routes return not found rather than serving the application shell."""
     assert client.get(path).status_code == 404
 
 
 def test_history_openapi_matches_frontend_contract(client):
+    """Verify history schemas, route methods, and conversation slug fields match the UI contract."""
     schema = client.app.openapi()
     models = schema["components"]["schemas"]
     summary = {"slug", "title", "startedAt", "endedAt", "expiresAt", "messageCount"}

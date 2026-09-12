@@ -28,6 +28,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 @pytest.fixture
 async def voice(lifecycle, voice_boundaries, store):
+    """Yield a resumed call for one of two saved chats using isolated voice boundaries."""
     store.config = store.config.model_copy(
         update={"voice": store.config.voice.model_copy(update={"speech_timeout_seconds": 0.1})}
     )
@@ -96,6 +97,7 @@ async def voice(lifecycle, voice_boundaries, store):
 
 
 async def test_selected_chat_catchup_is_readonly_and_never_replays_history(voice, synthesis, store):
+    """Verify selected-chat catch-up uses only its dialogue without writes or history replay."""
     before = await History(store).get("owner", voice.slug)
     voice.responses.put_nowait(text_reply("We were discussing rent; when is it due?"))
     await voice.pipeline.worker.queue_frame(LLMRunFrame())
@@ -134,6 +136,7 @@ async def test_selected_chat_catchup_is_readonly_and_never_replays_history(voice
 
 
 async def test_resumed_opening_rejects_financial_tool_replay(voice, store):
+    """Verify resumed openings reject scripted financial tool replay without changing facts."""
     voice.responses.put_nowait(
         tool_reply(
             "update_facts",
@@ -150,6 +153,7 @@ async def test_resumed_opening_rejects_financial_tool_replay(voice, store):
 
 
 async def test_fresh_user_turn_can_correct_a_without_changing_b(voice, synthesis, store):
+    """Verify a fresh user correction changes only the selected conversation's saved facts."""
     voice.responses.put_nowait(text_reply("We were discussing rent; what is next?"))
     await ready(voice)
     await asyncio.wait_for(voice.requests.get(), 2)
@@ -187,6 +191,7 @@ async def test_fresh_user_turn_can_correct_a_without_changing_b(voice, synthesis
 
 
 async def test_user_first_after_reconnect_preempts_catchup(voice, synthesis):
+    """Verify user-first input after reconnect preempts catch-up guidance and speech."""
     voice.responses.put_nowait(tool_reply("read_state", {}, "current-question"))
     await complete_turn(voice, "Before we continue, what do you have saved?")
     request = await asyncio.wait_for(voice.requests.get(), 2)

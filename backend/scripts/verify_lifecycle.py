@@ -32,6 +32,7 @@ from scripts.verify_continuous_voice import (  # noqa: E402
 
 
 def silence(path):
+    """Write one second of silent mono PCM for the browser microphone fixture."""
     with wave.open(str(path), "wb") as audio:
         audio.setnchannels(1)
         audio.setsampwidth(2)
@@ -40,6 +41,7 @@ def silence(path):
 
 
 async def stop(process, seconds):
+    """Stop a child within its grace period and report whether forced termination was avoided."""
     if process is None:
         return True
     if process.returncode is None:
@@ -65,6 +67,7 @@ async def stop(process, seconds):
 
 
 async def cleanup_rooms(path, key):
+    """Delete rooms in a validated owned-room manifest and verify their absence in Daily."""
     import aiohttp
 
     results = []
@@ -100,6 +103,7 @@ async def cleanup_rooms(path, key):
 
 
 async def verify(cycles, mode):
+    """Run isolated live call lifecycle checks and verify child and room cleanup."""
     from dotenv import dotenv_values
 
     values = dotenv_values(ROOT / ".env", interpolate=False)
@@ -153,6 +157,7 @@ async def verify(cycles, mode):
                 )
 
                 async def drain():
+                    """Drain server logs, signal readiness, and retain bounded failure metadata."""
                     while line := await server.stderr.readline():
                         if b"Uvicorn running on" in line:
                             ready.set()
@@ -222,6 +227,7 @@ async def verify(cycles, mode):
 
 
 def main():
+    """Parse billing consent and run bounded lifecycle verification with failure reporting."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-billable", action="store_true", required=True)
     parser.add_argument("--cycles", type=int, choices=(1, 2), default=2)
@@ -231,6 +237,7 @@ def main():
     arguments = parser.parse_args()
 
     async def run():
+        """Run lifecycle verification with SIGTERM cancellation where supported."""
         task = asyncio.current_task()
         if os.name == "posix":
             asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)

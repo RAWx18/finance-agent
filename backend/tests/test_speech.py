@@ -28,6 +28,7 @@ from .test_voice import environment
 
 
 def test_native_services_and_hd_ssml(config):
+    """Verify native speech settings, phrase hints, escaped HD SSML, and audio timeout bounds."""
     stt = SpeechRecognition(
         api_key="test-only",
         region="centralindia",
@@ -83,6 +84,7 @@ def test_native_services_and_hd_ssml(config):
 
 
 async def test_synthesis_scopes_callbacks_and_streams_native_audio(monkeypatch):
+    """Verify synthesis streams native audio with its context and disconnects request callbacks."""
     from pipecat.frames.frames import TTSAudioRawFrame
 
     synthesizer = Mock()
@@ -92,6 +94,7 @@ async def test_synthesis_scopes_callbacks_and_streams_native_audio(monkeypatch):
     tts.add_word_timestamps = AsyncMock()
 
     def stream(ssml):
+        """Emit native audio and completion callbacks for the requested reported-cash SSML."""
         assert "Reported cash" in ssml
         synthesizer.synthesizing.connect.call_args.args[0](
             SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00"))
@@ -115,6 +118,7 @@ async def test_synthesis_scopes_callbacks_and_streams_native_audio(monkeypatch):
 
 
 async def test_phrase_hints_precede_continuous_recognition(config, monkeypatch):
+    """Verify phrase hints precede recognition startup and disconnect releases native resources."""
     stt = SpeechRecognition(
         api_key="test-only", region="centralindia", phrases=config.voice.stt_phrases
     )
@@ -149,6 +153,7 @@ async def test_phrase_hints_precede_continuous_recognition(config, monkeypatch):
 
 
 async def test_recognizer_failure_is_sanitized(config, monkeypatch):
+    """Verify recognizer startup failures report a sanitized permanent error."""
     stt = SpeechRecognition(
         api_key="test-only", region="centralindia", phrases=config.voice.stt_phrases
     )
@@ -162,6 +167,7 @@ async def test_recognizer_failure_is_sanitized(config, monkeypatch):
 
 @pytest.mark.parametrize("queued", [False, True])
 async def test_native_start_settles_before_stop_after_cancellation(config, monkeypatch, queued):
+    """Verify cancellation waits for queued or running native startup before stopping."""
     stt = SpeechRecognition(
         api_key="test-only",
         region="centralindia",
@@ -181,10 +187,12 @@ async def test_native_start_settles_before_stop_after_cancellation(config, monke
     calls = []
 
     def blocked():
+        """Signal native worker entry and block until the test releases it."""
         loop.call_soon_threadsafe(entered.set)
         release.wait()
 
     def start():
+        """Record native startup after any directly blocked start has been released."""
         if not queued:
             blocked()
         calls.append("start")
@@ -198,6 +206,7 @@ async def test_native_start_settles_before_stop_after_cancellation(config, monke
         run_in_executor = loop.run_in_executor
 
         def submit(pool, function, *args):
+            """Route native work through the single-worker executor and signal submission."""
             future = run_in_executor(executor, function, *args)
             submitted.set()
             return future
@@ -234,6 +243,7 @@ async def test_native_start_settles_before_stop_after_cancellation(config, monke
 
 
 async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monkeypatch):
+    """Verify timed-out native startup stays tracked until it settles and recognition can stop."""
     stt = SpeechRecognition(
         api_key="test-only",
         region="centralindia",
@@ -250,6 +260,7 @@ async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monke
     loop = asyncio.get_running_loop()
 
     def start():
+        """Signal recognizer startup and hold the native future beyond the startup deadline."""
         loop.call_soon_threadsafe(entered.set)
         release.wait()
 
@@ -275,6 +286,7 @@ async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monke
 
 @pytest.mark.parametrize("service", ["recognition", "synthesis"])
 async def test_failed_native_stop_remains_unconfirmed(config, monkeypatch, service):
+    """Verify failed native stops remain tracked and cleanup reports failure without retry."""
     provider = Mock()
     if service == "recognition":
         adapter = SpeechRecognition(api_key="test-only", region="centralindia", phrases=[])
@@ -302,6 +314,7 @@ async def test_failed_native_stop_remains_unconfirmed(config, monkeypatch, servi
 
 @pytest.mark.parametrize("region", ["https://centralindia", "a.b", "a/b", "a@b", "-a", "a-", "a\n"])
 def test_region_rejects_unsafe_hostname_labels(region):
+    """Verify speech regions reject unsafe hostname labels and embedded URL syntax."""
     with pytest.raises(ValidationError):
         Environment(azure_speech_region=region)
 
@@ -317,6 +330,7 @@ def test_region_rejects_unsafe_hostname_labels(region):
     ],
 )
 def test_only_missing_environment_blocks_voice(config, tmp_path, name):
+    """Verify missing provider environment values report the specific setup requirement."""
     env = environment(tmp_path)
     assert unavailable_reason(config, env) is None
     env = env.model_copy(update={name: None if name.endswith("key") else ""})
@@ -326,6 +340,7 @@ def test_only_missing_environment_blocks_voice(config, tmp_path, name):
 
 @pytest.fixture
 def voice_http(config, monkeypatch):
+    """Stub the voice-list HTTP session with the configured female English voice."""
     response = AsyncMock()
     response.status = 200
     response.json.return_value = [
@@ -346,6 +361,7 @@ def voice_http(config, monkeypatch):
 
 
 async def test_exact_resource_voice_check(config, tmp_path, voice_http):
+    """Verify voice preflight queries the configured resource with its key and without redirects."""
     http, response = voice_http
     await check_voice(config, environment(tmp_path))
     http.get.assert_called_once_with(
@@ -359,6 +375,7 @@ async def test_exact_resource_voice_check(config, tmp_path, voice_http):
 async def test_configured_gender_and_locale_are_verified_without_fallback(
     config, tmp_path, voice_http
 ):
+    """Verify preflight requires the configured voice, gender, and locale without substitution."""
     _, response = voice_http
     config = config.model_copy(
         update={
@@ -387,6 +404,7 @@ async def test_configured_gender_and_locale_are_verified_without_fallback(
 async def test_unsupported_sdk_locale_blocks_preflight_and_paid_room(
     store, config, tmp_path, voice_http, monkeypatch, field
 ):
+    """Verify unsupported SDK locales block voice-list requests and paid room creation."""
     await store.create("owner")
     config = config.model_copy(update={"voice": config.voice.model_copy(update={field: "xx-YY"})})
     rooms = Mock()
@@ -403,6 +421,7 @@ async def test_unsupported_sdk_locale_blocks_preflight_and_paid_room(
 
 @pytest.mark.parametrize("status", [301, 401, 403, 429, 500])
 async def test_voice_list_http_failures_are_actionable(config, tmp_path, voice_http, status):
+    """Verify voice-list HTTP errors expose status and setup advice without parsing the body."""
     _, response = voice_http
     response.status = status
     with pytest.raises(Problem, match=f"HTTP {status}") as error:
@@ -416,6 +435,7 @@ async def test_voice_list_http_failures_are_actionable(config, tmp_path, voice_h
     [("ShortName", "other"), ("Gender", "Male"), ("Locale", "hi-IN"), ("Locale", "en-US")],
 )
 async def test_no_voice_fallback(config, tmp_path, voice_http, field, value):
+    """Verify mismatched voice names, genders, and locales cannot serve as fallbacks."""
     _, response = voice_http
     response.json.return_value[0][field] = value
     with pytest.raises(Problem, match="Configured female English voice is unavailable"):
@@ -426,6 +446,7 @@ async def test_no_voice_fallback(config, tmp_path, voice_http, field, value):
     "failure", [ValueError("secret"), aiohttp.ClientError("secret"), TimeoutError("secret")]
 )
 async def test_voice_check_transport_errors_are_sanitized(config, tmp_path, voice_http, failure):
+    """Verify voice preflight sanitizes transport and parsing errors while retaining advice."""
     http, _ = voice_http
     http.get.side_effect = failure
     with pytest.raises(Problem, match="verify the resource region") as error:
@@ -434,6 +455,7 @@ async def test_voice_check_transport_errors_are_sanitized(config, tmp_path, voic
 
 
 async def test_preflight_failure_creates_no_room(store, config, tmp_path, voice_http, monkeypatch):
+    """Verify failed voice preflight creates no room or listener and keeps setup details private."""
     await store.create("owner")
     _, response = voice_http
     response.json.return_value = []

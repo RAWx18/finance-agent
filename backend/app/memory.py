@@ -16,6 +16,8 @@ from .store import Problem, Store
 
 
 class MemoryChange(Model):
+    """Evidence-backed creation, replacement, or deletion of a scoped conversation note."""
+
     scope: Literal["common", "user", "chat"] = Field(
         description="common: stable preferences about how to communicate, such as reply style "
         "or form of address, not current activities. user: explicitly requested cross-chat "
@@ -33,6 +35,7 @@ class MemoryChange(Model):
     @field_validator("text")
     @classmethod
     def validate_text(cls, value: str | None) -> str | None:
+        """Validate and trim note text while allowing explicit deletion."""
         if value is None:
             return None
         if not value.strip() or any(unicodedata.category(char).startswith("C") for char in value):
@@ -41,12 +44,16 @@ class MemoryChange(Model):
 
 
 class Memory:
+    """Account- and conversation-scoped access to retained nonfinancial notes."""
+
     def __init__(self, store: Store, owner: Access, call_id: UUID):
+        """Bind memory access to the store, authenticated owner, and active call."""
         self.store = store
         self.owner = owner
         self.call_id = call_id
 
     async def read(self) -> dict[str, Any]:
+        """Retrieve the current profile and unexpired notes for the active conversation."""
         store = self.store
         await store.check(self.owner)
         async with store.lock, store.transaction():
@@ -89,6 +96,7 @@ class Memory:
             }
 
     async def update(self, change: MemoryChange, user_turn: str) -> dict[str, Any]:
+        """Apply an evidence-backed note change within privacy and retention limits."""
         store = self.store
         evidence = " ".join(change.evidence.casefold().split())
         if not evidence or evidence not in " ".join(user_turn.casefold().split()):

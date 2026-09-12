@@ -48,6 +48,7 @@ pytestmark = pytest.mark.parametrize(
 async def test_response_failure_continues_once_without_replaying_writes(
     voice, synthesis, store, committed, cause
 ):
+    """Verify transient response failures resume once without replaying committed writes."""
     pipeline = voice.pipeline
     pipeline.client_ready.set()
     identity = pipeline.context, pipeline.worker, pipeline.task
@@ -55,14 +56,19 @@ async def test_response_failure_continues_once_without_replaying_writes(
     requests = []
 
     class Stream(httpx.AsyncByteStream):
+        """Synthetic response stream that stalls after an unfinished answer."""
+
         async def __aiter__(self):
+            """Yield partial answer text and then wait indefinitely."""
             yield text_reply("Unfinished private answer.").content.replace(b"data: [DONE]\n\n", b"")
             await asyncio.Event().wait()
 
         async def aclose(self):
+            """Signal closure of the stalled synthetic response stream."""
             closed.set()
 
     async def model(request):
+        """Script an optional write, a transient response failure, and a tool-free recovery."""
         body = json.loads(request.content)
         requests.append(body)
         if committed and len(requests) == 1:
@@ -123,6 +129,7 @@ async def test_response_failure_continues_once_without_replaying_writes(
 async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts(
     voice, synthesis, store, cause
 ):
+    """Verify synthesis failures retire callbacks while retaining facts for safe continuation."""
     voice.pipeline.client_ready.set()
     voice.responses.put_nowait(
         tool_reply("update_facts", {"expectedRevision": 0, "opening": money("200")}, "saved")
@@ -188,6 +195,7 @@ async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts
 
 @pytest.mark.parametrize("kind", ["session_stopped", "canceled", "malformed"])
 async def test_stt_loss_fails_only_media_and_ignores_late_callbacks(voice, store, kind):
+    """Verify recognition loss revokes media and ignores late callbacks without changing facts."""
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set
@@ -208,6 +216,7 @@ async def test_stt_loss_fails_only_media_and_ignores_late_callbacks(voice, store
 
 
 async def test_intentional_recognizer_stop_ignores_empty_and_late_events(voice):
+    """Verify intentional recognition shutdown disconnects callbacks without reporting failure."""
     recognizer = voice.stt._speech_recognizer
     callback = recognizer.session_stopped.connect.call_args.args[0]
     await voice.stt._disconnect()
@@ -222,6 +231,7 @@ async def test_intentional_recognizer_stop_ignores_empty_and_late_events(voice):
 
 @pytest.mark.parametrize("cause", ["task", "processor", "timeout", "runner"])
 async def test_unexpected_framework_failures_revoke_output(voice, store, monkeypatch, cause):
+    """Verify unexpected task, processor, timeout, and runner failures revoke output."""
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set
@@ -229,6 +239,7 @@ async def test_unexpected_framework_failures_revoke_output(voice, store, monkeyp
     if cause == "task":
 
         async def crash():
+            """Raise a simulated background worker failure with private details."""
             raise RuntimeError("private-worker-body")
 
         task = voice.pipeline.worker.task_manager.create_task(crash(), "failing-worker")
@@ -251,6 +262,7 @@ async def test_unexpected_framework_failures_revoke_output(voice, store, monkeyp
 
 
 async def test_native_shutdown_deadline_retires_recognizer_first(voice):
+    """Verify native shutdown deadlines retire recognition before the shared stop finishes."""
     recognizer = voice.stt._speech_recognizer
     voice.stt.config = voice.stt.config.model_copy(update={"shutdown_seconds": 0.02})
     release = Event()
@@ -258,6 +270,7 @@ async def test_native_shutdown_deadline_retires_recognizer_first(voice):
     loop = asyncio.get_running_loop()
 
     def blocked():
+        """Signal native shutdown entry from its thread and wait for release."""
         loop.call_soon_threadsafe(entered.set)
         release.wait()
 
@@ -286,6 +299,7 @@ async def test_native_shutdown_deadline_retires_recognizer_first(voice):
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404])
 async def test_nontransient_model_failures_are_terminal(voice, store, status):
+    """Verify nontransient model HTTP failures revoke the pipeline without retrying."""
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set
@@ -300,6 +314,7 @@ async def test_nontransient_model_failures_are_terminal(voice, store, status):
 
 
 async def test_unknown_pipeline_timeout_is_not_a_provider_recovery(voice):
+    """Verify an unclassified pipeline timeout is terminal rather than recoverable waiting."""
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set

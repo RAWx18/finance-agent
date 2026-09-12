@@ -15,6 +15,7 @@ from .conftest import money
 
 
 async def test_partial_turn_records_unknown_fields_without_losing_supplied_facts(store):
+    """Verify partial turns retain supplied facts and exclude unconfirmed income."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -63,6 +64,7 @@ async def test_partial_turn_records_unknown_fields_without_losing_supplied_facts
 
 
 async def test_voice_change_requires_category_review_after_prior_confirmation(store):
+    """Verify reporting an optional expense replaces prior absent-category confirmation."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(
@@ -82,6 +84,7 @@ async def test_voice_change_requires_category_review_after_prior_confirmation(st
 
 
 async def test_review_uses_the_accepted_plan_not_the_baseline(store):
+    """Verify voice review assesses the accepted adjustment rather than the baseline."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(
@@ -143,6 +146,7 @@ async def test_review_uses_the_accepted_plan_not_the_baseline(store):
 
 @pytest.mark.parametrize("user_speaking", [False, True])
 async def test_external_correction_resumes_speech_without_talking_over_user(user_speaking):
+    """Verify external corrections resume generation only while the user is silent."""
     from pipecat.frames.frames import LLMRunFrame
 
     pipeline = VoicePipeline()

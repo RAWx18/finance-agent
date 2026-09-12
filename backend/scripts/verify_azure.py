@@ -34,21 +34,25 @@ SAMPLE = (
 
 
 def require(condition: Any) -> None:
+    """Raise a verification error when the condition is false."""
     if not condition:
         raise ValueError("Verification assertion failed")
 
 
 def emit(check: str, **metrics: Any) -> None:
+    """Print and flush a structured verification result."""
     print(json.dumps({"check": check, **metrics}, ensure_ascii=True), flush=True)
 
 
 def resource_name(value: str) -> str:
+    """Validate a command-line Azure resource or deployment name."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,89}", value):
         raise argparse.ArgumentTypeError("Use an Azure resource or deployment name")
     return value
 
 
 def arguments() -> argparse.Namespace:
+    """Parse explicit billing consent and Azure verification resource arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-billable", action="store_true", required=True)
     parser.add_argument("--subscription", type=UUID, required=True)
@@ -61,6 +65,7 @@ def arguments() -> argparse.Namespace:
 
 
 async def azure(args: argparse.Namespace, *command: str) -> Any:
+    """Run a bounded Azure account CLI query and parse its JSON response."""
     process = await asyncio.create_subprocess_exec(
         "az",
         "cognitiveservices",
@@ -90,6 +95,7 @@ async def azure(args: argparse.Namespace, *command: str) -> Any:
 
 @asynccontextmanager
 async def speech_worker(service: Any) -> AsyncIterator[Any]:
+    """Run a speech service in a bounded worker and ensure its resources are released."""
     from pipecat.pipeline.pipeline import Pipeline
     from pipecat.pipeline.worker import PipelineWorker
     from pipecat.workers.runner import WorkerRunner
@@ -107,9 +113,11 @@ async def speech_worker(service: Any) -> AsyncIterator[Any]:
     )
 
     async def started(*_: Any) -> None:
+        """Signal that the speech worker has started."""
         ready.set()
 
     async def error(*_: Any) -> None:
+        """Record worker failure and release any startup wait."""
         failed.set()
         ready.set()
 
@@ -138,6 +146,7 @@ async def speech_worker(service: Any) -> AsyncIterator[Any]:
 
 
 async def language_checks(config: "Config", endpoint: str, key: str, deployment: str) -> None:
+    """Verify real Azure tool-call corrections and structured parsing with synthetic cash facts."""
     from openai import AsyncOpenAI
     from pipecat.adapters.schemas.function_schema import FunctionSchema
     from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -289,6 +298,8 @@ async def language_checks(config: "Config", endpoint: str, key: str, deployment:
                     await store.close()
 
             class StructuredOpening(BaseModel):
+                """Expected corrected opening cash for the structured-output probe."""
+
                 model_config = ConfigDict(extra="forbid")
                 amount: Literal["6500.00"]
                 currency: Literal["INR"]
@@ -317,6 +328,7 @@ async def language_checks(config: "Config", endpoint: str, key: str, deployment:
 
 
 async def synthesize(config: "Config", key: str, region: str) -> bytes:
+    """Synthesize the sample through Azure and check audio streaming and word timings."""
     from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame, TTSSpeakFrame, TTSStoppedFrame
     from pipecat.services.tts_service import TextAggregationMode
     from pipecat.transcriptions.language import Language
@@ -345,6 +357,7 @@ async def synthesize(config: "Config", key: str, region: str) -> bytes:
     started = monotonic()
 
     async def frame_pushed(_: Any, frame: Any) -> None:
+        """Collect bounded PCM output and detect synthesis errors or termination."""
         nonlocal chunks, first_audio, failed
         if isinstance(frame, TTSAudioRawFrame):
             if first_audio is None:
@@ -369,6 +382,7 @@ async def synthesize(config: "Config", key: str, region: str) -> bytes:
     loop = asyncio.get_running_loop()
 
     def boundary(event: Any) -> None:
+        """Record a bounded SDK word-boundary sample on the event loop."""
         loop.call_soon_threadsafe(
             boundaries.append,
             {
@@ -378,6 +392,7 @@ async def synthesize(config: "Config", key: str, region: str) -> bytes:
         )
 
     def synthesized(event: Any) -> None:
+        """Record SDK audio duration and signal synthesis completion."""
         nonlocal duration
         duration = event.result.audio_duration.total_seconds()
         loop.call_soon_threadsafe(completed.set)
@@ -416,6 +431,7 @@ async def synthesize(config: "Config", key: str, region: str) -> bytes:
 async def recognize(
     config: "Config", key: str, region: str, audio: bytes, refinement: bool
 ) -> None:
+    """Verify interim and final Azure recognition from synthetic PCM with optional refinement."""
     from azure.cognitiveservices.speech import CancellationReason, PropertyId, ResultReason
     from pipecat.frames.frames import ErrorFrame
     from pipecat.transcriptions.language import Language
@@ -443,6 +459,7 @@ async def recognize(
     started = monotonic()
 
     def result(event: Any) -> None:
+        """Collect bounded interim and final transcripts with elapsed timings."""
         if event.result.reason in (ResultReason.RecognizingSpeech, ResultReason.RecognizedSpeech):
             loop.call_soon_threadsafe(
                 results.append,
@@ -454,9 +471,11 @@ async def recognize(
             )
 
     def stopped(_: Any) -> None:
+        """Signal that the SDK recognition session has stopped."""
         loop.call_soon_threadsafe(done.set)
 
     def canceled(event: Any) -> None:
+        """Record cancellation errors and release the recognition completion wait."""
         if event.result.cancellation_details.reason == CancellationReason.Error:
             loop.call_soon_threadsafe(failed.set)
         loop.call_soon_threadsafe(done.set)
@@ -501,6 +520,7 @@ async def recognize(
 
 
 async def verify(args: argparse.Namespace) -> None:
+    """Check Azure metadata and run model, synthesis, and recognition component probes."""
     from app.config import Environment, load_config
 
     config = load_config()
@@ -592,6 +612,7 @@ async def verify(args: argparse.Namespace) -> None:
 
 
 def main() -> int:
+    """Run opt-in component verification with bounded execution and sanitized failures."""
     args = arguments()
     logging.disable(logging.CRITICAL)
     from loguru import logger
@@ -599,6 +620,7 @@ def main() -> int:
     logger.remove()
 
     def deadline() -> None:
+        """Report a native shutdown timeout and terminate the verification process."""
         # Native SDK futures cannot be canceled by asyncio; bound interpreter shutdown too.
         os.write(1, b'{"check":"deadline","passed":false,"reason":"native_shutdown_timeout"}\n')
         os._exit(124)
@@ -608,6 +630,7 @@ def main() -> int:
     watchdog.start()
 
     async def bounded() -> None:
+        """Limit the full Azure verification to its asynchronous deadline."""
         async with asyncio.timeout(240):
             await verify(args)
 

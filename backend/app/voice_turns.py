@@ -21,6 +21,7 @@ class ContinuationUserTurnStopStrategy(  # type: ignore[no-untyped-call]
     _awaiting_vad_final = False
 
     async def process_frame(self, frame: Frame) -> ProcessFrameResult:
+        """Extend the speech timer for recognition activity beyond the expected VAD final."""
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             self._awaiting_vad_final = not self._transcript_finalized
         if (

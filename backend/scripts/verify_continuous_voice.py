@@ -33,6 +33,7 @@ PROVIDERS = (
 
 
 def scenario(day):
+    """Build synthetic utterances for cash capture, interruption, and correction checks."""
     return {
         "sampleRate": 16000,
         "dueDate": day.isoformat(),
@@ -54,6 +55,7 @@ def scenario(day):
 
 
 async def stop(process):
+    """Terminate a running child process and kill it if graceful shutdown times out."""
     if process is not None and process.returncode is None:
         process.terminate()
         try:
@@ -65,6 +67,7 @@ async def stop(process):
 
 
 def browser_environment():
+    """Select noncredential environment values needed by the browser verification process."""
     # No provider, Google, or application credentials are inherited by Node/Chromium.
     return {
         name: value
@@ -87,6 +90,7 @@ def browser_environment():
 
 
 def failure_category(line):
+    """Extract bounded, nonsensitive failure metadata from a recognized voice log line."""
     match = re.search(
         rb"Voice failure source=([A-Za-z0-9_]{1,80}) category=([A-Z_]{1,40}) "
         rb"exception=([A-Za-z0-9_]{1,80}) status=(None|[1-5][0-9]{2}) metrics=",
@@ -104,6 +108,7 @@ def failure_category(line):
 
 
 async def verify(phase, initial_wait=False):
+    """Run an isolated real-provider browser scenario with generated audio and room cleanup."""
     import aiohttp
     from dotenv import dotenv_values
 
@@ -196,6 +201,7 @@ async def verify(phase, initial_wait=False):
                 )
 
                 async def drain():
+                    """Drain server logs, signal readiness, and retain bounded failure metadata."""
                     while line := await server.stderr.readline():
                         if b"Uvicorn running on" in line:
                             ready.set()
@@ -257,6 +263,7 @@ async def verify(phase, initial_wait=False):
 
 
 def main():
+    """Parse billing consent and run the selected continuous-voice verification phase."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--allow-billable",

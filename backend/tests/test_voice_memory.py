@@ -30,6 +30,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 @pytest.fixture
 async def voice(memory, voice_boundaries, tmp_path, request):
+    """Yield a fresh or resumed memory-enabled pipeline with mocked provider boundaries."""
     memory.store.config = memory.store.config.model_copy(
         update={
             "voice": memory.store.config.voice.model_copy(update={"speech_timeout_seconds": 0.1})
@@ -91,6 +92,7 @@ async def voice(memory, voice_boundaries, tmp_path, request):
 
 
 def remembered(request):
+    """Extract the request's single conversational-memory payload."""
     messages = [
         text
         for message in request["messages"]
@@ -105,6 +107,7 @@ def remembered(request):
 async def test_profile_and_scoped_notes_reach_opening_and_refresh_without_context_copies(
     voice, synthesis, memory
 ):
+    """Verify profile and scoped notes reach requests without persisting copies in context."""
     await memory.application.state.auth.rename(memory.owner, "Ananya")
     for scope, text in (
         ("common", "Prefer concise replies."),
@@ -139,6 +142,7 @@ async def test_profile_and_scoped_notes_reach_opening_and_refresh_without_contex
 async def test_memory_tool_saves_and_forgets_current_preference_without_financial_write(
     voice, synthesis, memory
 ):
+    """Verify memory tools save and forget current preferences without financial writes."""
     before = await memory.store.get(memory.owner)
     user = "I prefer short, plain English replies."
     change = note("common", "Prefers short, plain English replies.", evidence=user)
@@ -172,6 +176,7 @@ async def test_memory_tool_saves_and_forgets_current_preference_without_financia
 
 
 async def test_memory_key_validation_can_recover_without_financial_writes(voice, synthesis, memory):
+    """Verify memory-key validation permits a corrected retry without financial writes."""
     before = await memory.store.get(memory.owner)
     user = "Please remember that I prefer short, plain English replies."
     change = note(
@@ -203,6 +208,7 @@ async def test_memory_key_validation_can_recover_without_financial_writes(voice,
 
 
 async def test_historical_user_text_does_not_authorize_new_memory(voice, synthesis, memory):
+    """Verify historical user text cannot authorize a memory write for the current turn."""
     historical = "I prefer long explanations."
     voice.pipeline.context.add_message({"role": "user", "content": historical})
     change = note("common", historical)
@@ -221,6 +227,7 @@ async def test_historical_user_text_does_not_authorize_new_memory(voice, synthes
 
 
 async def test_interruption_discards_current_memory_authorization(voice, memory):
+    """Verify interruption clears current-turn evidence and rejects late memory writes."""
     voice.pipeline.tools.user_turn = "I prefer short replies."
     await voice.pipeline.worker.queue_frame(InterruptionFrame())
     await next_frame(voice.frames, InterruptionFrame)
@@ -232,6 +239,7 @@ async def test_interruption_discards_current_memory_authorization(voice, memory)
 
 
 def test_memory_policy_is_conversational_not_financial_authority(config):
+    """Verify memory guidance limits authority to explicit conversational preferences."""
     prompt = conversation(config)
     for rule in (
         "common.profile.name",

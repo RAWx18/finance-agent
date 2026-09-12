@@ -21,6 +21,7 @@ from .test_auth_races import auth_server as auth_server
 
 
 def human(text="Please help with rent.", timestamp="2026-09-11T06:00:00Z", final=True):
+    """Build a user transcription event with configurable text, timestamp, and finality."""
     return {
         "type": "user-transcription",
         "data": {"text": text, "timestamp": timestamp, "user_id": "human", "final": final},
@@ -28,6 +29,7 @@ def human(text="Please help with rent.", timestamp="2026-09-11T06:00:00Z", final
 
 
 def spoken(segment=1, text="I can help", remaining=" with rent.", status="in-progress"):
+    """Build a bot output event with spoken progress and an unspoken remainder."""
     return {
         "type": "bot-output",
         "data": {
@@ -42,6 +44,7 @@ def spoken(segment=1, text="I can help", remaining=" with rent.", status="in-pro
 
 @pytest.fixture
 async def recording(store):
+    """Create caption history bound to an owner's session and active call."""
     snapshot = await store.create("owner")
     history = History(store)
     call_id = uuid4()
@@ -50,11 +53,13 @@ async def recording(store):
 
 
 async def saved(recording):
+    """Fetch the first saved conversation for the caption recorder's owner."""
     listing = await recording.history.list(recording.owner)
     return await recording.history.get(recording.owner, listing.conversations[0].slug)
 
 
 async def test_durable_order_title_timestamps_and_exact_export(recording, store):
+    """Verify durable caption ordering, deduplication, timestamps, search, and transcript export."""
     await recording.capture(spoken(text="Hello.", remaining="", status="completed"))
     store.clock = lambda: NOW + timedelta(seconds=2)
     caption = human("Rent & groceries: 50%_ 'quoted' Straße?", "2026-09-11T06:00:02Z")
@@ -94,6 +99,7 @@ async def test_durable_order_title_timestamps_and_exact_export(recording, store)
     "stop", ["user-started-speaking", "bot-interrupted", "bot-stopped-speaking"]
 )
 async def test_interrupted_prefix_frozen_and_unheard_segments_never_saved(recording, stop):
+    """Verify interruptions freeze heard prefixes and exclude unspoken output and private events."""
     await recording.capture(human(final=False))
     await recording.capture({"type": "bot-llm-text", "data": {"text": "private model text"}})
     await recording.capture({"type": "llm-function-call-stopped", "data": {"result": "private"}})
@@ -128,6 +134,7 @@ async def test_interrupted_prefix_frozen_and_unheard_segments_never_saved(record
 
 
 async def test_close_freezes_partial_and_rejects_late_writes(recording):
+    """Verify closing a conversation marks partial speech interrupted and rejects late captions."""
     await recording.capture(spoken())
     await recording.history.finish("owner", recording.call_id)
     with pytest.raises(Problem, match="unavailable"):
@@ -139,6 +146,7 @@ async def test_close_freezes_partial_and_rejects_late_writes(recording):
 
 @pytest.mark.parametrize("terminal", ["delete", "expiry"])
 async def test_session_cascade_and_stale_plan_callback(recording, store, terminal):
+    """Verify session deletion or expiry erases history and rejects callbacks for the prior plan."""
     await recording.capture(human())
     conversation = await saved(recording)
     prior = await store.get("owner")
@@ -162,6 +170,7 @@ async def test_session_cascade_and_stale_plan_callback(recording, store, termina
 
 
 async def test_limits_are_failures_not_silent_truncation(recording, store):
+    """Verify history limits reject excess captions, messages, conversations, and search text."""
     store.config = store.config.model_copy(
         update={
             "history": store.config.history.model_copy(
@@ -187,6 +196,7 @@ async def test_limits_are_failures_not_silent_truncation(recording, store):
 
 
 async def test_api_ownership_queries_download_and_signout(auth_server):
+    """Verify history API ownership, query validation, transcript headers, and signout isolation."""
     application, client, _ = auth_server
     store = application.state.store
     assert (await client.get("/api/history")).json() == {"conversations": []}
@@ -239,6 +249,7 @@ async def test_api_ownership_queries_download_and_signout(auth_server):
 async def test_logout_or_account_deletion_wins_waiting_caption_transaction(
     auth_server, monkeypatch, delete
 ):
+    """Verify logout or account deletion prevents a waiting caption write from committing."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -254,6 +265,7 @@ async def test_logout_or_account_deletion_wins_waiting_caption_transaction(
     check = store.check
 
     async def paused(owner):
+        """Pause after access validation until the revocation race releases the write."""
         await check(owner)
         reached.set()
         await release.wait()
@@ -276,6 +288,7 @@ async def test_logout_or_account_deletion_wins_waiting_caption_transaction(
 
 
 async def test_same_human_segment_updates_without_changing_order_time_or_slug(recording, store):
+    """Verify caption corrections retain segment identity, time, order, and chat slug."""
     await recording.capture(human("First wording"))
     before = await saved(recording)
     store.clock = lambda: NOW + timedelta(seconds=4)
@@ -293,12 +306,14 @@ async def test_same_human_segment_updates_without_changing_order_time_or_slug(re
 
 
 async def test_cancelled_caption_transaction_rolls_back_and_can_be_replayed(recording, monkeypatch):
+    """Verify cancelling a caption transaction rolls back its write and permits a clean replay."""
     store = recording.history.store
     transaction = store.transaction
     reached = asyncio.Event()
 
     @asynccontextmanager
     async def paused():
+        """Suspend the transaction before commit so cancellation exercises rollback."""
         async with transaction():
             yield
             reached.set()
@@ -318,6 +333,7 @@ async def test_cancelled_caption_transaction_rolls_back_and_can_be_replayed(reco
 
 @pytest.mark.parametrize("route", ["list", "detail", "transcript"])
 async def test_waiting_history_read_cannot_outlive_logout(auth_server, monkeypatch, route):
+    """Verify a history read waiting during logout returns unauthorized without transcript text."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -337,6 +353,7 @@ async def test_waiting_history_read_cannot_outlive_logout(auth_server, monkeypat
     check = store.check
 
     async def paused(owner):
+        """Hold the history read after access validation until logout completes."""
         await check(owner)
         reached.set()
         await release.wait()

@@ -22,6 +22,7 @@ from .test_voice import environment
 @pytest.mark.parametrize("path", ["", "/", "/openai/v1", "/openai/v1/"])
 @pytest.mark.parametrize("port", ["", ":443"])
 def test_azure_endpoint_normalizes_only_supported_v1_urls(host, path, port):
+    """Verify supported Azure hosts and v1 path variants normalize to one HTTPS endpoint."""
     env = Environment(azure_openai_endpoint=f"https://{host}{port}{path}")
     assert env.azure_openai_endpoint == f"https://{host}/openai/v1/"
 
@@ -64,12 +65,14 @@ def test_azure_endpoint_normalizes_only_supported_v1_urls(host, path, port):
     ],
 )
 def test_azure_endpoint_rejects_unsafe_or_dated_destinations(endpoint):
+    """Verify Azure endpoint validation rejects unsafe hosts, URL syntax, and unsupported paths."""
     with pytest.raises(ValidationError, match="AZURE_OPENAI_ENDPOINT"):
         Environment(azure_openai_endpoint=endpoint)
 
 
 @pytest.mark.parametrize("deployment", ["gpt-5.6-terra", "finance-chat_1.2", "A" * 64])
 def test_deployment_is_configured_as_a_resource_name(config, deployment):
+    """Verify voice model configuration accepts valid Azure deployment resource names."""
     voice = type(config.voice).model_validate({**config.voice.model_dump(), "model": deployment})
     assert voice.model == deployment
 
@@ -78,11 +81,13 @@ def test_deployment_is_configured_as_a_resource_name(config, deployment):
     "deployment", ["", "A" * 65, "chat/name", "chat name", " ", "chat\n", "chat?x", "£"]
 )
 def test_deployment_rejects_invalid_names(config, deployment):
+    """Verify empty, oversized, or malformed deployment resource names are rejected."""
     with pytest.raises(ValidationError):
         type(config.voice).model_validate({**config.voice.model_dump(), "model": deployment})
 
 
 def test_azure_environment_loads_explicit_names_and_hides_key(monkeypatch):
+    """Verify Azure-specific credentials load without exposing keys or using direct OpenAI keys."""
     for name in (
         "APP_ENV",
         "PUBLIC_ORIGIN",
@@ -114,6 +119,7 @@ def test_azure_environment_loads_explicit_names_and_hides_key(monkeypatch):
 
 @pytest.mark.parametrize("key", [None, "", " \t"])
 def test_blank_azure_key_is_missing(key):
+    """Verify absent, empty, and whitespace-only Azure keys are reported as missing setup."""
     env = Environment.model_validate({"azure_openai_api_key": key})
     assert "AZURE_OPENAI_API_KEY" in env.missing_azure_openai()
 
@@ -126,6 +132,7 @@ async def test_missing_azure_setup_blocks_call_and_pipeline_before_provider_cons
     monkeypatch,
     name,
 ):
+    """Verify missing Azure setup blocks call and pipeline startup before constructing providers."""
     await store.create("owner")
     env = Environment.model_validate({**environment(tmp_path).model_dump(), name: ""})
     preflight, rooms = AsyncMock(), Mock()
@@ -158,6 +165,7 @@ async def test_missing_azure_setup_blocks_call_and_pipeline_before_provider_cons
 
 
 async def test_financial_review_needs_no_provider_deployment(store):
+    """Verify financial review returns the canonical assessment without provider setup or writes."""
     snapshot = await store.create("owner")
     refresh = Mock()
     tools = VoiceTools(store, "owner", uuid4(), refresh)

@@ -11,6 +11,7 @@ from app.config import ROOT
 
 
 def test_voice_verification_import_has_no_execution():
+    """Verify the voice verification module guards execution and imports silently."""
     tree = ast.parse((ROOT / "backend/scripts/verify_voice.py").read_text())
     assert isinstance(tree.body[0], ast.Expr)
     assert isinstance(tree.body[0].value, ast.Constant)
@@ -33,6 +34,7 @@ def test_voice_verification_import_has_no_execution():
 
 @pytest.mark.parametrize("arguments, code", [([], 2), (["--help"], 0)])
 def test_voice_verification_cli_is_offline(arguments, code):
+    """Verify default and help CLI paths stay offline and advertise billable opt-in."""
     result = subprocess.run(
         [sys.executable, "-m", "scripts.verify_voice", *arguments],
         cwd=ROOT / "backend",
@@ -47,6 +49,7 @@ def test_voice_verification_cli_is_offline(arguments, code):
 
 
 def test_production_image_excludes_voice_test_factory():
+    """Verify the production image copies application code without the voice test factory."""
     dockerfile = (ROOT / "Dockerfile").read_text()
     copies = [line for line in dockerfile.splitlines() if line.startswith("COPY ")]
     assert [line for line in copies if "--from=" not in line and "backend/" in line] == [

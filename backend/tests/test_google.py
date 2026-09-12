@@ -29,10 +29,12 @@ from .conftest import NOW
 
 @pytest.fixture
 def google(config, tmp_path):
+    """Provide a Google authentication double with test configuration and a frozen clock."""
     return GoogleDouble(config.auth, auth_environment(Environment(data_dir=tmp_path)), lambda: NOW)
 
 
 def claims(google, **values):
+    """Build valid Google identity-token claims with optional field overrides."""
     return {
         "iss": ISSUER,
         "aud": google.environment.google_client_id,
@@ -48,12 +50,14 @@ def claims(google, **values):
 
 
 def signed(google, **values):
+    """Sign Google identity-token claims with the test RSA key."""
     return jwt.encode({"alg": "RS256", "kid": RSA.kid}, claims(google, **values), RSA)
 
 
 @pytest.mark.parametrize("issuer", [ISSUER, "accounts.google.com"])
 @pytest.mark.parametrize("verified", [True, "true"])
 async def test_actual_rsa_signature_and_documented_google_claims(google, issuer, verified):
+    """Verify RSA-signed tokens accept documented Google issuer and verified-email forms."""
     identity = await google.verify(
         signed(google, iss=issuer, email_verified=verified), digest("test-nonce")
     )
@@ -106,6 +110,7 @@ async def test_actual_rsa_signature_and_documented_google_claims(google, issuer,
     ],
 )
 async def test_signed_but_invalid_claims_never_authenticate(google, values):
+    """Verify signed tokens with invalid identity, audience, time, or nonce claims are rejected."""
     with pytest.raises(GoogleRejected):
         await google.verify(signed(google, **values), digest("test-nonce"))
 
@@ -114,6 +119,7 @@ async def test_signed_but_invalid_claims_never_authenticate(google, values):
     "name", ["iss", "aud", "sub", "iat", "exp", "nonce", "email", "email_verified"]
 )
 async def test_required_id_token_claims(google, name):
+    """Verify identity tokens reject each missing required claim."""
     payload = claims(google)
     del payload[name]
     token = jwt.encode({"alg": "RS256", "kid": RSA.kid}, payload, RSA)
@@ -122,6 +128,7 @@ async def test_required_id_token_claims(google, name):
 
 
 async def test_multiple_audiences_require_matching_authorized_party(google):
+    """Verify multiple token audiences are accepted with a matching authorized party."""
     token = signed(
         google,
         aud=[google.environment.google_client_id, "other"],
@@ -131,6 +138,7 @@ async def test_multiple_audiences_require_matching_authorized_party(google):
 
 
 async def test_wrong_key_none_and_hmac_algorithms_are_rejected(google):
+    """Verify wrong-key, HMAC, unsigned, malformed, and oversized tokens are rejected."""
     attacker = RSAKey.generate_key(2048, {"kid": RSA.kid})
     forged = jwt.encode({"alg": "RS256", "kid": RSA.kid}, claims(google), attacker)
     hmac = jwt.encode({"alg": "HS256", "kid": RSA.kid}, claims(google), OctKey.generate_key(256))
@@ -142,6 +150,7 @@ async def test_wrong_key_none_and_hmac_algorithms_are_rejected(google):
 
 @pytest.mark.parametrize("name", ["jku", "x5u", "jwk", "x5c"])
 async def test_embedded_key_sources_cannot_change_trusted_endpoints(google, name):
+    """Verify embedded token key sources are rejected before any endpoint request."""
     value = (
         RSA.as_dict(private=False)
         if name == "jwk"
@@ -156,6 +165,7 @@ async def test_embedded_key_sources_cannot_change_trusted_endpoints(google, name
 
 
 async def test_bounded_key_cache_rotation_and_unknown_key_retries(google):
+    """Verify key caching supports rotation while bounding unknown-key retries and refreshing expiry."""
     await google.verify(signed(google), digest("test-nonce"))
     await google.verify(signed(google), digest("test-nonce"))
     assert google.requests == [("GET", JWKS)]
@@ -177,6 +187,7 @@ async def test_bounded_key_cache_rotation_and_unknown_key_retries(google):
     "keys", [[], [{}], [{"kty": "oct", "kid": "test-rsa"}], [RSA.as_dict(private=False)] * 11]
 )
 async def test_invalid_or_oversized_key_sets_fail_closed(google, keys):
+    """Verify invalid or oversized public key sets fail closed as provider unavailability."""
     google.public_keys = keys
     with pytest.raises(GoogleUnavailable):
         await google.verify(signed(google), digest("test-nonce"))
@@ -198,7 +209,9 @@ async def test_invalid_or_oversized_key_sets_fail_closed(google, keys):
 async def test_real_provider_http_error_mapping(
     config, tmp_path, monkeypatch, status, payload, error
 ):
+    """Verify provider HTTP errors map to safe authentication exceptions without leaking bodies."""
     async def respond(request):
+        """Return the configured synthetic provider payload and HTTP status."""
         return web.json_response(payload, status=status)
 
     application = web.Application()
@@ -221,21 +234,26 @@ async def test_real_provider_http_error_mapping(
 
 
 async def test_real_http_size_limit_redirects_and_timeout(config, tmp_path, monkeypatch):
+    """Verify oversized responses, redirects, and timeouts fail closed without following redirects."""
     reached = asyncio.Event()
     release = asyncio.Event()
 
     async def oversized(request):
+        """Return a response one byte above the configured provider limit."""
         return web.Response(body=b"x" * (config.auth.provider_max_bytes + 1))
 
     async def redirect(request):
+        """Return a redirect to a route that must not be reached."""
         return web.Response(status=302, headers={"Location": "/private"}, text="{}")
 
     async def delayed(request):
+        """Signal arrival and hold the response until the test releases it."""
         reached.set()
         await release.wait()
         return web.json_response({})
 
     async def private(request):
+        """Fail if the client follows the synthetic redirect."""
         raise AssertionError("Redirects must never be followed")
 
     application = web.Application()
@@ -271,7 +289,9 @@ async def test_real_http_size_limit_redirects_and_timeout(config, tmp_path, monk
 async def test_non_json_userinfo_rejection_invalidates_credentials(
     config, tmp_path, monkeypatch, status
 ):
+    """Verify empty non-JSON userinfo authorization failures reject credentials."""
     async def rejected(request):
+        """Return an empty authorization-failure response with the configured status."""
         return web.Response(status=status, text="")
 
     application = web.Application()

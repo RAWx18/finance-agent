@@ -12,6 +12,7 @@ from .conftest import money
 
 @pytest.mark.parametrize("label", ["Loan EMI", " loan emi ", "LOAN-EMI", "Ｌｏａｎ ＥＭＩ"])
 async def test_repeated_or_conflicting_new_record_is_rejected_atomically(store, label):
+    """Verify normalized duplicate debt labels reject the entire fact update."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(
@@ -38,6 +39,7 @@ async def test_repeated_or_conflicting_new_record_is_rejected_atomically(store, 
 
 
 async def test_same_turn_repetition_does_not_silently_add_two_payments(store):
+    """Verify repeated debt reports in one turn cannot create duplicate payments."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     baseline = await store.get("owner")
@@ -57,6 +59,7 @@ async def test_same_turn_repetition_does_not_silently_add_two_payments(store):
 
 
 async def test_explicit_separate_debt_and_targeted_unknown_correction_preserve_identity(store):
+    """Verify explicitly separate debts retain identity through targeted corrections."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -111,6 +114,7 @@ async def test_explicit_separate_debt_and_targeted_unknown_correction_preserve_i
 
 
 async def test_distinct_flag_does_not_authorize_a_correction(store):
+    """Verify the distinct-record flag cannot be used to correct an existing record."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(

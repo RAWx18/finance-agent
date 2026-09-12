@@ -14,6 +14,7 @@ from app.store import Store, utc_now
 
 
 async def seed(directory: Path, owner: str) -> None:
+    """Seed caption histories only in a running isolated browser-test account database."""
     directory = await asyncio.to_thread(directory.resolve)
     if directory.parent != ROOT / "frontend" / ".cache" or not directory.name.startswith(
         "browser-"

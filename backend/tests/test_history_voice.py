@@ -29,6 +29,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 
 async def test_running_pipeline_archives_real_final_stt_event(voice, store):
+    """Verify the running pipeline archives final transcription text but not interim captions."""
     history = History(store)
     call_id = uuid4()
     await history.start("owner", call_id, (await store.get("owner")).session_id)
@@ -48,6 +49,7 @@ async def test_running_pipeline_archives_real_final_stt_event(voice, store):
 
 
 async def test_real_rtvi_observer_and_public_output_save_only_transport_captions(voice, store):
+    """Verify RTVI archives final user text and heard output with interrupted prefixes frozen."""
     history = History(store)
     call_id = uuid4()
     await history.start("owner", call_id, (await store.get("owner")).session_id)
@@ -58,6 +60,7 @@ async def test_real_rtvi_observer_and_public_output_save_only_transport_captions
     output = BaseOutputTransport(TransportParams())
 
     async def observe(frame, source=output):
+        """Deliver a downstream frame to the RTVI observer from the selected source."""
         await observer.on_push_frame(
             FramePushed(
                 source=source,
@@ -122,6 +125,7 @@ async def test_real_rtvi_observer_and_public_output_save_only_transport_captions
 
 
 async def test_caption_storage_failure_uses_real_pipeline_fail_safe(voice, store, monkeypatch):
+    """Verify caption storage failure revokes the pipeline, clears context, and reports failure."""
     history = History(store)
     call_id = uuid4()
     await history.start("owner", call_id, (await store.get("owner")).session_id)
@@ -150,6 +154,7 @@ async def test_caption_storage_failure_uses_real_pipeline_fail_safe(voice, store
 
 
 async def test_two_actual_calls_have_distinct_durable_chats(lifecycle, store):
+    """Verify separate managed calls create distinct ended conversations that survive reopening."""
     manager = lifecycle.manager
     first = await manager.start("owner", uuid4())
     await manager.end("owner", first.call_id)

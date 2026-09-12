@@ -7,6 +7,7 @@ from .auth_support import BrowserGoogle, auth_app, browser_app
 
 
 def test_browser_rate_overrides_leave_auth_defaults_unchanged(tmp_path, monkeypatch):
+    """Verify browser rate overrides reach auth and Google without mutating shared defaults."""
     config = load_config()
     expected = config.model_dump()
     environment = Environment(data_dir=tmp_path)

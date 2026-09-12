@@ -15,12 +15,14 @@ from scripts import verify_azure
 
 @pytest.mark.parametrize("name", ["--debug", "../account", "account;command", "account name"])
 def test_verification_resource_names_reject_command_or_path_input(name):
+    """Verify Azure verification resource names reject command-like and path-like input."""
     with pytest.raises(argparse.ArgumentTypeError):
         verify_azure.resource_name(name)
 
 
 @pytest.mark.parametrize("billable", [False, True])
 def test_verification_requires_explicit_billing_permission(monkeypatch, billable):
+    """Verify Azure verification arguments require explicit permission for billable calls."""
     argv = [
         "verify_azure",
         "--subscription",
@@ -46,6 +48,7 @@ def test_verification_requires_explicit_billing_permission(monkeypatch, billable
 
 
 async def test_verification_key_capture_is_private_and_subscription_scoped(monkeypatch, capsys):
+    """Verify Azure key retrieval scopes CLI requests and keeps captured credentials private."""
     process = Mock(returncode=0)
     process.communicate = AsyncMock(return_value=(b'"synthetic-private-key"', b""))
     launch = AsyncMock(return_value=process)
@@ -69,6 +72,7 @@ async def test_verification_key_capture_is_private_and_subscription_scoped(monke
 
 
 def test_verification_failure_does_not_print_secrets(monkeypatch, capsys):
+    """Verify verification failures report error types and locations without secret messages."""
     monkeypatch.setattr(verify_azure, "arguments", Mock(return_value=argparse.Namespace()))
     monkeypatch.setattr(
         verify_azure, "verify", AsyncMock(side_effect=RuntimeError("synthetic-private-key"))

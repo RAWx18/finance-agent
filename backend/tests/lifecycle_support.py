@@ -17,6 +17,7 @@ from .auth_support import browser_app as authenticated_app
 
 
 def timings(values):
+    """Filter timing diagnostics to safe labels and rounded nonnegative finite numbers."""
     return {
         name: round(value, 6)
         for name, value in values.items()
@@ -28,10 +29,12 @@ def timings(values):
 
 
 def task_state(task):
+    """Summarize whether an optional task exists and has completed."""
     return {"present": task is not None, "done": task.done() if task is not None else None}
 
 
 def task_stack(task):
+    """Collect a bounded coroutine stack while withholding custom task labels and paths."""
     # Task labels can contain runtime data; only asyncio's generated names are emitted.
     name = task.get_name()
     frames = []
@@ -58,6 +61,7 @@ def task_stack(task):
 
 
 def call_probe(call, pipeline):
+    """Describe call lifecycle flags, timings, and owned task completion states."""
     return {
         "callId": str(call.id),
         "status": call.state.status,
@@ -79,6 +83,7 @@ def call_probe(call, pipeline):
 
 
 def browser_app():
+    """Build an authenticated browser app with call lifecycle observation and diagnostics."""
     application = authenticated_app()
     lifespan = application.router.lifespan_context
     calls = {}
@@ -86,6 +91,7 @@ def browser_app():
     rooms = set()
 
     def observe():
+        """Retain observed calls and pipelines and persist their room names for cleanup."""
         call = application.state.calls.call
         if call is None:
             return
@@ -99,7 +105,9 @@ def browser_app():
 
     @asynccontextmanager
     async def observed_lifespan(app):
+        """Run the lifecycle monitor inside the application lifespan and cancel it on exit."""
         async def monitor():
+            """Sample the active call repeatedly so short-lived lifecycle states are retained."""
             while True:
                 observe()
                 await asyncio.sleep(0.02)
@@ -118,6 +126,7 @@ def browser_app():
 
     @application.get("/__test/lifecycle", include_in_schema=False)
     async def lifecycle(request: Request):
+        """Expose owned call state and optional bounded task diagnostics to a signed-in probe."""
         access = await application.state.auth.identify(request)
         observe()
         tasks = [task for task in asyncio.all_tasks() if not task.done()]

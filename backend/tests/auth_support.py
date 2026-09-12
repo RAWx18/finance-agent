@@ -21,7 +21,10 @@ RSA = RSAKey.generate_key(2048, {"kid": "test-rsa", "use": "sig", "alg": "RS256"
 
 
 class GoogleDouble(Google):
+    """Simulate Google OAuth grants, signed identities, and failures for authentication tests."""
+
     def __init__(self, config, environment, clock):
+        """Initialize isolated authorization codes, tokens, accounts, and failure controls."""
         super().__init__(config, environment, clock)
         self.codes = {}
         self.access_tokens = {}
@@ -39,12 +42,15 @@ class GoogleDouble(Google):
         self.failure = None
 
     async def open(self):
+        """Leave HTTP resources unopened for the in-memory Google double."""
         pass
 
     async def close(self):
+        """Complete shutdown without HTTP resources to release."""
         pass
 
     def code(self, url, subject="google-user-one"):
+        """Validate authorization parameters and register a code for the synthetic account."""
         params = {key: value[0] for key, value in parse_qs(urlsplit(url).query).items()}
         assert params["scope"] == "openid profile email"
         assert params["code_challenge_method"] == "S256"
@@ -57,6 +63,7 @@ class GoogleDouble(Google):
         return code
 
     async def request(self, method, url, *, data=None, headers=None):
+        """Record and simulate Google key, token, user-info, and revocation requests."""
         self.requests.append((method, url))
         if self.failure is not None:
             raise self.failure
@@ -124,7 +131,10 @@ class GoogleDouble(Google):
 
 
 class BrowserGoogle(GoogleDouble):
+    """Bypass Google's UI with a local callback for browser authentication tests."""
+
     def authorization_url(self, state, nonce, verifier, consent):
+        """Return a local callback URL containing a synthetic authorization code."""
         code = self.code(super().authorization_url(state, nonce, verifier, consent))
         return (
             self.environment.public_origin
@@ -134,6 +144,7 @@ class BrowserGoogle(GoogleDouble):
 
 
 def browser_app():
+    """Build an authenticated browser-test app with synthetic Google and shared-IP limits."""
     config = load_config()
     # Browser contexts share one server and loopback IP across the suite.
     config = config.model_copy(
@@ -148,6 +159,7 @@ def browser_app():
 
 
 def auth_environment(environment):
+    """Supply synthetic Google credentials and an encryption key for authentication tests."""
     return Environment.model_validate(
         {
             **environment.model_dump(),
@@ -159,12 +171,14 @@ def auth_environment(environment):
 
 
 def auth_app(config, environment, clock=utc_now, static_dir=None, google=None):
+    """Build an app with test authentication credentials and an injectable Google double."""
     environment = auth_environment(environment)
     google = google or GoogleDouble(config.auth, environment, clock)
     return create_app(config, environment, clock, static_dir, google)
 
 
 def sign_in(client, subject="google-user-one", return_to="/app"):
+    """Complete synthetic Google sign-in and assert the requested return redirect."""
     client.headers["Origin"] = str(client.base_url).rstrip("/")
     response = client.post("/api/auth/login", json={"returnTo": return_to})
     assert response.status_code == 200, response.text
@@ -183,6 +197,7 @@ def sign_in(client, subject="google-user-one", return_to="/app"):
 
 
 async def sign_in_async(client, application, subject="google-user-one"):
+    """Authenticate an asynchronous client through the synthetic Google callback."""
     client.headers["Origin"] = str(client.base_url).rstrip("/")
     response = await client.post("/api/auth/login", json={})
     assert response.status_code == 200, response.text

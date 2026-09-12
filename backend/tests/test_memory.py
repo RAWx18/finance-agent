@@ -25,6 +25,7 @@ from .test_auth_races import auth_server as auth_server
 
 @pytest.fixture
 async def memory(auth_server):
+    """Create authenticated memory services with an active chat and controllable clock."""
     application, client, now = auth_server
     profile = (await client.get("/api/auth/session")).json()["user"]
     owner = Access(profile["id"], digest(client.cookies[COOKIE]))
@@ -48,12 +49,14 @@ async def memory(auth_server):
 
 
 def note(scope, text, key="preference", evidence=None):
+    """Build a scoped memory change with supplied evidence or default evidence text."""
     return MemoryChange(
         scope=scope, key=key, text=text, evidence=evidence or text or "Forget that note"
     )
 
 
 async def test_profile_is_live_minimal_and_notes_do_not_change_finances(memory):
+    """Verify memory exposes a live minimal profile without financial writes or updates."""
     before = await memory.store.get(memory.owner)
     updates = await memory.store.subscribe(memory.owner)
     updates.get_nowait()
@@ -79,6 +82,7 @@ async def test_profile_is_live_minimal_and_notes_do_not_change_finances(memory):
 
 
 async def test_scopes_persist_but_only_shared_notes_follow_another_chat(memory):
+    """Verify shared and chat-local notes persist while stale calls cannot access them."""
     for scope, text in (
         ("common", "I prefer short answers."),
         ("user", "Remember for future chats that I am learning financial vocabulary."),
@@ -115,6 +119,7 @@ async def test_scopes_persist_but_only_shared_notes_follow_another_chat(memory):
 
 
 async def test_other_account_cannot_read_or_change_any_scope(memory):
+    """Verify another account sees no saved notes and cannot read or write a stolen chat binding."""
     for scope in ("common", "user", "chat"):
         await memory.service.update(
             note(scope, "Prefer short explanations."), "Prefer short explanations."
@@ -146,6 +151,7 @@ async def test_other_account_cannot_read_or_change_any_scope(memory):
 
 @pytest.mark.parametrize("scope", ["common", "user", "chat"])
 async def test_notes_replace_and_forget_by_key_without_duplicates(memory, scope):
+    """Verify each scope supports replacement by key and idempotent forgetting."""
     for text in ("Prefer short replies.", "Prefer a detailed explanation."):
         await memory.service.update(note(scope, text), text)
     current = await memory.service.read()
@@ -160,6 +166,7 @@ async def test_notes_replace_and_forget_by_key_without_duplicates(memory, scope)
 
 @pytest.mark.parametrize("scope", ["common", "user", "chat"])
 async def test_limits_do_not_silently_evict_existing_notes(memory, scope):
+    """Verify note limits reject extra keys without eviction and allow existing-key edits."""
     memory.store.config = memory.store.config.model_copy(
         update={"memory": memory.store.config.memory.model_copy(update={"max_notes": 1})}
     )
@@ -187,6 +194,7 @@ async def test_limits_do_not_silently_evict_existing_notes(memory, scope):
     ],
 )
 async def test_obvious_financial_contact_and_secret_notes_are_rejected(memory, text):
+    """Verify obvious financial, contact, URL, and secret notes fail without changing memory."""
     before = await memory.service.read()
     with pytest.raises(Problem) as error:
         await memory.service.update(note("user", text), text)
@@ -195,6 +203,7 @@ async def test_obvious_financial_contact_and_secret_notes_are_rejected(memory, t
 
 
 async def test_note_needs_current_user_evidence_and_respects_character_limit(memory):
+    """Verify notes require current evidence and reject long or unsafe text and extra fields."""
     with pytest.raises(Problem) as error:
         await memory.service.update(note("chat", "Prefer concise replies."), "Hello.")
     assert error.value.body.code == "invalidMemory"
@@ -212,6 +221,7 @@ async def test_note_needs_current_user_evidence_and_respects_character_limit(mem
 
 
 async def test_user_notes_expire_chat_notes_cascade_common_preferences_survive(memory):
+    """Verify expiry clears user and chat notes while common preferences survive a fresh login."""
     memory.store.config = memory.store.config.model_copy(
         update={"memory": memory.store.config.memory.model_copy(update={"user_days": 1})}
     )
@@ -237,10 +247,12 @@ async def test_user_notes_expire_chat_notes_cascade_common_preferences_survive(m
 
 @pytest.mark.parametrize("delete", [False, True])
 async def test_revoked_inflight_memory_write_is_rejected(memory, monkeypatch, delete):
+    """Verify logout or account deletion rejects an in-flight memory write before it persists."""
     check = memory.store.check
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def paused(owner):
+        """Hold the memory write after access validation until account access is revoked."""
         await check(owner)
         reached.set()
         await release.wait()
@@ -265,6 +277,7 @@ async def test_revoked_inflight_memory_write_is_rejected(memory, monkeypatch, de
 
 
 async def test_account_deletion_removes_all_memory_scopes(memory):
+    """Verify account deletion erases both account-scoped and chat-scoped memory rows."""
     for scope in ("common", "user", "chat"):
         await memory.service.update(note(scope, "Prefer plain words."), "Prefer plain words.")
     assert (

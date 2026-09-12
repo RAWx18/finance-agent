@@ -20,6 +20,7 @@ from .test_scenarios import operation
 
 
 def loans():
+    """Build two similarly named loans and a focused optional purchase decision."""
     return facts(
         "50000",
         [
@@ -38,11 +39,13 @@ def loans():
 
 @pytest.mark.parametrize("identities", [["first"], ["first", "first"]])
 def test_ambiguous_candidates_require_multiple_distinct_ids(identities):
+    """Verify ambiguous record candidates require at least two distinct identities."""
     with pytest.raises(ValidationError, match="at least two distinct"):
         Decision(ambiguous_record_ids=identities)
 
 
 def test_normalize_rejects_unknown_ambiguous_candidate(config):
+    """Verify normalization rejects ambiguous candidates absent from the facts."""
     data = loans()
     data["decision"]["ambiguousRecordIds"] = ["first", "missing"]
     with pytest.raises(ValueError, match="Ambiguous correction must reference existing records"):
@@ -50,6 +53,7 @@ def test_normalize_rejects_unknown_ambiguous_candidate(config):
 
 
 async def test_ambiguous_target_persists_cards_and_qualified_stop_then_targeted_clear(store):
+    """Verify ambiguous targets persist until explicitly cleared with a targeted correction."""
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(loans()))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
@@ -115,6 +119,7 @@ async def test_ambiguous_target_persists_cards_and_qualified_stop_then_targeted_
 
 @pytest.mark.parametrize("change", ["amount", "date", "candidates"])
 def test_ambiguous_question_dependency_tracks_candidate_values_and_set(config, change):
+    """Verify ambiguity dependencies track candidate values and membership, not labels or order."""
     data = loans()
     data["decision"]["ambiguousRecordIds"] = ["first", "second"]
     source = normalize(FactsInput.model_validate(data), config)
@@ -146,6 +151,7 @@ def test_ambiguous_question_dependency_tracks_candidate_values_and_set(config, c
 
 
 async def test_candidate_correction_without_explicit_clear_reopens_unavailable_question(store):
+    """Verify candidate corrections reopen identity questions unless ambiguity is cleared."""
     await store.create("owner")
     data = loans()
     data["decision"]["ambiguousRecordIds"] = ["first", "second"]
@@ -166,6 +172,7 @@ async def test_candidate_correction_without_explicit_clear_reopens_unavailable_q
 
 
 def test_candidate_deletion_requires_explicit_conflict_replacement_or_clear(config):
+    """Verify deleting an ambiguous candidate requires explicit conflict replacement or clearing."""
     data = loans()
     data["decision"]["ambiguousRecordIds"] = ["first", "second"]
     source = normalize(FactsInput.model_validate(data), config)
@@ -180,6 +187,7 @@ def test_candidate_deletion_requires_explicit_conflict_replacement_or_clear(conf
 
 
 async def test_ambiguous_write_and_clear_preserve_independent_consent(store):
+    """Verify reporting and clearing loan ambiguity preserve independent purchase consent."""
     await store.create("owner")
     await store.command("owner", parsed_command(loans()))
     preview = await store.command(
@@ -218,6 +226,7 @@ async def test_ambiguous_write_and_clear_preserve_independent_consent(store):
 
 
 def test_explicit_clear_preserves_other_unknowns_and_untargeted_dates(config):
+    """Verify clearing identity ambiguity preserves unrelated unknowns and untargeted records."""
     data = loans()
     data["decision"]["ambiguousRecordIds"] = ["first", "second"]
     data["records"][2]["schedule"]["date"] = None
@@ -241,6 +250,7 @@ def test_explicit_clear_preserves_other_unknowns_and_untargeted_dates(config):
 
 
 async def test_unavailable_focused_scope_is_not_reopened_by_unneeded_income(store):
+    """Verify unneeded income does not reopen an unavailable focused-scope question."""
     await store.create("owner")
     data = loans()
     data["coverage"] = {}

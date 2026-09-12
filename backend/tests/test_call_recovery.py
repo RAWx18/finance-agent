@@ -19,6 +19,7 @@ from .test_voice import provider_doubles as provider_doubles
 
 
 def assert_call_memory(snapshot, baseline):
+    """Assert a call advances conversation identity while preserving financial snapshot content."""
     assert snapshot.conversation_slug is not None
     assert snapshot.session_id != baseline.session_id
     assert snapshot.revision > baseline.revision and snapshot.sequence > baseline.sequence
@@ -32,6 +33,7 @@ def assert_call_memory(snapshot, baseline):
 
 @pytest.fixture
 async def manager(store, config, tmp_path, provider_doubles):
+    """Provide a call manager with synthetic providers, seeded owners, and short test deadlines."""
     await store.create("owner")
     await store.create("other")
     await store.command("owner", parsed_command(facts("1234.56")))
@@ -50,6 +52,7 @@ async def manager(store, config, tmp_path, provider_doubles):
 
 
 async def test_delayed_end_cannot_stop_replacement_or_replay_terminal_identity(manager, store):
+    """Verify delayed ending of a prior call cannot stop its replacement or restart its identity."""
     baseline = await store.get("owner")
     first = await manager.start("owner", uuid4())
     assert (await manager.end("owner", first.call_id)).cleanup_confirmed
@@ -68,6 +71,7 @@ async def test_delayed_end_cannot_stop_replacement_or_replay_terminal_identity(m
 
 
 async def test_cancel_before_start_is_idempotent_and_owner_scoped(manager):
+    """Verify cancellation before startup blocks only that owner's call identity."""
     call_id = uuid4()
     ended = await manager.end("owner", call_id)
     assert await manager.end("owner", call_id) == ended
@@ -82,10 +86,12 @@ async def test_cancel_before_start_is_idempotent_and_owner_scoped(manager):
 
 
 async def test_end_during_start_validation_prevents_room_admission(manager, store, monkeypatch):
+    """Verify ending a call during snapshot validation prevents room admission."""
     reached, release = asyncio.Event(), asyncio.Event()
     get = store.get
 
     async def paused(owner):
+        """Pause after loading the owner's snapshot so cancellation can precede admission."""
         snapshot = await get(owner)
         reached.set()
         await release.wait()
@@ -107,11 +113,13 @@ async def test_end_during_start_validation_prevents_room_admission(manager, stor
 async def test_cancelled_setup_deletes_the_predetermined_room(
     manager, store, monkeypatch, stage, cancel
 ):
+    """Verify cancelling any setup stage deletes the reserved room and closes media."""
     baseline = await store.get("owner")
     reached = asyncio.Event()
     target, name = (PipelineDouble, "start") if stage == "join" else (RoomsDouble, stage)
 
     async def paused(self, *args):
+        """Block the selected setup operation until cancellation interrupts it."""
         reached.set()
         await asyncio.Event().wait()
 
@@ -139,7 +147,9 @@ async def test_cancelled_setup_deletes_the_predetermined_room(
 
 
 async def test_ambiguous_create_timeout_still_deletes_name(manager, monkeypatch):
+    """Verify an ambiguous room creation timeout still triggers deletion by its reserved name."""
     async def timed_out(self, name, expires):
+        """Simulate room creation timing out without confirming whether the room exists."""
         raise TimeoutError
 
     monkeypatch.setattr(RoomsDouble, "create", timed_out)
@@ -152,10 +162,12 @@ async def test_ambiguous_create_timeout_still_deletes_name(manager, monkeypatch)
 async def test_duplicate_start_waits_for_one_join_and_reuses_active_credentials(
     manager, monkeypatch
 ):
+    """Verify concurrent starts share one join and reuse credentials until the call ends."""
     reached, release = asyncio.Event(), asyncio.Event()
     create = RoomsDouble.create
 
     async def paused(self, *args):
+        """Hold room creation so concurrent starts overlap before the shared join completes."""
         reached.set()
         await release.wait()
         return await create(self, *args)
@@ -178,9 +190,11 @@ async def test_duplicate_start_waits_for_one_join_and_reuses_active_credentials(
 
 
 async def test_history_hang_cannot_skip_media_cleanup(manager, store, monkeypatch):
+    """Verify a hanging history finalizer cannot prevent room and pipeline cleanup."""
     baseline = await store.get("owner")
 
     async def blocked(*args):
+        """Keep history finalization pending until its cleanup deadline interrupts it."""
         await asyncio.Event().wait()
 
     finish = AsyncMock(side_effect=blocked)
@@ -200,6 +214,7 @@ async def test_history_hang_cannot_skip_media_cleanup(manager, store, monkeypatc
 async def test_unconfirmed_cleanup_blocks_replacement_until_explicit_retry(
     manager, store, monkeypatch, resource, failure
 ):
+    """Verify failed cleanup blocks replacement calls until an explicit retry confirms teardown."""
     baseline = await store.get("owner")
     join = await manager.start("owner", uuid4())
     call = manager.call
@@ -207,6 +222,7 @@ async def test_unconfirmed_cleanup_blocks_replacement_until_explicit_retry(
     operation = getattr(target, name)
 
     async def failed(*args):
+        """Simulate a selected cleanup timeout, process exit, or ordinary exception."""
         if failure == "timeout":
             await asyncio.Event().wait()
         if failure == "systemExit":
@@ -237,10 +253,12 @@ async def test_unconfirmed_cleanup_blocks_replacement_until_explicit_retry(
 
 
 async def test_noncooperative_close_is_not_duplicated_or_misreported(manager, monkeypatch):
+    """Verify cancellation-resistant cleanup stays unconfirmed and is never started twice."""
     release = asyncio.Event()
     entered = 0
 
     async def blocked(self):
+        """Count pipeline close attempts and ignore cancellation until explicitly released."""
         nonlocal entered
         entered += 1
         while not release.is_set():
@@ -275,10 +293,12 @@ async def test_noncooperative_close_is_not_duplicated_or_misreported(manager, mo
 
 
 async def test_repeated_setup_task_cancellation_cannot_cancel_teardown(manager, monkeypatch):
+    """Verify cancelling the setup task during room deletion cannot cancel teardown."""
     reached, release = asyncio.Event(), asyncio.Event()
     delete = RoomsDouble.delete
 
     async def paused(self, name):
+        """Hold room deletion while the setup task receives another cancellation."""
         reached.set()
         await release.wait()
         await delete(self, name)
@@ -298,6 +318,7 @@ async def test_repeated_setup_task_cancellation_cannot_cancel_teardown(manager, 
 async def test_setup_system_exit_is_contained_and_primary_reason_survives_cleanup(
     manager, monkeypatch
 ):
+    """Verify setup SystemExit is sanitized and a cleanup failure leaves teardown unconfirmed."""
     monkeypatch.setattr(PipelineDouble, "start", AsyncMock(side_effect=SystemExit("private")))
     monkeypatch.setattr(RoomsDouble, "delete", AsyncMock(side_effect=RuntimeError("private")))
     with pytest.raises(Problem) as error:
@@ -308,6 +329,7 @@ async def test_setup_system_exit_is_contained_and_primary_reason_survives_cleanu
 
 
 async def test_primary_provider_problem_survives_teardown_failure(manager, monkeypatch):
+    """Verify teardown errors do not replace the primary sanitized provider failure message."""
     monkeypatch.setattr(
         RoomsDouble,
         "token",
@@ -321,6 +343,7 @@ async def test_primary_provider_problem_survives_teardown_failure(manager, monke
 
 
 async def test_call_expiry_preserves_figures_and_never_refreshes_tokens(manager, store):
+    """Verify call expiry closes media without changing finances or refreshing room tokens."""
     baseline = await store.get("owner")
     manager.config = manager.config.model_copy(
         update={"voice": manager.config.voice.model_copy(update={"call_seconds": 0.03})}
@@ -338,6 +361,7 @@ async def test_call_expiry_preserves_figures_and_never_refreshes_tokens(manager,
 
 
 async def test_retry_cannot_return_expired_credentials_before_timer_runs(manager, store):
+    """Verify startup retries reject expired join credentials even before the expiry timer runs."""
     join = await manager.start("owner", uuid4())
     store.clock = lambda: join.expires_at + timedelta(seconds=1)
     with pytest.raises(Problem) as error:
@@ -349,6 +373,7 @@ async def test_retry_cannot_return_expired_credentials_before_timer_runs(manager
 
 
 async def test_attempt_capacity_never_evicts_live_cancellation(manager):
+    """Verify call identity limits preserve cancellation records and isolate other owners."""
     manager.config = manager.config.model_copy(update={"max_commands": 1})
     call_id = uuid4()
     await manager.end("owner", call_id)
@@ -364,6 +389,7 @@ async def test_attempt_capacity_never_evicts_live_cancellation(manager):
 
 
 async def test_attempt_budget_is_user_scoped_and_reclaimed_on_login_revocation(manager):
+    """Verify call budgets span user logins and revocation reclaims only owned entries."""
     manager.config = manager.config.model_copy(update={"max_commands": 1})
     first, second = Access("user", "first-login"), Access("user", "second-login")
     other = Access("other", "other-login")
@@ -384,6 +410,7 @@ async def test_attempt_budget_is_user_scoped_and_reclaimed_on_login_revocation(m
 
 @pytest.mark.parametrize("body", [None, [], "private token", {}, {"url": 12}])
 async def test_daily_malformed_room_is_a_sanitized_problem(tmp_path, monkeypatch, caplog, body):
+    """Verify malformed room responses yield sanitized errors without logging private payloads."""
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(rooms, "request", AsyncMock(return_value=body))
     try:
@@ -410,6 +437,7 @@ async def test_daily_malformed_room_is_a_sanitized_problem(tmp_path, monkeypatch
     ],
 )
 async def test_daily_room_url_matches_private_tenant_and_name(tmp_path, monkeypatch, url):
+    """Verify room URLs reject wrong names, unsafe tenants, credentials, and malformed syntax."""
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(
         rooms,
@@ -425,6 +453,7 @@ async def test_daily_room_url_matches_private_tenant_and_name(tmp_path, monkeypa
 
 @pytest.mark.parametrize("privacy", [None, "public"])
 async def test_daily_room_must_confirm_private_access(tmp_path, monkeypatch, privacy):
+    """Verify room creation rejects responses that do not explicitly confirm private access."""
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(
         rooms,
@@ -442,6 +471,7 @@ async def test_daily_room_must_confirm_private_access(tmp_path, monkeypatch, pri
 
 @pytest.mark.parametrize("body", [None, [], "private token", {}, {"token": ""}, {"token": "  "}])
 async def test_daily_malformed_token_is_a_sanitized_problem(tmp_path, monkeypatch, caplog, body):
+    """Verify malformed room tokens yield sanitized errors without leaking response contents."""
     rooms = DailyRooms(environment(tmp_path), 1)
     monkeypatch.setattr(rooms, "request", AsyncMock(return_value=body))
     try:
@@ -453,6 +483,7 @@ async def test_daily_malformed_token_is_a_sanitized_problem(tmp_path, monkeypatc
 
 
 async def test_daily_invalid_json_logs_status_and_type_not_response(tmp_path, monkeypatch, caplog):
+    """Verify invalid provider JSON logs HTTP status and error type but not sensitive messages."""
     rooms = DailyRooms(environment(tmp_path), 1)
     response = AsyncMock()
     response.status = 200

@@ -21,6 +21,7 @@ from scripts.verify_continuous_voice import browser_environment, failure_categor
 
 
 def probe(pipeline):
+    """Extract allowlisted voice counters and typed pipeline state without private text."""
     metrics = getattr(pipeline, "metrics", {})
     return {
         "metrics": {
@@ -52,6 +53,7 @@ def probe(pipeline):
 
 
 def browser_app():
+    """Build an authenticated harness with recognition probes and synthetic SSE disconnects."""
     from azure.cognitiveservices.speech import OutputFormat, ResultReason
 
     from app import speech
@@ -68,13 +70,18 @@ def browser_app():
     connection_generation = 0
 
     class ConnectionBoundary:
+        """Interrupt prior event-stream connections for browser reconnection tests."""
+
         def __init__(self, app):
+            """Retain the ASGI application wrapped by the synthetic connection boundary."""
             self.app = app
 
         async def __call__(self, scope, receive, send):
+            """Track the connection generation and intercept outgoing event-stream messages."""
             generation = connection_generation
 
             async def forward(message):
+                """Forward responses unless a synthetic disconnect invalidates the event stream."""
                 if (
                     scope.get("path") == "/api/session/events"
                     and message["type"] == "http.response.body"
@@ -88,11 +95,15 @@ def browser_app():
     application.add_middleware(ConnectionBoundary)
 
     class ObservedRecognition(recognition_class):
+        """Retain bounded detailed speech recognition candidates for live harness diagnostics."""
+
         def __init__(self, **kwargs):
+            """Enable detailed recognition results on the observed speech recognizer."""
             super().__init__(**kwargs)
             self._speech_config.output_format = OutputFormat.Detailed
 
         def _receive(self, event, kind, identity):
+            """Capture the active recognized result's best candidate before normal processing."""
             if (
                 kind == "recognized"
                 and identity is self._recognition_id
@@ -109,7 +120,9 @@ def browser_app():
 
     @asynccontextmanager
     async def observed_lifespan(app):
+        """Install recognition observation for the app lifespan and restore it during cleanup."""
         async def observe():
+            """Retain pipelines, attach model request capture, and record rooms for cleanup."""
             while True:
                 call = app.state.calls.call
                 if call:
@@ -119,6 +132,7 @@ def browser_app():
                             requests[call.pipeline] = None
 
                             async def capture(request, pipeline=call.pipeline):
+                                """Retain the pipeline's latest chat-completion request body."""
                                 if request.url.path.endswith("/chat/completions"):
                                     requests[pipeline] = json.loads(request.content)
 
@@ -147,6 +161,7 @@ def browser_app():
 
     @application.get("/__test/voice", include_in_schema=False)
     async def voice(request: Request):
+        """Expose authenticated voice metrics and opt-in synthetic conversation diagnostics."""
         access = await application.state.auth.identify(request)
         call = application.state.calls.call
         pipeline = call.pipeline if call and call.owner == access else pipelines.get(access)
@@ -170,6 +185,7 @@ def browser_app():
 
     @application.post("/__test/connection", include_in_schema=False)
     async def disconnect(request: Request):
+        """Invalidate prior stream connections and publish the authenticated owner's snapshot."""
         nonlocal connection_generation
         access = await application.state.auth.identify(request)
         snapshot = await application.state.store.get(access)
@@ -183,6 +199,7 @@ def browser_app():
 
 @pytest.mark.parametrize("arguments, code", [([], 2), (["--help"], 0)])
 def test_cli_requires_explicit_billing(arguments, code):
+    """Verify the continuous-voice CLI requires billing consent and leaves help non-billable."""
     result = subprocess.run(
         [sys.executable, "-m", "scripts.verify_continuous_voice", *arguments],
         cwd=ROOT / "backend",
@@ -197,6 +214,7 @@ def test_cli_requires_explicit_billing(arguments, code):
 
 
 def test_import_does_not_contact_providers():
+    """Verify importing the continuous-voice verifier succeeds without producing output."""
     result = subprocess.run(
         [sys.executable, "-c", "import scripts.verify_continuous_voice"],
         cwd=ROOT / "backend",
@@ -209,6 +227,7 @@ def test_import_does_not_contact_providers():
 
 
 def test_samples_bounded_and_relative():
+    """Verify voice samples are bounded in length and use the supplied date at 16 kHz."""
     payload = scenario(date(2027, 1, 3))
     assert payload["sampleRate"] == 16000
     assert payload["dueDate"] == "2027-01-03"
@@ -218,6 +237,7 @@ def test_samples_bounded_and_relative():
 
 
 def test_browser_does_not_inherit_credentials(monkeypatch):
+    """Verify the browser environment excludes provider credentials and unrelated tokens."""
     for name in (
         "AZURE_OPENAI_API_KEY",
         "DAILY_API_KEY",
@@ -229,6 +249,7 @@ def test_browser_does_not_inherit_credentials(monkeypatch):
 
 
 def test_probe_omits_text_and_private_fields():
+    """Verify probe metrics and parsed failure categories omit private text and invalid values."""
     pipeline = SimpleNamespace(
         metrics={
             "model_text": 2,
@@ -267,6 +288,7 @@ def test_probe_omits_text_and_private_fields():
 
 
 def test_probe_requires_authentication_and_is_not_production(monkeypatch, tmp_path):
+    """Verify harness probes require authentication and are excluded from the production image."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     application = browser_app()
     with TestClient(application, base_url="http://localhost:8000") as client:
@@ -284,6 +306,7 @@ def test_probe_requires_authentication_and_is_not_production(monkeypatch, tmp_pa
 
 
 def test_browser_requires_billing_before_reading_samples():
+    """Verify the browser verifier rejects missing billing arguments before reading samples."""
     result = subprocess.run(
         ["node", str(ROOT / "frontend/scripts/verifyContinuousVoice.mjs")],
         cwd=ROOT,
@@ -297,6 +320,7 @@ def test_browser_requires_billing_before_reading_samples():
 
 
 def test_controlled_pcm_in_real_browser_offline():
+    """Verify injected browser PCM obeys mute, timing, silence, and track-cleanup boundaries."""
     script = """
 import assert from 'node:assert/strict';
 import { chromium } from '@playwright/test';

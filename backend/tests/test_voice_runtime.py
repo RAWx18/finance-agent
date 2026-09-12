@@ -14,6 +14,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 
 def test_missing_tokenizer_fails_before_any_runtime_download(monkeypatch):
+    """Verify missing tokenizer data fails preparation without attempting a download."""
     download = Mock(side_effect=AssertionError("Calls must not download model data"))
     monkeypatch.setattr(nltk, "download", download)
     monkeypatch.setattr(nltk.data, "find", Mock(side_effect=LookupError("missing")))
@@ -23,6 +24,7 @@ def test_missing_tokenizer_fails_before_any_runtime_download(monkeypatch):
 
 
 def test_installed_tokenizer_prepares_without_network(monkeypatch):
+    """Verify installed tokenizer data prepares successfully without a network download."""
     download = Mock(side_effect=AssertionError("Network is unavailable"))
     monkeypatch.setattr(nltk, "download", download)
     prepare_runtime()
@@ -31,6 +33,7 @@ def test_installed_tokenizer_prepares_without_network(monkeypatch):
 
 
 async def test_bot_ready_waits_for_started_processors_not_model_response(voice, monkeypatch):
+    """Verify bot readiness waits for processor startup rather than a model response."""
     rtvi = voice.pipeline.worker.rtvi
     send = AsyncMock()
     monkeypatch.setattr(rtvi, "_send_bot_ready", send)
@@ -52,6 +55,7 @@ async def test_bot_ready_waits_for_started_processors_not_model_response(voice, 
 
 
 async def test_cancelled_start_never_announces_ready(voice, monkeypatch):
+    """Verify revoked startup never announces bot readiness."""
     rtvi = voice.pipeline.worker.rtvi
     send = AsyncMock()
     monkeypatch.setattr(rtvi, "_send_bot_ready", send)

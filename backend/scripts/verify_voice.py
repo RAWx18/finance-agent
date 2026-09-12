@@ -21,6 +21,7 @@ from app.config import ROOT, load_config
 
 
 async def stop(process: asyncio.subprocess.Process) -> None:
+    """Terminate a child process and force its exit after the shutdown grace period."""
     if process.returncode is None:
         process.terminate()
         try:
@@ -32,6 +33,7 @@ async def stop(process: asyncio.subprocess.Process) -> None:
 
 
 async def verify() -> int:
+    """Probe the live voice stack with generated speech, synthetic login, and temporary state."""
     from azure.cognitiveservices.speech import (
         ResultReason,
         SpeechConfig,
@@ -160,6 +162,7 @@ async def verify() -> int:
 
 
 def main() -> int:
+    """Require billing consent and report the browser voice probe's exit status."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--allow-billable",

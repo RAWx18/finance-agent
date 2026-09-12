@@ -18,6 +18,7 @@ from .test_voice import provider_doubles as provider_doubles
 
 @pytest.fixture
 async def manager(store, config, tmp_path, provider_doubles):
+    """Yield an owner-scoped call manager with provider doubles and close it afterward."""
     await store.create("owner")
     manager = CallManager(store, config, environment(tmp_path))
     try:
@@ -27,6 +28,7 @@ async def manager(store, config, tmp_path, provider_doubles):
 
 
 async def test_successful_catalog_check_is_cached_per_manager(manager, monkeypatch):
+    """Verify successful voice checks are cached per manager rather than shared globally."""
     check = AsyncMock()
     monkeypatch.setattr("app.voice.check_voice", check)
     first = await manager.start("owner", uuid4())
@@ -44,9 +46,11 @@ async def test_successful_catalog_check_is_cached_per_manager(manager, monkeypat
 
 
 async def test_concurrent_preparation_shares_successful_check(manager, monkeypatch):
+    """Verify concurrent voice preparation shares one successful catalog check."""
     reached, release = asyncio.Event(), asyncio.Event()
 
     async def check(*args):
+        """Signal simulated catalog check entry and wait for release."""
         reached.set()
         await release.wait()
 
@@ -65,9 +69,11 @@ async def test_concurrent_preparation_shares_successful_check(manager, monkeypat
 
 
 async def test_cancelled_catalog_check_is_not_cached(manager, monkeypatch):
+    """Verify cancelled catalog checks are retried and allocate no room."""
     reached = asyncio.Event()
 
     async def check(*args):
+        """Signal simulated catalog check entry and block until cancelled."""
         reached.set()
         await asyncio.Event().wait()
 
@@ -90,6 +96,7 @@ async def test_cancelled_catalog_check_is_not_cached(manager, monkeypatch):
 
 
 async def test_failed_catalog_check_is_retried_before_room_creation(manager, monkeypatch):
+    """Verify failed catalog checks are retried before room allocation."""
     check = AsyncMock(side_effect=[Problem(503, "voiceUnavailable", "Invalid voice."), None])
     monkeypatch.setattr("app.voice.check_voice", check)
     with pytest.raises(Problem, match="Invalid voice"):
@@ -101,11 +108,13 @@ async def test_failed_catalog_check_is_retried_before_room_creation(manager, mon
 
 
 async def test_tokens_overlap_and_join_waits_for_construction_not_readiness(manager, monkeypatch):
+    """Verify token requests overlap and joins wait for construction rather than readiness."""
     both, release, constructing, constructed = (asyncio.Event() for _ in range(4))
     tokens = []
     start = PipelineDouble.start
 
     async def token(self, name, expires, user):
+        """Record concurrent token requests and return indexed dummy credentials on release."""
         index = len(tokens)
         tokens.append((name, expires, user))
         if len(tokens) == 2:
@@ -114,6 +123,7 @@ async def test_tokens_overlap_and_join_waits_for_construction_not_readiness(mana
         return f"credential-{index}"
 
     async def construct(self, *args):
+        """Check the bot token and defer fake pipeline construction until released."""
         assert args[4] == "credential-1"
         constructing.set()
         await constructed.wait()
@@ -143,6 +153,7 @@ async def test_tokens_overlap_and_join_waits_for_construction_not_readiness(mana
 
 @pytest.mark.parametrize("failure", ["provider", "end", "request", "timeout"])
 async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, failure):
+    """Verify token tasks settle before room deletion for each startup failure path."""
     both, cancelled, release, settled = (asyncio.Event() for _ in range(4))
     requests = []
     delete = RoomsDouble.delete
@@ -152,6 +163,7 @@ async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, 
         )
 
     async def token(self, *args):
+        """Coordinate token requests with simulated failure and deferred cancellation cleanup."""
         index = len(requests)
         requests.append(asyncio.current_task())
         if len(requests) == 2:
@@ -167,6 +179,7 @@ async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, 
             settled.set()
 
     async def delete_room(self, name):
+        """Require token tasks to finish before recording the fake room deletion."""
         assert settled.is_set() and all(task.done() for task in requests)
         await delete(self, name)
 
@@ -206,16 +219,19 @@ async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, 
 
 
 async def test_lifecycle_timings_are_monotonic_and_logs_are_safe(manager, monkeypatch, caplog):
+    """Verify lifecycle timings are ordered and logs exclude private call details."""
     caplog.set_level(logging.INFO, logger="app.voice")
     active = asyncio.Event()
     mark = Call.mark
 
     def measured(self, stage):
+        """Record a lifecycle stage and signal readiness when it is reached."""
         mark(self, stage)
         if stage == "ready":
             active.set()
 
     async def watch(*args):
+        """Wait for active call state and request shutdown."""
         await active.wait()
         assert manager.call.state.status == "active"
         manager.stop(manager.call)
@@ -261,6 +277,7 @@ async def test_lifecycle_timings_are_monotonic_and_logs_are_safe(manager, monkey
 
 
 async def test_shutdown_timings_distinguish_failure_from_confirmed_retry(manager, monkeypatch):
+    """Verify shutdown timings distinguish failed cleanup from a confirmed retry."""
     join = await manager.start("owner", uuid4())
     call = manager.call
     close = PipelineDouble.close

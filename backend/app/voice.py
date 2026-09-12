@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def unavailable_reason(config: Config, environment: Environment) -> str | None:
+    """Describe missing voice credentials and region settings, if any."""
     missing = environment.missing_azure_openai() + [
         name.upper()
         for name in ("daily_api_key", "azure_speech_key")
@@ -39,6 +40,7 @@ def unavailable_reason(config: Config, environment: Environment) -> str | None:
 
 
 async def check_voice(config: Config, environment: Environment) -> None:
+    """Validate speech locales and the configured voice against Azure's voice list."""
     from pipecat.transcriptions.language import Language
 
     try:
@@ -97,7 +99,10 @@ async def check_voice(config: Config, environment: Environment) -> None:
 
 
 class DailyRooms:
+    """Daily room and meeting-token client."""
+
     def __init__(self, environment: Environment, timeout: float):
+        """Create an authenticated HTTP session with the supplied timeout."""
         assert environment.daily_api_key
         self.http = aiohttp.ClientSession(
             headers={"Authorization": "Bearer " + environment.daily_api_key.get_secret_value()},
@@ -105,6 +110,7 @@ class DailyRooms:
         )
 
     async def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+        """Send a Daily API request and translate invalid responses into service errors."""
         async with self.http.request(
             method,
             "https://api.daily.co/v1" + path,
@@ -129,6 +135,7 @@ class DailyRooms:
                 ) from None
 
     async def create(self, name: str, expires: int) -> str:
+        """Create a private audio room and validate its returned URL and identity."""
         room = await self.request(
             "POST",
             "/rooms",
@@ -170,6 +177,7 @@ class DailyRooms:
         return str(room["url"])
 
     async def token(self, name: str, expires: int, user_id: UUID) -> str:
+        """Issue and validate an expiring, audio-only participant token."""
         result = await self.request(
             "POST",
             "/meeting-tokens",
@@ -194,14 +202,18 @@ class DailyRooms:
         return str(result["token"])
 
     async def delete(self, name: str) -> None:
+        """Delete the named room, treating an absent room as already deleted."""
         await self.request("DELETE", "/rooms/" + name)
 
     async def close(self) -> None:
+        """Close the Daily API HTTP session."""
         await self.http.close()
 
 
 @dataclass
 class Call:
+    """Voice call identity, lifecycle state, and owned resources."""
+
     owner: Owner
     id: UUID
     state: CallState
@@ -224,6 +236,7 @@ class Call:
     resume_slug: str | None = None
 
     def mark(self, stage: str) -> None:
+        """Record and log a lifecycle stage's elapsed time since admission."""
         # Monotonic seconds since admission; repeated stages record the latest attempt.
         self.timings[stage] = monotonic() - self.admitted_at
         logger.info(
@@ -235,9 +248,12 @@ class Call:
 
 
 class CallManager:
+    """Serialized voice-call admission, supervision, and resource cleanup."""
+
     def __init__(
         self, store: Store, config: Config, environment: Environment, auth: Auth | None = None
     ):
+        """Initialize call ownership, admission locks, and voice-check state."""
         self.store = store
         self.config = config
         self.environment = environment
@@ -250,6 +266,7 @@ class CallManager:
         self.voice_lock = asyncio.Lock()
 
     async def prepare_voice(self) -> None:
+        """Serialize voice checks and cache only a successful check."""
         async with self.voice_lock:
             if not self.voice_checked:
                 # Configuration is immutable for the manager's lifetime; failures remain retryable.
@@ -257,6 +274,7 @@ class CallManager:
                 self.voice_checked = True
 
     def remember(self, owner: Owner, call_id: UUID) -> None:
+        """Retain attempted call identities and enforce per-user identity capacity."""
         now = self.store.clock()
         self.attempts = {
             key: expires
@@ -284,6 +302,7 @@ class CallManager:
         )
 
     def state(self, owner: Owner) -> CallState:
+        """Return the owner's call state with provider error details concealed."""
         if self.call and self.call.owner == owner:
             state = self.call.state.model_copy()
             if state.status == "error":
@@ -292,17 +311,21 @@ class CallManager:
         return CallState()
 
     def check_idle(self) -> None:
+        """Reject admission while a call or its cleanup remains unsettled."""
         call = self.call
         if call and (
             call.state.status in {"connecting", "active", "ending"}
             or not call.state.cleanup_confirmed
-            or call.task is not None and not call.task.done()
-            or call.teardown is not None and not call.teardown.done()
+            or call.task is not None
+            and not call.task.done()
+            or call.teardown is not None
+            and not call.teardown.done()
             or any(not task.done() for task in call.operations.values())
         ):
             raise Problem(409, "callBusy", "A voice call is already running or ending.")
 
     async def select(self, owner: Owner, slug: str) -> Snapshot:
+        """Select a saved conversation only while voice admission is idle."""
         await self.store.check(owner)
         async with self.lock:
             if self.closed:
@@ -313,6 +336,7 @@ class CallManager:
     async def start(
         self, owner: Owner, call_id: UUID, conversation_slug: str | None = None
     ) -> CallJoin:
+        """Admit or rejoin an identified call and await valid browser credentials."""
         snapshot = await self.store.get(owner)
         async with self.lock:
             if self.closed:
@@ -388,6 +412,7 @@ class CallManager:
             raise
 
     def stop(self, call: Call) -> None:
+        """Invalidate call output and request lifecycle cancellation."""
         if "shutdownRequested" not in call.timings:
             call.mark("shutdownRequested")
         call.stop.set()
@@ -405,6 +430,7 @@ class CallManager:
             call.task.cancel()
 
     async def end(self, owner: Owner, call_id: UUID) -> CallState:
+        """End an owned call or retry its cleanup within the shutdown budget."""
         async with self.lock:
             call = self.call
             if not call or call.owner != owner or call.id != call_id:
@@ -427,6 +453,7 @@ class CallManager:
         return state
 
     def invalidate(self, user_id: str, session_hash: str | None = None) -> None:
+        """Revoke matching authenticated calls and discard their admission identities."""
         self.attempts = {
             key: expires
             for key, expires in self.attempts.items()
@@ -449,11 +476,13 @@ class CallManager:
                 self.call = None
 
     async def settle_revoked(self) -> None:
+        """Await bounded termination of a revoked call."""
         call = self.call
         if call and call.revoked and call.task and call.task is not asyncio.current_task():
             await self.end(call.owner, call.id)
 
     async def close(self) -> None:
+        """Block further admission and end the current call."""
         self.closed = True
         if self.call:
             await self.end(self.call.owner, self.call.id)
@@ -461,6 +490,7 @@ class CallManager:
     async def watch(
         self, call: Call, pipeline: VoicePipeline, queue: asyncio.Queue[Snapshot | Error]
     ) -> None:
+        """Refresh voice state and stop or interrupt calls when shared state changes."""
         sequence = pipeline.sequence
         while True:
             value: Snapshot | Error | None = None
@@ -488,6 +518,7 @@ class CallManager:
                 await pipeline.interrupt()
 
     async def run(self, call: Call) -> None:
+        """Set up, supervise, and tear down a call within its lifecycle deadlines."""
         call.running.set()
         call.mark("setupStarted")
         voice = self.config.voice
@@ -496,6 +527,7 @@ class CallManager:
         history = History(self.store)
 
         def fail() -> None:
+            """Invalidate the pipeline and mark the call as failed before stopping."""
             if call.pipeline is not None:
                 call.pipeline.invalidate()
             if call.state.status == "error":
@@ -611,6 +643,7 @@ class CallManager:
             watcher = asyncio.create_task(self.watch(call, pipeline, queue))
 
             def watch_finished(task: asyncio.Task[None]) -> None:
+                """Fail the call when its state watcher exits with an exception."""
                 if not task.cancelled() and task.exception() is not None:
                     fail()
 
@@ -667,6 +700,7 @@ class CallManager:
                 pass
 
     async def finish(self, call: Call, setup_error: Problem | None) -> None:
+        """Clean up the call and reject any unresolved join request."""
         try:
             await self.cleanup(call)
         finally:
@@ -683,6 +717,7 @@ class CallManager:
                 )
 
     async def cleanup(self, call: Call) -> None:
+        """Settle call resources with bounded, retryable cleanup operations."""
         call.stopping = True
         if "shutdownRequested" not in call.timings:
             call.mark("shutdownRequested")
@@ -698,15 +733,18 @@ class CallManager:
         deadline = asyncio.get_running_loop().time() + self.config.voice.shutdown_seconds
 
         def completed(name: str) -> bool:
+            """Check whether a named cleanup operation finished successfully."""
             task = call.operations.get(name)
             return bool(task and task.done() and not task.cancelled() and task.result())
 
         def launch(name: str, operation: Callable[[], Awaitable[None]]) -> None:
+            """Start or retry a cleanup operation unless it is pending or successful."""
             task = call.operations.get(name)
             if task and (not task.done() or completed(name)):
                 return
 
             async def execute() -> bool:
+                """Run a cleanup operation and record its timing and success status."""
                 call.mark(name + "Started")
                 try:
                     await operation()

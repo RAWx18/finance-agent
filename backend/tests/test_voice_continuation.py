@@ -29,11 +29,13 @@ from app.voice_turns import ContinuationUserTurnStopStrategy
 
 @contextmanager
 def turn_clock():
+    """Supply an opt-in event-loop clock that advances when runnable work and I/O drain."""
     loop = asyncio.get_running_loop()
     now = loop.time()
     select = loop._selector.select
 
     def poll(timeout=None):
+        """Poll I/O without blocking and advance the synthetic clock by an idle timeout."""
         nonlocal now
         ready = select(0)
         # Advance real asyncio deadlines only after runnable work and I/O have drained.
@@ -44,6 +46,7 @@ def turn_clock():
     with pytest.MonkeyPatch.context() as patch:
 
         def start():
+            """Replace event-loop timing and polling with the controlled test clock."""
             nonlocal now
             now = loop.time()
             patch.setattr(loop, "time", lambda: now)
@@ -54,14 +57,17 @@ def turn_clock():
 
 
 def final(text, *, finalized=True):
+    """Build a synthetic transcription frame with the supplied finalization state."""
     return TranscriptionFrame(text=text, user_id="owner", timestamp="", finalized=finalized)
 
 
 def interim(text):
+    """Build a synthetic interim transcription frame."""
     return InterimTranscriptionFrame(text=text, user_id="owner", timestamp="")
 
 
 def speech(config, text):
+    """Build timed VAD start, transcription, and VAD stop frames for an utterance."""
     return [
         VADUserStartedSpeakingFrame(start_secs=config.voice.vad_start_seconds),
         SleepFrame(sleep=0.05),
@@ -72,18 +78,25 @@ def speech(config, text):
 
 
 async def play(config, frames, *, latency=1.8):
+    """Run synthetic frames through turn aggregation and return messages and timing evidence."""
     events = {"starts": [], "stops": [], "idle": [], "frames": []}
     began = asyncio.get_running_loop().time()
 
     class TimedFrames(list):
+        """Frame list that starts the controlled clock when iteration begins."""
+
         def __iter__(self):
+            """Start controlled timing before iterating through the queued frames."""
             nonlocal began
             start_clock()
             began = asyncio.get_running_loop().time()
             return super().__iter__()
 
     class ObservedStopStrategy(ContinuationUserTurnStopStrategy):
+        """Continuation strategy with timestamp capture for speech and recognition frames."""
+
         async def process_frame(self, frame):
+            """Record relevant frame timing before applying the continuation strategy."""
             if isinstance(
                 frame,
                 (
@@ -139,6 +152,7 @@ async def play(config, frames, *, latency=1.8):
 
 @pytest.mark.parametrize("filler_vad", [False, True], ids=["missing-filler-vad", "separate-vad"])
 async def test_cash_filler_rent_is_one_turn(config, filler_vad):
+    """Verify cash, filler, and rent segments within continuation deadlines form one turn."""
     assert config.voice.speech_timeout_seconds == 2.6
     assert config.voice.vad_stop_seconds == 0.2
     assert config.voice.vad_start_seconds == 0.1
@@ -173,6 +187,7 @@ async def test_cash_filler_rent_is_one_turn(config, filler_vad):
 
 
 async def test_cash_stops_before_filler_beyond_continuation_deadline(config):
+    """Verify filler beyond the continuation deadline starts a separate user turn."""
     messages, events, down, _ = await play(
         config,
         [
@@ -199,6 +214,7 @@ async def test_cash_stops_before_filler_beyond_continuation_deadline(config):
 
 
 async def test_interims_cross_deadline_without_entering_context(config):
+    """Verify interims extend the turn deadline without entering completed context."""
     messages, events, down, _ = await play(
         config,
         [
@@ -225,6 +241,7 @@ async def test_interims_cross_deadline_without_entering_context(config):
 @pytest.mark.parametrize("text", ["No.", "Stop."])
 @pytest.mark.parametrize("vad", [False, True], ids=["transcript-start", "vad-start"])
 async def test_short_interruptions_start_immediately(config, text, vad):
+    """Verify short utterances interrupt immediately with either VAD or transcript starts."""
     messages, events, down, up = await play(
         config,
         [
@@ -245,6 +262,7 @@ async def test_short_interruptions_start_immediately(config, text, vad):
 
 @pytest.mark.parametrize("finalized", [False, True])
 async def test_stt_safety_is_independent_of_continuation(config, finalized):
+    """Verify transcript finalization controls STT safety independently of continuation timing."""
     messages, events, _, _ = await play(
         config,
         [
@@ -273,6 +291,7 @@ async def test_stt_safety_is_independent_of_continuation(config, finalized):
 
 @pytest.mark.parametrize("delay", [0.6, 2.8])
 async def test_vad_final_uses_existing_continuation_deadline(config, delay):
+    """Verify a delayed final transcript uses the existing VAD continuation deadline."""
     messages, events, _, _ = await play(
         config,
         [
@@ -293,6 +312,7 @@ async def test_vad_final_uses_existing_continuation_deadline(config, delay):
 
 @pytest.mark.parametrize("recognition", [final, interim])
 async def test_empty_recognition_does_not_extend_prior_vad_deadline(config, recognition):
+    """Verify whitespace recognition cannot extend an existing VAD deadline."""
     messages, events, _, _ = await play(
         config,
         [
@@ -308,6 +328,7 @@ async def test_empty_recognition_does_not_extend_prior_vad_deadline(config, reco
 
 
 async def test_interim_only_never_becomes_a_final_user_message(config):
+    """Verify interim-only recognition never creates a completed user message."""
     messages, events, down, _ = await play(
         config,
         [

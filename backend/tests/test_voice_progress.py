@@ -36,11 +36,15 @@ from .test_voice_waiting import next_state
 async def test_progressing_response_does_not_pause_and_next_turn_still_works(
     voice, synthesis, store, stage
 ):
+    """Verify progressing model or synthesis output avoids waiting and allows the next turn."""
     voice.pipeline.client_ready.set()
     response = "Your cash is recorded, and we can review the next payment."
 
     class Stream(httpx.AsyncByteStream):
+        """Synthetic completion stream with regularly progressing text chunks."""
+
         async def __aiter__(self):
+            """Yield paced text deltas followed by a completed response."""
             for text in (
                 "Your cash ",
                 "is recorded, ",
@@ -103,15 +107,18 @@ async def test_progressing_response_does_not_pause_and_next_turn_still_works(
 async def test_superseded_empty_completion_cannot_pause_current_audio(
     voice, synthesis, monkeypatch
 ):
+    """Verify deferred empty-response handling cannot pause newer audio in the same generation."""
     voice.pipeline.client_ready.set()
     reached, release = asyncio.Event(), asyncio.Event()
     create_task = voice.pipeline.llm.create_task
 
     def delayed(coroutine, name=None):
+        """Delay empty-response tasks while forwarding other task creation."""
         if name != "empty-response":
             return create_task(coroutine, name)
 
         async def run():
+            """Signal deferred task entry and await release before running its coroutine."""
             reached.set()
             await release.wait()
             await coroutine
@@ -152,11 +159,15 @@ async def test_superseded_empty_completion_cannot_pause_current_audio(
     ids=["role", "emptyTool"],
 )
 async def test_keepalive_frames_do_not_hide_a_lost_response(voice, store, delta):
+    """Verify nonprogressing keepalive deltas still trigger recoverable response waiting."""
     voice.pipeline.client_ready.set()
     closed = asyncio.Event()
 
     class Stream(httpx.AsyncByteStream):
+        """Synthetic completion stream containing only nonprogressing keepalive deltas."""
+
         async def __aiter__(self):
+            """Emit the supplied empty delta repeatedly without meaningful response progress."""
             chunk = json.loads(text_reply("").text.split("\n", 1)[0][6:])
             chunk["choices"][0].update(delta=delta, finish_reason=None)
             while True:
@@ -164,6 +175,7 @@ async def test_keepalive_frames_do_not_hide_a_lost_response(voice, store, delta)
                 await asyncio.sleep(0.04)
 
         async def aclose(self):
+            """Signal closure of the keepalive-only response stream."""
             closed.set()
 
     voice.responses.put_nowait(

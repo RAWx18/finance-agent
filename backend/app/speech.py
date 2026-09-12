@@ -43,12 +43,15 @@ class SynthesisFailure(Exception):
 
 
 class SpeechRecognition(AzureSTTService):
+    """Azure recognition with session-bound callbacks and bounded native lifecycle operations."""
+
     _speech_recognizer: Any
     _settings: Any
 
     def __init__(
         self, *, phrases: list[str], config: VoiceConfig | None = None, **kwargs: Any
     ) -> None:
+        """Initialize phrase hints, voice configuration, and native recognition task tracking."""
         super().__init__(**kwargs)
         self.phrases = phrases
         self.config = config or load_config().voice
@@ -57,9 +60,11 @@ class SpeechRecognition(AzureSTTService):
         self._native_stop: asyncio.Task[None] | None = None
 
     def _receive(self, event: Any, kind: str, identity: object | None) -> None:
+        """Dispatch an SDK recognition event onto the service event loop."""
         loop = self.get_event_loop()
 
         async def deliver() -> None:
+            """Validate an active recognition event and publish its transcript or failure."""
             if identity is None or identity is not self._recognition_id:
                 return
             if kind in {"canceled", "stopped"}:
@@ -101,6 +106,7 @@ class SpeechRecognition(AzureSTTService):
                 await self.push_frame(frame)
 
         def schedule() -> None:
+            """Schedule delivery only while the event's recognition session remains current."""
             if identity is not None and identity is self._recognition_id:
                 self.create_task(deliver(), "recognition-event")
 
@@ -108,12 +114,15 @@ class SpeechRecognition(AzureSTTService):
             loop.call_soon_threadsafe(schedule)
 
     def _on_handle_recognized(self, event: Any) -> None:
+        """Dispatch a final transcript for the current recognition session."""
         self._receive(event, "recognized", self._recognition_id)
 
     def _on_handle_recognizing(self, event: Any) -> None:
+        """Dispatch an interim transcript for the current recognition session."""
         self._receive(event, "recognizing", self._recognition_id)
 
     async def _connect(self) -> None:
+        """Start continuous Azure recognition with phrase hints and bounded startup."""
         if self._native_stop is not None:
             await self._disconnect()
         if self._audio_stream:
@@ -158,6 +167,7 @@ class SpeechRecognition(AzureSTTService):
             )
 
     async def _disconnect(self) -> None:
+        """Retire recognition callbacks and stop native resources after any pending startup."""
         self._recognition_id = None
         recognizer, stream = self._speech_recognizer, self._audio_stream
         if self._native_stop is None and (recognizer is not None or stream is not None):
@@ -166,6 +176,7 @@ class SpeechRecognition(AzureSTTService):
                     getattr(recognizer, name).disconnect_all()
 
             async def stop() -> None:
+                """Settle startup before stopping recognition and closing its stream."""
                 try:
                     if self._native_start is not None:
                         await asyncio.shield(self._native_start)
@@ -188,6 +199,7 @@ class SpeechRecognition(AzureSTTService):
             self._speech_recognizer = self._audio_stream = None
 
     async def cleanup(self) -> None:
+        """Retire recognition events and clean up service and native resources."""
         self._recognition_id = None
         try:
             await STTService.cleanup(self)  # type: ignore[no-untyped-call]
@@ -196,9 +208,12 @@ class SpeechRecognition(AzureSTTService):
 
 
 class SpeechSynthesis(AzureTTSService):
+    """Azure speech streaming with request-bound callbacks and progress deadlines."""
+
     _speech_synthesizer: Any
 
     def __init__(self, *, config: VoiceConfig | None = None, **kwargs: Any) -> None:
+        """Configure synthesis deadlines and initialize native shutdown tracking."""
         self.config = config or load_config().voice
         # Provider deadlines must expire before Pipecat can retire a pending context.
         kwargs["stop_frame_timeout_s"] = (
@@ -210,6 +225,7 @@ class SpeechSynthesis(AzureTTSService):
         self._native_stop: asyncio.Task[None] | None = None
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        """Stream request-scoped Azure audio and word timings with bounded progress waits."""
         await self._stop_synthesis()
         self._native_stop = None
         # Each SDK request owns its callbacks; late events cannot enter another utterance.
@@ -220,11 +236,14 @@ class SpeechSynthesis(AzureTTSService):
         events: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
 
         def bind(kind: str) -> Any:
+            """Create a thread-safe SDK callback for one synthesis event kind."""
             def deliver(event: Any) -> None:
+                """Enqueue a synthesis event only while its request remains active."""
                 if active:
                     events.put_nowait((kind, event))
 
             def receive(event: Any) -> None:
+                """Schedule synthesis event delivery on the service event loop."""
                 if not loop.is_closed():
                     loop.call_soon_threadsafe(deliver, event)
 
@@ -240,6 +259,7 @@ class SpeechSynthesis(AzureTTSService):
             signal.connect(bind(kind))
 
         def retire() -> None:
+            """Deactivate the synthesis request and detach all of its SDK callbacks."""
             nonlocal active
             if not active:
                 return
@@ -323,6 +343,7 @@ class SpeechSynthesis(AzureTTSService):
                 self._retire_synthesis = None
 
     async def _stop_synthesis(self) -> None:
+        """Retire active callbacks and await bounded native synthesis shutdown."""
         if self._retire_synthesis is not None:
             self._retire_synthesis()
             if self._native_stop is None:
@@ -344,6 +365,7 @@ class SpeechSynthesis(AzureTTSService):
     async def _handle_interruption(
         self, frame: InterruptionFrame, direction: FrameDirection
     ) -> None:
+        """Interrupt synthesis, settle native shutdown, and reset speech state."""
         if self._retire_synthesis is not None:
             self._retire_synthesis()
         # run_tts owns native shutdown; do not stop the same request twice.
@@ -354,6 +376,7 @@ class SpeechSynthesis(AzureTTSService):
         self._reset_state()  # type: ignore[no-untyped-call]
 
     async def cancel(self, frame: CancelFrame) -> None:
+        """Cancel speech processing and ensure native synthesis stops."""
         if self._retire_synthesis is not None:
             self._retire_synthesis()
         try:
@@ -362,6 +385,7 @@ class SpeechSynthesis(AzureTTSService):
             await self._stop_synthesis()
 
     async def cleanup(self) -> None:
+        """Release service resources and settle native synthesis shutdown."""
         if self._retire_synthesis is not None:
             self._retire_synthesis()
         try:
@@ -370,6 +394,7 @@ class SpeechSynthesis(AzureTTSService):
             await self._stop_synthesis()
 
     def _construct_ssml(self, text: str) -> str:
+        """Escape spoken text and construct locale-specific SSML for the configured voice."""
         locale = quoteattr(str(assert_given(self._settings.language)))
         voice = quoteattr(str(assert_given(self._settings.voice)))
         # DragonHD accepts language selection, not prosody or mstts:silence controls.

@@ -27,6 +27,7 @@ from .conftest import ORIGIN, money
 
 
 def environment(tmp_path):
+    """Build a temporary environment with dummy voice credentials."""
     return Environment(
         data_dir=tmp_path,
         azure_openai_api_key=SecretStr("test-only-azure"),
@@ -38,6 +39,7 @@ def environment(tmp_path):
 
 
 async def test_partial_facts_are_atomic_retained_idempotent_and_corrected(store):
+    """Verify partial fact writes persist atomically, replay safely, and support corrections."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     patch = {
@@ -113,6 +115,7 @@ async def test_partial_facts_are_atomic_retained_idempotent_and_corrected(store)
 
 
 async def test_voice_cash_correction_preserves_independent_consent(store):
+    """Verify a cash correction preserves consent for an independent spending adjustment."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(
@@ -173,6 +176,7 @@ async def test_voice_cash_correction_preserves_independent_consent(store):
 
 
 async def test_review_is_deterministic_readonly_and_rejects_stale_revision(store):
+    """Verify review leaves facts unchanged and returns current state for stale revisions."""
     await store.create("owner")
     refreshed = []
     tools = VoiceTools(store, "owner", uuid4(), refreshed.append)
@@ -188,6 +192,7 @@ async def test_review_is_deterministic_readonly_and_rejects_stale_revision(store
 
 
 def test_http_setup_guards_contract_and_csp(client):
+    """Verify call setup guards, public unavailability responses, and voice CSP directives."""
     assert client.post("/api/session/call", json={"callId": str(uuid4())}).status_code == 404
     settings = client.get("/api/settings").json()
     assert settings["voiceAvailable"] is False
@@ -220,6 +225,7 @@ def test_http_setup_guards_contract_and_csp(client):
 
 
 def test_missing_setup_diagnostics_stay_internal(config, tmp_path, caplog):
+    """Verify missing voice configuration is logged without exposing diagnostics to clients."""
     env = Environment(data_dir=tmp_path)
     reason = unavailable_reason(config, env)
     assert reason == (
@@ -243,6 +249,7 @@ def test_missing_setup_diagnostics_stay_internal(config, tmp_path, caplog):
 def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
     config, tmp_path, monkeypatch, caplog, status
 ):
+    """Verify simulated voice preflight failures expose only safe public and log messages."""
     response = AsyncMock()
     response.status = status
     response.json.return_value = []
@@ -315,6 +322,7 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
 
 @pytest.mark.parametrize("status", ["idle", "connecting", "active", "ending", "ended", "error"])
 async def test_call_state_is_a_public_copy(store, config, tmp_path, status):
+    """Verify public call state is sanitized, independently mutable, and owner-scoped."""
     manager = CallManager(store, config, environment(tmp_path))
     state = CallState(call_id=uuid4(), status=status, message="Internal diagnostic")
     manager.call = Call("owner", state.call_id, state, asyncio.get_running_loop().create_future())
@@ -354,6 +362,7 @@ async def test_call_state_is_a_public_copy(store, config, tmp_path, status):
     ],
 )
 def test_http_voice_error_logs_only_known_reasons(config, tmp_path, monkeypatch, caplog, message):
+    """Verify voice errors log only recognized safe reasons and return a generic message."""
     application = auth_app(config, environment(tmp_path))
     error = Problem(503, "voiceUnavailable", message)
     monkeypatch.setattr(application.state.calls, "start", AsyncMock(side_effect=error))
@@ -375,6 +384,7 @@ def test_http_voice_error_logs_only_known_reasons(config, tmp_path, monkeypatch,
 
 
 def test_http_other_problem_body_is_unchanged(config, tmp_path, monkeypatch, caplog):
+    """Verify non-voice problem responses retain their body without voice diagnostics."""
     application = auth_app(config, environment(tmp_path))
     error = Problem(409, "callBusy", "A voice call is already running.")
     monkeypatch.setattr(application.state.calls, "start", AsyncMock(side_effect=error))
@@ -388,37 +398,47 @@ def test_http_other_problem_body_is_unchanged(config, tmp_path, monkeypatch, cap
 
 
 class RoomsDouble:
+    """Room service fake with token failure injection and cleanup tracking."""
+
     instances = []
     fail_token = 0
 
     def __init__(self, *args):
+        """Initialize room operation records and register this fake instance."""
         self.tokens = []
         self.deleted = []
         self.closed = False
         self.instances.append(self)
 
     async def create(self, name, expires):
+        """Remember the room name and return a synthetic Daily URL."""
         self.name = name
         return "https://test.daily.co/" + name
 
     async def token(self, name, expires, user):
+        """Record a token request and return a dummy token or the configured failure."""
         self.tokens.append((name, expires, user))
         if len(self.tokens) == self.fail_token:
             raise RuntimeError("private-provider-details")
         return "test-token-" + str(len(self.tokens))
 
     async def delete(self, name):
+        """Record the requested room deletion without contacting a service."""
         self.deleted.append(name)
 
     async def close(self):
+        """Mark the room service fake as closed."""
         self.closed = True
 
 
 class PipelineDouble:
+    """Voice pipeline fake with controllable readiness and lifecycle tracking."""
+
     instances = []
     fail_start = False
 
     def __init__(self):
+        """Initialize pipeline signals, sequence tracking, and fake tool state."""
         self.ready_event = asyncio.Event()
         self.sequence = -1
         self.closed = False
@@ -427,30 +447,37 @@ class PipelineDouble:
         self.instances.append(self)
 
     async def start(self, *args):
+        """Load the owner's snapshot unless a simulated startup failure is enabled."""
         if self.fail_start:
             raise RuntimeError("private-pipeline-details")
         self.refresh(await args[0].get(args[1]))
 
     async def ready(self):
+        """Wait for the test to signal pipeline readiness."""
         await self.ready_event.wait()
 
     def refresh(self, value):
+        """Retain the supplied snapshot and its sequence."""
         self.snapshot = value
         self.sequence = value.sequence
 
     async def interrupt(self):
+        """Signal that an interruption was requested."""
         self.interrupted.set()
 
     def invalidate(self):
+        """Clear the fake pipeline's snapshot and tools."""
         self.snapshot = None
         self.tools = None
 
     async def close(self):
+        """Mark the pipeline fake as closed."""
         self.closed = True
 
 
 @pytest.fixture
 def provider_doubles(monkeypatch):
+    """Replace room, pipeline, and voice preflight boundaries with local doubles."""
     RoomsDouble.instances = []
     PipelineDouble.instances = []
     monkeypatch.setattr("app.voice.DailyRooms", RoomsDouble)
@@ -459,13 +486,18 @@ def provider_doubles(monkeypatch):
 
 
 async def test_lifecycle_ownership_correction_deletion(store, config, tmp_path, provider_doubles):
+    """Verify call ownership, external correction interruption, and deletion cleanup."""
     store.clock = lambda: datetime.now(UTC)
     await store.create("owner")
     await store.create("other")
     manager = CallManager(store, config, environment(tmp_path))
     join = await manager.start("owner", uuid4())
     assert set(join.model_dump(by_alias=True)) == {
-        "callId", "conversationSlug", "url", "token", "expiresAt"
+        "callId",
+        "conversationSlug",
+        "url",
+        "token",
+        "expiresAt",
     }
     assert manager.state("owner").status == "connecting"
     assert manager.state("other").status == "idle"
@@ -501,6 +533,7 @@ async def test_partial_setup_failure_releases_room(
     monkeypatch,
     failure,
 ):
+    """Verify token or pipeline setup failure releases all allocated call resources."""
     store.clock = lambda: datetime.now(UTC)
     await store.create("owner")
     if failure == "token":
@@ -520,6 +553,7 @@ async def test_partial_setup_failure_releases_room(
 
 
 def test_http_enabled_ownership_shutdown(config, tmp_path, provider_doubles):
+    """Verify enabled call routes enforce ownership and close resources on session deletion."""
     env = environment(tmp_path)
     assert unavailable_reason(config, env) is None
     assert "test-only" not in repr(env)
@@ -548,6 +582,7 @@ def test_http_enabled_ownership_shutdown(config, tmp_path, provider_doubles):
 
 
 async def test_daily_private_scoped_tokens_without_network(config, tmp_path, monkeypatch):
+    """Verify mocked Daily requests use private rooms and scoped audio-only tokens."""
     rooms = DailyRooms(environment(tmp_path), 2)
     request = AsyncMock(
         side_effect=[
@@ -582,6 +617,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
     monkeypatch,
     host,
 ):
+    """Verify pipeline construction and Azure request schemas with isolated provider calls."""
     from openai import AsyncAzureOpenAI, AsyncOpenAI
     from pipecat.adapters.services.open_ai_adapter import OpenAILLMAdapter
     from pipecat.pipeline.worker import PipelineWorker
@@ -665,6 +701,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
         requests = []
 
         def respond(request):
+            """Check the Azure wire request and supply an empty completion stream."""
             assert request.url.host == host
             assert request.url.scheme == "https"
             assert not request.url.query
@@ -710,6 +747,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
 async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(
     store, monkeypatch, stage
 ):
+    """Verify cancelled fact writes roll back and permit idempotent retries."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     transaction = store.transaction
@@ -719,6 +757,7 @@ async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(
     release = asyncio.Event()
 
     async def paused_execute(function, *args, **kwargs):
+        """Execute the database operation and pause after beginning a transaction."""
         result = await execute(function, *args, **kwargs)
         if args and args[0] == "BEGIN IMMEDIATE":
             reached.set()
@@ -727,6 +766,7 @@ async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(
 
     @asynccontextmanager
     async def paused_transaction():
+        """Yield the real transaction and pause before it commits."""
         async with transaction():
             yield
             reached.set()
@@ -772,6 +812,7 @@ async def test_call_deadlines_and_runtime_failure(
     monkeypatch,
     terminal,
 ):
+    """Verify readiness, expiry, shutdown, and simulated provider failure clean up calls."""
     store.clock = lambda: datetime.now(UTC)
     await store.create("owner")
     config = config.model_copy(
@@ -788,6 +829,7 @@ async def test_call_deadlines_and_runtime_failure(
     if terminal == "provider":
 
         async def start(self, *args):
+            """Load the snapshot and immediately signal a simulated pipeline failure."""
             self.refresh(await args[0].get(args[1]))
             args[-2]()
 
@@ -818,12 +860,14 @@ async def test_cancel_during_room_token_setup(
     provider_doubles,
     monkeypatch,
 ):
+    """Verify ending a call during token setup aborts the join and releases resources."""
     store.clock = lambda: datetime.now(UTC)
     await store.create("owner")
     reached = asyncio.Event()
     release = asyncio.Event()
 
     async def token(self, *args):
+        """Signal token setup entry and wait for explicit release."""
         reached.set()
         await release.wait()
 
@@ -847,11 +891,13 @@ async def test_cancelled_http_start_releases_resources(
     provider_doubles,
     monkeypatch,
 ):
+    """Verify cancellation of call startup closes the room and pipeline doubles."""
     store.clock = lambda: datetime.now(UTC)
     await store.create("owner")
     reached = asyncio.Event()
 
     async def token(self, *args):
+        """Signal token setup entry and remain blocked until cancellation."""
         reached.set()
         await asyncio.Event().wait()
 

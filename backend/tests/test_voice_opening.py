@@ -31,10 +31,12 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 @pytest.fixture
 def synthesis(voice, monkeypatch):
+    """Supply queued synthesis requests and assistant turns using synthesizer mocks."""
     requests = asyncio.Queue()
     turns = asyncio.Queue()
 
     def create(**kwargs):
+        """Create a synthesizer mock that queues itself with requested SSML."""
         instance = Mock()
         instance.speak_ssml_async.side_effect = lambda ssml: requests.put_nowait((instance, ssml))
         return instance
@@ -50,6 +52,7 @@ def synthesis(voice, monkeypatch):
 
 
 async def render(instance, text):
+    """Deliver synthetic audio, word-boundary, and completion callbacks from a thread."""
     for signal, event in (
         (
             instance.synthesizing,
@@ -65,11 +68,13 @@ async def render(instance, text):
 
 
 async def ready(voice):
+    """Dispatch the RTVI client-ready event for the supplied pipeline."""
     await voice.pipeline.worker.rtvi._call_event_handler("on_client_ready")
 
 
 @pytest.fixture
 def resumed_dialogue(monkeypatch):
+    """Seed pipeline construction with a conversation slug and recent scripted dialogue."""
     messages = [
         {"role": "user", "content": "My salary is five lakh. I am worried about rent."},
         {"role": "assistant", "content": "Does your salary arrive before rent is due?"},
@@ -78,6 +83,7 @@ def resumed_dialogue(monkeypatch):
     initialize = VoicePipeline.__init__
 
     def resumed(pipeline):
+        """Initialize the pipeline and attach copied dialogue for reconnect coverage."""
         initialize(pipeline)
         pipeline.resume_slug = "conversation-2026-09-11-060000"
         pipeline.resume_messages = [dict(message) for message in messages]
@@ -89,6 +95,7 @@ def resumed_dialogue(monkeypatch):
 async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying_writes(
     resumed_dialogue, voice, synthesis, store
 ):
+    """Verify reconnect uses recent dialogue without repeating introductions or writes."""
     await voice.pipeline.tools.update_facts(
         {"expectedRevision": 0, "opening": money("600000")}, "saved-before-reconnect"
     )
@@ -128,6 +135,7 @@ async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying
 async def test_model_opening_reaches_synthesis_transport_and_history_once(
     voice, synthesis, store, voice_boundaries
 ):
+    """Verify a scripted model opening reaches synthesis, transport, and history once."""
     baseline = await store.get("owner")
     assert f"You are {store.config.voice.assistant_name}," in (
         voice.pipeline.llm._settings.system_instruction
@@ -167,6 +175,7 @@ async def test_model_opening_reaches_synthesis_transport_and_history_once(
 
 
 async def test_user_first_preempts_opening_even_after_the_turn_finishes(voice, synthesis, store):
+    """Verify user-first speech permanently preempts the call opening."""
     await voice.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
     await asyncio.wait_for(voice.started.wait(), 2)
     await ready(voice)
@@ -180,6 +189,7 @@ async def test_user_first_preempts_opening_even_after_the_turn_finishes(voice, s
 
 
 async def test_interrupted_intro_drops_late_audio_and_does_not_resume(voice, synthesis):
+    """Verify an interrupted introduction drops late audio and never resumes."""
     voice.responses.put_nowait(text_reply("Hello, what would you like to work through?"))
     await ready(voice)
     await asyncio.wait_for(voice.requests.get(), 2)
@@ -198,6 +208,7 @@ async def test_interrupted_intro_drops_late_audio_and_does_not_resume(voice, syn
 async def test_external_refresh_replaces_an_unheard_opening_without_waiting_for_user(
     voice, synthesis, store
 ):
+    """Verify external refresh replaces an unheard opening without waiting for user input."""
     voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
     await ready(voice)
     await asyncio.wait_for(voice.requests.get(), 2)
@@ -221,6 +232,7 @@ async def test_external_refresh_replaces_an_unheard_opening_without_waiting_for_
 
 
 async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, synthesis):
+    """Verify external refresh does not replay an opening once audio has been delivered."""
     voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
     await ready(voice)
     await asyncio.wait_for(voice.requests.get(), 2)
@@ -241,6 +253,7 @@ async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, 
 
 
 async def test_first_request_refresh_still_completes_one_opening(voice, synthesis, monkeypatch):
+    """Verify refreshing state on the first request still delivers only one opening."""
     with monkeypatch.context() as patch:
         patch.setattr(voice.pipeline.tools, "refresh", lambda snapshot: None)
         await voice.pipeline.tools.update_facts(
@@ -262,6 +275,7 @@ async def test_first_request_refresh_still_completes_one_opening(voice, synthesi
 
 @pytest.mark.parametrize("tool", ["read_state", "update_facts"])
 async def test_opening_rejects_provider_tools_without_speech_or_write(voice, store, tool):
+    """Verify opening responses reject scripted tool calls without speech or writes."""
     baseline = await store.get("owner")
     voice.expect_failure = True
     failed = asyncio.Event()
@@ -285,6 +299,7 @@ async def test_opening_rejects_provider_tools_without_speech_or_write(voice, sto
 async def test_opening_guidance_cannot_restart_introduction_after_first_user_turn(
     voice, synthesis, store
 ):
+    """Verify first-user-turn requests retain the greeting but remove opening guidance."""
     greeting = "Hello, what would you like help with?"
     voice.responses.put_nowait(text_reply(greeting))
     await ready(voice)
@@ -307,6 +322,7 @@ async def test_opening_guidance_cannot_restart_introduction_after_first_user_tur
 
 
 async def test_resume_guidance_does_not_repeat_on_the_next_user_response(voice):
+    """Verify continuation guidance is removed from the next user-turn request."""
     voice.pipeline.context.add_message(
         {
             "role": "developer",

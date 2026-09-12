@@ -30,17 +30,25 @@ REVOKE = "https://oauth2.googleapis.com/revoke"
 
 
 class GoogleRejected(Exception):
+    """A rejected Google credential or identity claim."""
+
     def __init__(self) -> None:
+        """Set the public credential-rejection message."""
         super().__init__("Google credential rejected")
 
 
 class GoogleUnavailable(Exception):
+    """An unavailable Google authentication service."""
+
     def __init__(self) -> None:
+        """Set the public authentication-unavailability message."""
         super().__init__("Google authentication unavailable")
 
 
 @dataclass(frozen=True)
 class Identity:
+    """A Google subject and its validated profile fields."""
+
     subject: str
     name: str
     email: str
@@ -48,6 +56,8 @@ class Identity:
 
 @dataclass(frozen=True)
 class Grant:
+    """Google identity credentials with expiration and login nonce binding."""
+
     identity: Identity
     access_token: str = field(repr=False)
     refresh_token: str | None = field(repr=False)
@@ -56,10 +66,12 @@ class Grant:
 
 
 def digest(value: str) -> str:
+    """Return the SHA-256 hexadecimal digest of a text value."""
     return hashlib.sha256(value.encode()).hexdigest()
 
 
 def profile(claims: dict[str, Any]) -> Identity:
+    """Validate Google profile claims and return the verified identity."""
     subject = claims.get("sub")
     email = claims.get("email")
     name = claims.get("name", "")
@@ -82,9 +94,12 @@ def profile(claims: dict[str, Any]) -> Identity:
 
 
 class Google:
+    """Google OpenID Connect authentication and credential validation client."""
+
     def __init__(
         self, config: AuthConfig, environment: Environment, clock: Callable[[], datetime]
     ) -> None:
+        """Initialize Google authentication settings and signing-key cache state."""
         self.config = config
         self.environment = environment
         self.clock = clock
@@ -97,6 +112,7 @@ class Google:
         self.key_lock = asyncio.Lock()
 
     async def open(self) -> None:
+        """Open the HTTP client when Google authentication is configured."""
         if self.environment.google_available:
             self.http = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=self.config.provider_timeout_seconds),
@@ -105,11 +121,13 @@ class Google:
             )
 
     async def close(self) -> None:
+        """Close and release the Google HTTP client."""
         if self.http is not None:
             await self.http.close()
             self.http = None
 
     def authorization_url(self, state: str, nonce: str, verifier: str, consent: bool) -> str:
+        """Build a Google sign-in URL with login binding and the requested consent mode."""
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
         return (
             AUTHORIZE
@@ -138,6 +156,7 @@ class Google:
         data: dict[str, str] | None = None,
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
+        """Request an approved Google endpoint and classify provider failures."""
         # Endpoints are pinned to verified Google discovery metadata, never token headers.
         if url not in {TOKEN, USERINFO, JWKS, REVOKE} or self.http is None:
             raise GoogleUnavailable()
@@ -178,6 +197,7 @@ class Google:
             raise GoogleUnavailable() from None
 
     async def key_set(self, kid: str) -> KeySet:
+        """Return validated Google signing keys containing the requested key identifier."""
         async with self.key_lock:
             now = self.clock().timestamp()
             if self.keys is not None and now < self.keys_until:
@@ -215,6 +235,7 @@ class Google:
             return self.keys
 
     async def verify(self, value: str, nonce_hash: str, *, subject: str | None = None) -> Identity:
+        """Verify an ID token's signature, claims, and login or subject binding."""
         try:
             if not isinstance(value, str) or not 1 <= len(value) <= 16384:
                 raise GoogleRejected()
@@ -271,6 +292,7 @@ class Google:
             raise GoogleRejected() from None
 
     def token_fields(self, payload: dict[str, Any]) -> tuple[str, str | None, datetime]:
+        """Validate a token response and return credentials with their expiration time."""
         access = payload.get("access_token")
         refresh = payload.get("refresh_token")
         expires = payload.get("expires_in")
@@ -293,6 +315,7 @@ class Google:
         return access, refresh, self.clock() + timedelta(seconds=expires)
 
     def client_fields(self) -> dict[str, str]:
+        """Return configured Google client credentials or report unavailability."""
         if not self.environment.google_available or self.environment.google_client_secret is None:
             raise GoogleUnavailable()
         return {
@@ -301,6 +324,7 @@ class Google:
         }
 
     async def exchange(self, code: str, verifier: str, nonce_hash: str) -> Grant:
+        """Exchange a bound authorization code for verified Google credentials."""
         payload = await self.request(
             "POST",
             TOKEN,
@@ -317,6 +341,7 @@ class Google:
         return Grant(identity, access, refresh, expires, nonce_hash)
 
     async def check(self, grant: Grant) -> Grant:
+        """Refresh expiring credentials and confirm the grant's Google identity."""
         if grant.expires_at <= self.clock() + timedelta(seconds=self.config.clock_skew_seconds):
             if grant.refresh_token is None:
                 raise GoogleRejected()
@@ -349,4 +374,5 @@ class Google:
         return replace(grant, identity=identity)
 
     async def revoke(self, token: str) -> None:
+        """Ask Google to revoke the supplied credential."""
         await self.request("POST", REVOKE, data={"token": token})
