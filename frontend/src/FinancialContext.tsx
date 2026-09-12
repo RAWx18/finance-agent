@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { Fragment, useId, useState } from 'react';
+import { Fragment, useCallback, useId, useState } from 'react';
 import type { Command, Plan, Snapshot } from './api';
 import type { components } from './contracts';
 import { CardField, ChangedValue } from './CardField';
@@ -9,6 +9,7 @@ import { cardDate, cardMoney, cardStatus, fieldConflict, fieldDraft, sourceAmoun
 import type { CardTarget } from './cardFields';
 import { dateLabel, lastDate, money, recurrenceLabels } from './money';
 import { FinancialStatus } from './FinancialStatus';
+import { FinalPlan } from './FinalPlan';
 import { GapFigure } from './PlanSummary';
 import { fieldLabels, resultLabels } from './WorkspaceDetails';
 import type { Fact, WorkspaceCard } from './WorkspaceDetails';
@@ -49,7 +50,7 @@ export function changeNotes(snapshot: Snapshot, change: components['schemas']['W
   return [...new Set(notes)].sort((a, b) => priority(a) - priority(b));
 }
 
-type Editing = { snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined> };
+type Editing = { snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>; onEditingChange?: (id: string, open: boolean, saved?: Snapshot) => void };
 
 /** Displays an editable source amount with its reporting or conflict status. */
 function AmountField({ target, label, prefix = '', suffix = '', reported = false, ...editing }: Editing & { target: CardTarget; label: string; prefix?: string; suffix?: string; reported?: boolean }) {
@@ -146,7 +147,9 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
       {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-meta">Committed</span>}
     </div>
     </div>
-    {event?.dateAssumption && <p className="card-row-note card-meta">From your {record.schedule.pattern?.kind === 'monthEnd' ? 'month-end' : `monthly day ${record.schedule.pattern?.day}`} pattern. Editing timing replaces or removes the pattern for the whole series, not one occurrence.</p>}
+    {event?.dateAssumption && <p className="card-row-note card-meta">{record.schedule.pattern
+      ? <>From your {record.schedule.pattern.kind === 'monthEnd' ? 'month-end' : `monthly day ${record.schedule.pattern.day}`} pattern. Editing timing replaces or removes the pattern for the whole series, not one occurrence.</>
+      : event.dateAssumption}</p>}
     {debt && !variable && <div className="card-secondary"><span className="card-caption">{target.field === 'amount' ? 'Intended payment' : record.debtType === 'card' ? 'Minimum payment' : 'Required payment'}</span>
       <AmountField {...editing} target={{ recordId: record.id, field: target.field === 'amount' ? 'target' : 'amount' }} label={`${record.label} ${target.field === 'amount' ? 'target' : 'required amount'}`} /></div>}
     {assumed && <p className="card-row-note card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</p>}
@@ -187,7 +190,7 @@ function UncertaintyCard({ card, ...editing }: Editing & { card: WorkspaceCard }
 }
 
 /** Organizes financial companion cards while keeping focused commitment editors stable. */
-function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActive: boolean }) {
+function CompanionCards({ proposalActive, editingActive, ...editing }: Editing & { proposalActive: boolean; editingActive: boolean }) {
   const { snapshot } = editing;
   const [expanded, setExpanded] = useState(false);
   const [focusedIds, setFocusedIds] = useState<string[] | null>(null);
@@ -216,11 +219,33 @@ function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActi
         onBlurCapture={event => { if (!event.currentTarget.contains(event.relatedTarget) && !event.currentTarget.querySelector('form')) setFocusedIds(null); }}>{visibleIds.map(id => {
         const record = snapshot.facts.records.find(record => record.id === id);
         return record && <FactRow key={id} {...editing} record={record} event={plan.events.find(event => event.recordId === id && card.eventIds?.includes(event.id))} />;
-      })}</ol>{(card.recordIds?.length ?? 0) > 4 && <button className="card-expand" aria-expanded={expanded} aria-controls={listId} onClick={() => { setFocusedIds(null); setExpanded(!expanded); }}>{expanded ? 'Show fewer commitments' : `Show ${card.recordIds!.length - 4} more`}</button>}</>}
+      })}</ol>{(card.recordIds?.length ?? 0) > 4 && <button className="card-expand" aria-expanded={expanded} aria-controls={listId} disabled={editingActive} onClick={() => { setFocusedIds(null); setExpanded(!expanded); }}>{expanded ? 'Show fewer commitments' : `Show ${card.recordIds!.length - 4} more`}</button>}</>}
       {card.template === 'questions' && <UncertaintyCard {...editing} card={card} />}
       {card.template === 'proposal' && <CardProposal {...editing} active={proposalActive} />}
     </article>{(card.template === 'timeline' || card.template === 'cash' && !timeline) && <FinancialStatus snapshot={snapshot} />}</Fragment>;
   })}</>;
+}
+
+/** Keeps manual corrections open until cancelled or confirmed against the displayed revision. */
+function FinancialCards({ snapshot, blocked, onCommand, proposalActive }: Editing & { proposalActive: boolean }) {
+  const [editing, setEditing] = useState<{ manual: boolean; fields: string[]; saved?: { revision: number; sequence: number } }>({ manual: false, fields: [] });
+  const onEditingChange = useCallback((id: string, open: boolean, saved?: Snapshot) => {
+    setEditing(editing => ({
+      manual: open || editing.manual,
+      fields: open ? [...new Set([...editing.fields, id])] : editing.fields.filter(field => field !== id),
+      saved: open ? undefined : saved ? { revision: saved.revision, sequence: saved.sequence } : editing.saved,
+    }));
+  }, []);
+  const plan = snapshot.accepted?.plan ?? snapshot.plan;
+  const ready = !!plan.decisionAssessment?.outcome?.planReady && !blocked && !snapshot.preview;
+  const saved = editing.saved && snapshot.revision >= editing.saved.revision && snapshot.sequence >= editing.saved.sequence;
+  const manual = editing.fields.length > 0 || editing.manual && !saved;
+  if (ready && !manual) return <FinalPlan snapshot={snapshot} onEdit={() => setEditing({ manual: true, fields: [] })} />;
+  return <>
+    {editing.manual && <button type="button" className="card-expand" disabled={!ready || editing.fields.length > 0 || !!editing.saved && !saved} onClick={() => setEditing({ manual: false, fields: [] })}>Done editing</button>}
+    {!snapshot.workspace?.cards?.length ? <p className="context-empty">Figures appear as you talk</p>
+      : <CompanionCards snapshot={snapshot} blocked={blocked} onCommand={onCommand} proposalActive={proposalActive} editingActive={editing.fields.length > 0} onEditingChange={onEditingChange} />}
+  </>;
 }
 
 /** Shows the conversation's financial picture and saved-change notices. */
@@ -237,8 +262,8 @@ export function FinancialContext({ snapshot, stale, locked, onCommand, proposalA
     </header>
     <div className="card-update" role="status" aria-live="polite" aria-atomic="true">{stale ? 'Updates paused · showing saved figures' : decision ? changeStates[decision.state] : notes.length ? `Saved · ${notes.join(' · ')}` : ''}</div>
     <div className="context-scroll" tabIndex={0} role="region" aria-label="Financial picture details">
-      {!snapshot?.workspace?.cards?.length ? <p className="context-empty">Figures appear as you talk</p>
-        : <CompanionCards key={snapshot.sessionId} snapshot={snapshot} blocked={locked || stale} onCommand={onCommand} proposalActive={proposalActive} />}
+      {!snapshot ? <p className="context-empty">Figures appear as you talk</p>
+        : <FinancialCards key={snapshot.sessionId} snapshot={snapshot} blocked={locked || stale} onCommand={onCommand} proposalActive={proposalActive} />}
     </div>
   </section>;
 }

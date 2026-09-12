@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Command, Snapshot } from '../src/api';
@@ -407,6 +407,249 @@ describe('financial companion', () => {
     const saved = picture();
     const change: components['schemas']['WorkspaceChange'] = { id: 'change', revision: 1, items: [{ id: 'closing', state: 'updated', fields: [{ reference: 'workspace.results.closing.amountPaise', before: 1000000, after: 1500000 }] }] };
     expect(changeNotes(saved, change)).toEqual(['The earlier cash gap amount and date are unchanged.', 'Projected closing cash: ₹10,000.00 → ₹15,000.00']);
+  });
+});
+
+/** Supplies server readiness independently of branch, qualification, and working-card membership. */
+function readyPicture(): Snapshot {
+  const saved = picture();
+  saved.plan.decisionAssessment!.outcome!.planReady = true;
+  return saved;
+}
+
+describe('final plan lifecycle', () => {
+  it('keeps an explicit reserve breach visible in the final plan after a correction', () => {
+    const saved = readyPicture();
+    saved.facts.reservePaise = 500000;
+    saved.plan.reserveShortfallPaise = 300000;
+    saved.plan.decisionAssessment!.consequences = [{ id: 'reserve:breach', kind: 'reserveBreach', date: '2026-09-15', amountPaise: 300000, eventIds: [] }];
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toHaveTextContent('Cash buffer at risk: ₹3,000 below your ₹5,000 buffer');
+    const corrected = structuredClone(saved); corrected.revision++; corrected.sequence++;
+    corrected.plan.reserveShortfallPaise = 200000;
+    corrected.plan.decisionAssessment!.consequences![0].amountPaise = 200000;
+    rerender(<FinancialContext {...controls} snapshot={corrected} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer');
+  });
+  it('replaces the ledger with the authoritative qualified outcome, action, closing and assumptions', async () => {
+    const saved = readyPicture();
+    saved.plan.events[0].dateAssumption = 'Weekly allowance forecast starts at the plan anchor; not a payment due date.';
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const final = screen.getByRole('article', { name: 'Your 30-day plan' });
+    expect(within(final).getByRole('heading')).toHaveTextContent('Your 30-day plan');
+    expect(final).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
+    expect(final).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.nextStep);
+    expect(within(final).getByLabelText('Projected closing cash')).toHaveTextContent('₹10,000');
+    expect(final).toHaveTextContent('Not a spending allowance');
+    expect(screen.queryByRole('article', { name: 'Cash & timing' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Next commitments' })).not.toBeInTheDocument();
+    await userEvent.click(within(final).getByText('What this depends on', { selector: 'summary' }));
+    expect(within(final).getByText(saved.plan.decisionAssessment!.outcome!.conditions)).toBeVisible();
+    expect(within(final).getByText(/^Rent: Weekly allowance forecast/)).toBeVisible();
+    expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not infer readiness from a fits branch or a ready label', () => {
+    const saved = readyPicture();
+    Object.assign(saved.plan.decisionAssessment!.outcome!, { planReady: false, branch: 'fits', readiness: 'ready' });
+    saved.plan.projectionPartial = false;
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.getByRole('article', { name: 'Cash & timing' })).toBeVisible();
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+  });
+
+  it.each(['stale', 'locked', 'preview', 'notReady'] as const)('returns to working cards during %s and resumes the settled authoritative plan', state => {
+    const saved = readyPicture();
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+    const pending = structuredClone(saved);
+    if (state === 'preview') { pending.preview = scenario(); pending.preview.plan.decisionAssessment!.outcome!.planReady = true; }
+    if (state === 'notReady') pending.plan.decisionAssessment!.outcome!.planReady = false;
+    rerender(<FinancialContext {...controls} snapshot={pending} stale={state === 'stale'} locked={state === 'locked'} />);
+    expect(screen.getByRole('article', { name: 'Cash & timing' })).toBeVisible();
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, sequence: 2 }} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+  });
+
+  it('uses accepted readiness and amounts, never preview readiness or amounts', () => {
+    const saved = readyPicture(); saved.accepted = scenario('accepted');
+    saved.accepted.plan.decisionAssessment!.outcome!.planReady = false;
+    companion(projectWorkspace(saved));
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    const accepted = structuredClone(saved); accepted.plan.decisionAssessment!.outcome!.planReady = false;
+    accepted.accepted!.plan.decisionAssessment!.outcome!.planReady = true;
+    rerender(<FinancialContext {...controls} snapshot={accepted} />);
+    const final = screen.getByRole('article', { name: 'Your 30-day plan' });
+    expect(within(final).getByLabelText('Projected closing cash')).toHaveTextContent('₹12,000');
+    expect(final).toHaveTextContent('Saved assumptions included · No payments made');
+    const preview = structuredClone(accepted); preview.preview = scenario(); preview.preview.plan.closingPaise = 9900000;
+    rerender(<FinancialContext {...controls} snapshot={preview} />);
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Projected closing cash')).toHaveTextContent('₹12,000');
+  });
+
+  it('opens working figures immediately and allows Done only after the active form closes', async () => {
+    const saved = readyPicture();
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    expect(screen.getByRole('article', { name: 'Cash & timing' })).toBeVisible();
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, sequence: 1 }} />);
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Cash at plan start' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Done editing' }));
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+    expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('preserves a pending correction through SSE and returns to the corrected final only after the matching save settles', async () => {
+    const saved = readyPicture(); const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.facts.opening.amountPaise = 650000; receipt.plan.closingPaise = 1150000;
+    receipt.plan.decisionAssessment!.outcome!.summary = 'Corrected cash supports the later dated commitments.';
+    let resolve!: (saved: Snapshot) => void;
+    controls.onCommand.mockReturnValueOnce(new Promise<Snapshot>(done => { resolve = done; }));
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    const input = screen.getByRole('textbox', { name: 'Cash at plan start' });
+    fireEvent.change(input, { target: { value: '6500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+    rerender(<FinancialContext {...controls} snapshot={receipt} locked />);
+    expect(screen.getByRole('textbox', { name: 'Cash at plan start' })).toBe(input);
+    expect(input).toHaveValue('6500'); expect(input).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    await act(async () => { resolve(receipt); });
+    const final = screen.getByRole('article', { name: 'Your 30-day plan' });
+    expect(final).toHaveTextContent(receipt.plan.decisionAssessment!.outcome!.summary);
+    expect(within(final).getByLabelText('Projected closing cash')).toHaveTextContent('₹11,500');
+    expect(screen.queryByRole('form')).not.toBeInTheDocument();
+    expect(saved.facts.opening.amountPaise).toBe(500000);
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0, opening: { amount: '6500', status: 'exact' } } });
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    expect(screen.getByRole('button', { name: 'Edit Cash at plan start' })).toHaveTextContent('₹6,500');
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+  });
+
+  it('waits for a confirmed receipt revision to reach the displayed snapshot', async () => {
+    const saved = readyPicture(); const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.facts.opening.amountPaise = 650000; receipt.plan.closingPaise = 1150000;
+    controls.onCommand.mockResolvedValueOnce(receipt);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Cash at plan start' }), { target: { value: '6500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+    expect(screen.queryByRole('form')).not.toBeInTheDocument();
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toHaveTextContent('₹11,500');
+  });
+
+  it.each(['unconfirmed', 'rejected'] as const)('keeps %s drafts through stale and unrelated revision updates', async failure => {
+    const saved = readyPicture();
+    if (failure === 'rejected') controls.onCommand.mockRejectedValueOnce(new Error('Save failed'));
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    const input = screen.getByRole('textbox', { name: 'Cash at plan start' });
+    fireEvent.change(input, { target: { value: '6500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Save not confirmed');
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, sequence: 1 }} stale />);
+    expect(input).toHaveValue('6500');
+    expect(screen.getByRole('textbox', { name: 'Cash at plan start' })).toBe(input);
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, revision: 1, sequence: 2 }} />);
+    expect(input).toHaveValue('6500'); expect(input).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+  });
+
+  it('does not replace a working form when an external update makes the plan ready', async () => {
+    const saved = picture();
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Rent amount' }));
+    const input = screen.getByRole('textbox', { name: 'Rent amount' });
+    fireEvent.change(input, { target: { value: '12500' } });
+    const ready = readyPicture(); ready.revision++; ready.sequence++;
+    rerender(<FinancialContext {...controls} snapshot={ready} />);
+    expect(screen.getByRole('textbox', { name: 'Rent amount' })).toBe(input);
+    expect(input).toHaveValue('12500');
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Rent amount' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Done editing' }));
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+  });
+
+  it('keeps another open form mounted after one correction succeeds', async () => {
+    const saved = readyPicture(); const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.facts.opening.amountPaise = 650000;
+    controls.onCommand.mockResolvedValueOnce(receipt);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Cash at plan start' }), { target: { value: '6500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Rent amount' }));
+    const input = screen.getByRole('textbox', { name: 'Rent amount' });
+    fireEvent.change(input, { target: { value: '12500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save Cash at plan start' }));
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(screen.getByRole('textbox', { name: 'Rent amount' })).toBe(input);
+    expect(input).toHaveValue('12500');
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel Rent amount' }));
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+  });
+
+  it('does not carry manual editing into another financial session', async () => {
+    const saved = readyPicture();
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Cash at plan start' }));
+    rerender(<FinancialContext {...controls} snapshot={{ ...saved, sessionId: 'another-session' }} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+    expect(screen.queryByRole('form')).not.toBeInTheDocument();
+  });
+
+  it('waits for material facts after a successful edit and prevents collapsing an active commitment form', async () => {
+    const saved = readyPicture();
+    saved.facts.records.push(...Array.from({ length: 3 }, (_, index) => ({ ...salary(), id: `extra${index}`, label: `Receipt ${index}` })));
+    companion(saved);
+    const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.facts.records[4].amount.amountPaise = 3100000;
+    receipt.plan.decisionAssessment!.outcome!.planReady = false;
+    controls.onCommand.mockResolvedValueOnce(receipt);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Show 1 more' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Receipt 2 amount' }));
+    const input = screen.getByRole('textbox', { name: 'Receipt 2 amount' });
+    fireEvent.change(input, { target: { value: '31000' } });
+    expect(screen.getByRole('button', { name: 'Show fewer commitments' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Save Receipt 2 amount' }));
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(screen.queryByRole('article', { name: 'Your 30-day plan' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Done editing' })).toBeDisabled();
+    const settled = structuredClone(receipt); settled.sequence++; settled.plan.decisionAssessment!.outcome!.planReady = true;
+    rerender(<FinancialContext {...controls} snapshot={settled} />);
+    expect(screen.getByRole('article', { name: 'Your 30-day plan' })).toBeVisible();
+  });
+
+  it('uses the allowance event explanation without claiming a monthly pattern', () => {
+    const saved = picture();
+    saved.facts.records[0].schedule = { recurrence: 'weekly', date: null, certainty: 'unknown', basis: 'allowance' };
+    saved.plan.events[0].dateAssumption = 'Weekly allowance forecast starts at the plan anchor; not a payment due date.';
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const row = screen.getByRole('listitem', { name: 'Rent' });
+    expect(row).toHaveTextContent(saved.plan.events[0].dateAssumption);
+    expect(row).not.toHaveTextContent(/monthly day|whole series|undefined/);
+    expect(saved.facts.records[0].schedule.date).toBeNull();
   });
 });
 

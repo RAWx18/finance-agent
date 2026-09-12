@@ -50,12 +50,14 @@ const assumptions: Record<string, string> = {
   monthlyBudgetEvenDailyForecastActualMonthLength: budgetDescription,
   currencyConversionReportedRateAndFeeOnly: 'INR income uses only your reported original amount, exchange rate and INR deduction. No live rate is fetched.',
   reportedMonthlyPatternEstimatedDatesNoArrears: 'Dates are calculated estimates from your reported monthly pattern. Earlier unpaid payments are not inferred.',
+  recurringAllowanceForecastTiming: 'Recurring living costs are forecast per occurrence. Without a supplied start, the first is assumed at the plan start; actual spending dates may differ.',
   undatedPaymentWhatIfNotAccepted: 'What-if only: one eligible payment per undated item, if unpaid and due in this period. Not a maximum or an accepted change.',
 };
 export const reasons: Record<string, string> = {
   reportedOpening: 'Reported opening cash', unknownOpening: 'Opening cash is unknown', reported: 'Reported amount',
   requiredOnly: 'Known required payment only', target: 'Selected target, including the minimum',
   acceptedAssumption: 'Saved assumption, not paid', proposedAssumption: 'Proposed assumption, not saved',
+  spendingForecast: 'Recurring spending forecast, not a payment due',
   unknownAmount: 'Amount is unknown', conditionalReceipt: 'Receipt is not confirmed enough to count on',
   approximateOutflowDate: 'Payment date is estimated', unknownDate: 'Date is unknown; not in dated balances',
   pastReceipt: 'Receipt is before this plan; not added again', outsideHorizon: 'Outside these 30 days',

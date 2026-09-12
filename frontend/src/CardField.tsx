@@ -21,9 +21,10 @@ export function ChangedValue({ value }: { value: string }) {
 }
 
 /** Provides inline correction and conflict resolution for a financial card field. */
-export function CardField({ snapshot, target, label, blocked, onCommand, children, className = '' }: {
+export function CardField({ snapshot, target, label, blocked, onCommand, onEditingChange, children, className = '' }: {
   snapshot: Snapshot; target: CardTarget; label: string; blocked: boolean;
   onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>; children: ReactNode; className?: string;
+  onEditingChange?: (id: string, open: boolean, saved?: Snapshot) => void;
 }) {
   const id = useId();
   const [edit, setEdit] = useState<{ draft: CardDraft; revision: number; sessionId: string; identity: string; timing?: 'replace' | 'remove' } | null>(null);
@@ -36,6 +37,11 @@ export function CardField({ snapshot, target, label, blocked, onCommand, childre
   const latest = useRef(snapshot);
   useEffect(() => { latest.current = snapshot; }, [snapshot]);
   const open = edit !== null;
+  useEffect(() => {
+    if (!open) return;
+    onEditingChange?.(id, true);
+    return () => onEditingChange?.(id, false);
+  }, [id, onEditingChange, open]);
   useEffect(() => {
     if (open) (choice.current ?? input.current)?.focus({ preventScroll: true });
     else if (restore.current) { restore.current = false; trigger.current?.focus({ preventScroll: true }); }
@@ -64,6 +70,7 @@ export function CardField({ snapshot, target, label, blocked, onCommand, childre
     if (saved && saved.sessionId === edit.sessionId && latest.current.sessionId === edit.sessionId && saved.revision > edit.revision
       && saved.revision >= latest.current.revision && saved.sequence >= latest.current.sequence && fieldSaved(saved, target, operation)) {
       restore.current = true; setEdit(null);
+      onEditingChange?.(id, false, saved);
     } else setError('Save not confirmed. Your entry is kept; check the save status before retrying.');
   }
   const inputLabel = !date && !text && !target.term && edit?.draft.source?.conversion ? `${label} (${edit.draft.source.conversion.currency})` : label;

@@ -7,7 +7,7 @@ import { financialText, timestamp } from './money';
 import './planSummary.css';
 
 /** Explains a calculated result's certainty and limitations. */
-export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: string }) {
+export function ResultQualification({ snapshot, id, details = true }: { snapshot: Snapshot; id: string; details?: boolean }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const result = snapshot.workspace?.results?.find(item => item.id === id);
   const estimated = result?.state === 'estimated';
@@ -17,7 +17,7 @@ export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: 
       : result?.state === 'uncertain' || result?.state === 'unresolved' ? 'Based on what you shared' : 'Forecast';
   return <span className="result-qualification">
     <span>{state}{estimated && ' · Includes estimates'}{id === 'closing' && ' · Not a spending allowance'}</span>
-    {qualifications.map(text => <span key={text}>{financialText(text)}</span>)}
+    {details && qualifications.map(text => <span key={text}>{financialText(text)}</span>)}
   </span>;
 }
 
