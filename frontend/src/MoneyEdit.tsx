@@ -143,6 +143,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
                   {field === 'target' && <p className="hint">The intended payment includes the minimum. It is not an additional payment.</p>}
                   {field === 'target' && !!record?.schedule.amounts?.length && <p className="hint">Varying required payments cannot use a single intended payment. Switch to one amount in the Amount detail first, or choose Not supplied.</p>}
                 </> : field === 'schedule.date' ? <>
+                  {record?.schedule.pattern && <p className="hint">The saved monthly timing pattern has no known date. Generated dates remain estimates; saving this Date detail replaces the pattern.</p>}
                   <label>Date<input type="date" value={input.value} onChange={event => setInput({ value: event.target.value, status: event.target.value ? input.status === 'estimate' ? 'estimate' : 'exact' : 'unknown' })} /></label>
                   <label>Date certainty<select value={input.status} onChange={event => setInput({ ...input, status: event.target.value })}>
                     <option value="unknown" disabled={!!input.value}>Unknown</option><option value="exact" disabled={!input.value}>Exact date</option><option value="estimate" disabled={!input.value}>Estimated date</option>

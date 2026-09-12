@@ -41,7 +41,8 @@ export function amountLabel(value: components['schemas']['Money']): string {
 }
 
 export function scheduleLabel(schedule: components['schemas']['Schedule']): string {
-  return [recurrenceLabels[schedule.recurrence], schedule.endDate ? `Through ${dateLabel(schedule.endDate)} (inclusive)` : null,
+  return [recurrenceLabels[schedule.recurrence], schedule.pattern ? `Reported ${schedule.pattern.kind === 'dayOfMonth' ? `day ${schedule.pattern.day} of each month` : 'month-end pattern'} · generated dates remain estimates` : null,
+    schedule.endDate ? `Through ${dateLabel(schedule.endDate)} (inclusive)` : null,
     schedule.count != null ? `${schedule.count} ${schedule.recurrence === 'monthlyBudget' ? 'calendar months' : 'occurrences'}` : null,
     schedule.amounts?.length ? `${schedule.amounts.length} ordered amounts · varies by occurrence` : null].filter(Boolean).join(' · ');
 }

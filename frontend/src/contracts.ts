@@ -966,6 +966,8 @@ export interface components {
              * Format: date
              */
             date: string;
+            /** Dateassumption */
+            dateAssumption?: string | null;
             /** Amountpaise */
             amountPaise: number | null;
             /**
@@ -1177,6 +1179,16 @@ export interface components {
             status: "exact" | "estimate" | "unknown";
             conversion?: components["schemas"]["Conversion"] | null;
         };
+        /** MonthlyPattern */
+        MonthlyPattern: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "dayOfMonth" | "monthEnd";
+            /** Day */
+            day?: number | null;
+        };
         /** Outcome */
         Outcome: {
             /**
@@ -1245,6 +1257,7 @@ export interface components {
             /** Issues */
             issues: components["schemas"]["Issue"][];
             budgetBasis: components["schemas"]["BudgetBasis"];
+            undatedImpact?: components["schemas"]["UndatedImpact"] | null;
             decisionAssessment?: components["schemas"]["DecisionAssessment"];
             /** Incomecomparisons */
             incomeComparisons?: components["schemas"]["IncomeComparison"][];
@@ -1537,6 +1550,7 @@ export interface components {
              * @enum {string}
              */
             certainty: "exact" | "estimate" | "unknown";
+            pattern?: components["schemas"]["MonthlyPattern"] | null;
             /** Count */
             count?: number | null;
             /** Amounts */
@@ -1552,6 +1566,7 @@ export interface components {
             recurrence?: ("once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget") | null;
             /** Certainty */
             certainty?: ("exact" | "estimate" | "unknown") | null;
+            pattern?: components["schemas"]["MonthlyPattern"] | null;
             /** Count */
             count?: number | null;
             /** Amounts */
@@ -1697,6 +1712,54 @@ export interface components {
             reason: string;
             /** Beforedate */
             beforeDate?: string | null;
+        };
+        /** UndatedImpact */
+        UndatedImpact: {
+            /** Items */
+            items: components["schemas"]["UndatedItem"][];
+            /** Outflowpaise */
+            outflowPaise: number;
+            /** Closingpaise */
+            closingPaise: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "estimate" | "unknown";
+            /** Unknownrecordids */
+            unknownRecordIds: string[];
+            /** Qualification */
+            qualification: string;
+        };
+        /** UndatedItem */
+        UndatedItem: {
+            /** Recordid */
+            recordId: string;
+            /** Label */
+            label: string;
+            /** Amountpaise */
+            amountPaise: number | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "exact" | "estimate" | "unknown";
+            /**
+             * Recurrence
+             * @enum {string}
+             */
+            recurrence: "once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget";
+            /**
+             * Amountbasis
+             * @enum {string}
+             */
+            amountBasis: "reported" | "requiredOnly";
+            /** Requiredpaise */
+            requiredPaise?: number | null;
+            /** Targetpaise */
+            targetPaise?: number | null;
+            /** Assumption */
+            assumption: string;
         };
         /** UnresolvedAmount */
         UnresolvedAmount: {
