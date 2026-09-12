@@ -35,10 +35,11 @@ try {
   });
   console.log(`Isolated authenticated backend ready at ${origin}; storage and Google identity are synthetic.`);
   if (process.argv.includes('--serve')) {
+    console.log(`Isolated storage: ${data}`);
     await once(server, 'exit');
   } else {
     runner = spawn(process.execPath, [path.join(root, 'node_modules/@playwright/test/cli.js'), 'test', ...process.argv.slice(2)], {
-      cwd: root, env: { ...process.env, E2E_BASE_URL: origin }, stdio: 'inherit',
+      cwd: root, env: { ...process.env, E2E_BASE_URL: origin, E2E_DATA_DIR: data }, stdio: 'inherit',
     });
     const [code] = await once(runner, 'exit');
     process.exitCode = code ?? 1;

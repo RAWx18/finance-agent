@@ -14,7 +14,7 @@ test('anonymous routes and APIs are gated; Google callback creates only an HttpO
   });
   expect((await page.request.get('/api/settings')).status()).toBe(401);
   expect((await page.request.post('/api/session', { data: {} })).status()).toBe(401);
-  for (const path of ['/app', '/figures', '/account']) {
+  for (const path of ['/app', '/money', '/money/income', '/money/spending', '/money/debts', '/money/upcoming', '/money/changes', '/account']) {
     await page.goto(path);
     await expect(page).toHaveURL(new RegExp(`/login\\?returnTo=${path}$`));
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
@@ -24,7 +24,7 @@ test('anonymous routes and APIs are gated; Google callback creates only an HttpO
   await page.screenshot({ path: testInfo.outputPath('auth-login.png'), fullPage: true });
   await page.getByRole('button', { name: 'Continue with Google' }).click();
   await expect(page).toHaveURL(/\/account$/);
-  await expect(page.getByRole('heading', { name: 'Your account' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();
   expect((await page.request.get('/api/session')).status()).toBe(404);
   const session = await page.request.get('/api/auth/session');
   expect(session.status()).toBe(200);
@@ -35,17 +35,26 @@ test('anonymous routes and APIs are gated; Google callback creates only an HttpO
   expect(cookies.some(cookie => cookie.httpOnly && cookie.expires > Date.now() / 1000)).toBe(true);
   expect(await page.evaluate(() => ({ cookie: document.cookie, local: localStorage.length, session: sessionStorage.length })))
     .toEqual({ cookie: '', local: 0, session: 0 });
-  await page.getByRole('link', { name: 'Your figures', exact: true }).click();
-  await expect(page).toHaveURL(/\/figures$/);
-  await expect(page.getByRole('region', { name: 'Your figures', exact: true })).toBeVisible();
-  await expect(page.getByRole('dialog', { name: 'Your figures' })).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Add figures' })).toBeVisible();
-  await page.reload(); await expect(page).toHaveURL(/\/figures$/);
+  const figures = page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true });
+  await expect(figures).toHaveCount(1);
+  await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: /^(Your figures|Prefer typing\?)$/ })).toHaveCount(0);
+  await figures.click();
+  await expect(page).toHaveURL(/\/money$/);
+  await expect(page.getByRole('region', { name: 'Money', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Money' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start a blank plan' })).toBeVisible();
+  await page.reload(); await expect(page).toHaveURL(/\/money$/);
   expect((await page.request.get('/api/session')).status()).toBe(404);
-  await page.getByRole('link', { name: 'Back to conversation' }).click();
+  const navigation = await figures.elementHandle();
+  await page.getByRole('link', { name: 'Continue conversation' }).click();
   await expect(page).toHaveURL(/\/app$/);
-  await page.goBack(); await expect(page).toHaveURL(/\/figures$/);
+  await page.goBack(); await expect(page).toHaveURL(/\/money$/);
   await page.goForward(); await expect(page).toHaveURL(/\/app$/);
+  await expect(figures).toHaveCount(1);
+  await expect(figures).toBeEnabled();
+  expect(await figures.evaluate((element, original) => element === original, navigation)).toBe(true);
+  await navigation!.dispose();
   expect((await page.request.get('/api/session')).status()).toBe(404);
 });
 
@@ -54,7 +63,7 @@ test('profile updates survive reload and logout clears sibling tabs but not an i
   const original = await (await page.request.get('/api/auth/session')).json();
   const name = page.getByRole('textbox', { name: 'Display name' });
   await name.fill('  Browser account name  ');
-  await page.getByRole('button', { name: 'Save name' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(name).toHaveValue('Browser account name');
   await page.reload(); await expect(name).toHaveValue('Browser account name');
   await expect(page.getByText(original.user.googleName, { exact: true })).toBeVisible();
@@ -65,7 +74,8 @@ test('profile updates survive reload and logout clears sibling tabs but not an i
   const independent = await browser.newContext({ baseURL, extraHTTPHeaders: { Origin: new URL(baseURL!).origin } });
   try {
     const other = await independent.newPage(); await signIn(other, '/account');
-    await page.getByRole('button', { name: 'Sign out' }).click();
+    await page.getByRole('button', { name: 'Profile menu' }).click();
+    await page.getByRole('menuitem', { name: 'Sign out' }).click();
     await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     await expect(sibling.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
     await expect(sibling.getByRole('textbox', { name: 'Display name' })).toHaveCount(0);
@@ -73,7 +83,7 @@ test('profile updates survive reload and logout clears sibling tabs but not an i
     expect((await independent.request.get('/api/auth/session')).status()).toBe(200);
     const reset = await independent.request.patch('/api/account', { data: { displayName: original.user.displayName } });
     expect(reset.status()).toBe(200);
-    await expect(other.getByRole('button', { name: 'Sign out' })).toBeVisible();
+    await expect(other.getByRole('button', { name: 'Profile menu' })).toBeVisible();
   } finally { await independent.close(); await sibling.close(); }
 });
 
@@ -81,11 +91,11 @@ test('expired login and transient auth errors remove private views and offer the
   await signIn(page, '/account');
   await page.route('**/api/auth/refresh', route => route.fulfill({ status: 503, json: { code: 'authUnavailable', message: 'Internal auth service diagnostic' } }));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(page.getByRole('heading', { name: 'Sign-in connection unavailable' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Your saved plan is safe.', level: 1 })).toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Display name' })).toHaveCount(0);
   await expect(page.locator('body')).not.toContainText('Internal auth service diagnostic');
   await page.unroute('**/api/auth/refresh');
-  await page.getByRole('button', { name: 'Retry connection' }).click();
+  await page.getByRole('main').getByRole('button', { name: 'Retry connection' }).click();
   await expect(page.getByRole('textbox', { name: 'Display name' })).toBeVisible();
   await page.route('**/api/auth/refresh', route => route.fulfill({ status: 401, json: { code: 'sessionExpired', message: 'Internal expiry diagnostic' } }));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
@@ -100,11 +110,12 @@ test('lost logout response never claims success until the real server check conf
     const response = await route.fetch(); expect(response.status()).toBe(204);
     await route.abort('failed');
   });
-  await page.getByRole('button', { name: 'Sign out' }).click();
-  await expect(page.getByRole('heading', { name: 'Sign-out not confirmed' })).toBeVisible();
+  await page.getByRole('button', { name: 'Profile menu' }).click();
+  await page.getByRole('menuitem', { name: 'Sign out' }).click();
+  await expect(page.getByRole('heading', { name: 'Let’s finish signing out.', level: 1 })).toBeVisible();
   await expect(page.getByText('You’re signed out.', { exact: true })).toHaveCount(0);
   await expect(page.getByRole('textbox', { name: 'Display name' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Check sign-in' }).click();
+  await page.getByRole('main').getByRole('button', { name: 'Retry connection' }).click();
   await expect(page.getByText('You’re signed out.', { exact: true })).toBeVisible();
   expect((await page.request.get('/api/auth/session')).status()).toBe(401);
 });
@@ -137,9 +148,14 @@ test('explicit app deletion requires re-sign-in when requested and never deletes
   await expect(dialog.getByLabel('Type DELETE to confirm')).toHaveValue('');
   await dialog.getByLabel('Type DELETE to confirm').fill('DELETE');
   await page.screenshot({ path: testInfo.outputPath('auth-delete-confirmation.png'), fullPage: true });
+  const deleted = page.waitForResponse(response => new URL(response.url()).pathname === '/api/account' && response.request().method() === 'DELETE');
   await remove.click();
+  const result = await deleted;
+  expect(result.status()).toBe(200);
+  expect(await result.json()).toEqual({ deleted: true });
   await expect(page.getByRole('button', { name: 'Continue with Google' })).toBeVisible();
-  await expect(page.getByText(/Your app account and its saved figures have been deleted/)).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Display name' })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Money', exact: true })).toHaveCount(0);
   expect(attempts).toBe(2); expect((await page.request.get('/api/auth/session')).status()).toBe(401);
   expect((await page.request.get('/api/session')).status()).toBe(401);
 });

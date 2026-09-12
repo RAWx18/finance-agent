@@ -11,7 +11,7 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from pydantic import SecretStr
 
-from app.config import Environment, load_config
+from app.config import AuthConfig, Environment, load_config
 from app.google import ISSUER, JWKS, REVOKE, TOKEN, USERINFO, Google, GoogleRejected
 from app.main import create_app
 from app.store import utc_now
@@ -135,6 +135,14 @@ class BrowserGoogle(GoogleDouble):
 
 def browser_app():
     config = load_config()
+    # Browser contexts share one server and loopback IP across the suite.
+    config = config.model_copy(
+        update={
+            "auth": AuthConfig.model_validate(
+                {**config.auth.model_dump(), "rate_window_seconds": 1, "login_limit": 100}
+            )
+        }
+    )
     environment = auth_environment(Environment.load())
     return create_app(config, environment, google=BrowserGoogle(config.auth, environment, utc_now))
 

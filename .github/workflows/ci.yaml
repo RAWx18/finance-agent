@@ -58,6 +58,7 @@ jobs:
         run: |
           docker compose config --quiet
           docker compose up --build --wait --wait-timeout 120
+          node --input-type=module -e 'import assert from "node:assert/strict"; assert.equal((await fetch("http://localhost:8000/health/ready")).status, 200); assert.equal((await fetch("http://localhost:8000/api/session")).status, 401); assert.equal((await fetch("http://localhost:8000/money", {redirect:"manual"})).status, 303);'
       - name: Exercise authenticated desktop, tablet, and mobile with isolated Google
         run: |
           npm --prefix frontend exec -- playwright install --with-deps chromium

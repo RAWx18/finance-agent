@@ -6,8 +6,8 @@ import type { Page } from '@playwright/test';
 export async function signIn(page: Page, returnTo = '/app') {
   await page.goto(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`);
   await page.getByRole('button', { name: 'Continue with Google' }).click();
-  await expect(page).toHaveURL(new RegExp(`${returnTo}$`));
-  await expect(page.getByRole('button', { name: 'Sign out' })).toBeVisible();
+  await expect(page).toHaveURL(url => url.pathname === returnTo && !url.search);
+  await expect(page.getByRole('button', { name: 'Profile menu' })).toBeVisible();
 }
 
 export const test = base.extend<{ authenticated: void }>({
