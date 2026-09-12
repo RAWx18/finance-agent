@@ -1,0 +1,166 @@
+// SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
+// SPDX-License-Identifier: AGPL-3.0-only
+import { act, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, it, vi } from 'vitest';
+import { api } from '../src/api';
+import { App, mockAuth } from './appSupport';
+import { planningSnapshot, settings, Stream } from './fixtures';
+import { projectWorkspace } from './workspace';
+
+it.each([true, false])('requires a fresh correction without overwriting the latest identity ambiguity: conflict=%s', async conflict => {
+  mockAuth();
+  Stream.instances = [];
+  vi.stubGlobal('EventSource', Stream);
+  const saved = planningSnapshot();
+  saved.facts.records.push({ ...structuredClone(saved.facts.records[0]), id: 'officeRent', label: 'Office rent' });
+  saved.facts.decision = { ...saved.facts.decision!, ambiguousRecordIds: conflict ? [] : ['rent', 'officeRent'] };
+  const corrected = structuredClone(saved);
+  corrected.sequence = 1; corrected.revision = 1;
+  corrected.facts.decision!.ambiguousRecordIds = conflict ? ['rent', 'officeRent'] : [];
+  corrected.facts.records[1].amount.amountPaise = 750000;
+  corrected.facts.records[1].schedule.date = '2026-09-19';
+  vi.spyOn(api, 'settings').mockResolvedValue(settings);
+  vi.spyOn(api, 'current').mockResolvedValue(projectWorkspace(saved));
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  const confirmed = structuredClone(corrected);
+  confirmed.sequence = 2; confirmed.revision = 2;
+  confirmed.facts.opening.amountPaise = 12345;
+  vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace(confirmed));
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: /Review saved picture/ }));
+  await waitFor(() => expect(Stream.instances).toHaveLength(1));
+  act(() => Stream.instances[0].emit('snapshot', saved));
+  await user.click(within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' }));
+  await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
+  await user.clear(screen.getByRole('textbox', { name: 'Amount (₹)' }));
+  await user.type(screen.getByRole('textbox', { name: 'Amount (₹)' }), '123.45');
+  act(() => Stream.instances[0].emit('snapshot', corrected));
+  const correction = within(screen.getByRole('dialog', { name: /Correct cash on/ }));
+  expect(correction.getByRole('button', { name: 'Save correction' })).toBeDisabled();
+  expect(correction.getByLabelText('Amount (₹)')).toHaveValue('123.45');
+  expect(correction.getByRole('alert')).toHaveTextContent('Close and reopen to check the latest values before saving; it cannot overwrite them.');
+  await user.click(correction.getByRole('button', { name: 'Save correction' }));
+  expect(api.save).not.toHaveBeenCalled();
+  await user.click(correction.getByRole('button', { name: /Close correct cash/ }));
+  await user.click(correction.getByRole('button', { name: 'Discard correction' }));
+  await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
+  expect(screen.getByRole('textbox', { name: 'Amount (₹)' })).toHaveValue('5000.00');
+  await user.clear(screen.getByRole('textbox', { name: 'Amount (₹)' }));
+  await user.type(screen.getByRole('textbox', { name: 'Amount (₹)' }), '123.45');
+  await user.click(screen.getByRole('button', { name: 'Save correction' }));
+  await waitFor(() => expect(api.save).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.save).mock.calls[0][0]).toEqual({ commandId: expect.any(String), expectedRevision: 1,
+    operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '123.45', status: 'exact' } } } });
+  expect(confirmed.facts.decision!.ambiguousRecordIds).toEqual(corrected.facts.decision!.ambiguousRecordIds);
+  expect(confirmed.facts.records).toEqual(corrected.facts.records);
+  await user.click(await screen.findByRole('button', { name: 'Done' }));
+  await user.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Bills & spending' }));
+  const office = within(screen.getByRole('listitem', { name: 'Office rent' }));
+  expect(office.getByText('₹7,500.00')).toBeVisible();
+  expect(office.getByText('Due 19 Sept 2026 · Reported')).toBeVisible();
+});
+
+it('keeps an SSE identity conflict through an unrelated manual save and clears it only with corrected server state', async () => {
+  mockAuth();
+  Stream.instances = [];
+  vi.stubGlobal('EventSource', Stream);
+  const saved = planningSnapshot();
+  saved.facts.records.push({ ...structuredClone(saved.facts.records[0]), id: 'officeRent', label: 'Office rent',
+    amount: { status: 'exact', amountPaise: 800000 }, schedule: { date: '2026-09-18', recurrence: 'monthly', certainty: 'exact' } });
+  const conflict = structuredClone(saved);
+  conflict.sequence = 1; conflict.revision = 1;
+  conflict.facts.decision!.ambiguousRecordIds = ['rent', 'officeRent'];
+  const question = 'Which item did you mean to correct: Rent (₹12,000.00, due 2026-09-13); Office rent (₹8,000.00, due 2026-09-18)?';
+  const reason = 'The correction target is unresolved; candidate amounts and dates remain unchanged.';
+  conflict.plan.decisionAssessment!.uncertainties!.push({ id: 'recordIdentity', kind: 'conflict', field: 'recordIdentity',
+    recordIds: ['rent', 'officeRent'], question, reason, priority: 0,
+    changes: ['what', 'affordability'], blocks: ['immediateDecision', 'fullPlan'] });
+  conflict.plan.decisionAssessment!.actions!.push({ id: 'clarify:recordIdentity', kind: 'clarify',
+    recordIds: ['rent', 'officeRent'], question, beforeDate: null, consequenceIds: [], ifDeclinedConsequenceIds: [] });
+  conflict.plan.decisionAssessment!.nextQuestionId = 'recordIdentity';
+  conflict.plan.decisionAssessment!.nextActionId = 'clarify:recordIdentity';
+  conflict.plan.decisionAssessment!.outcome = { ...conflict.plan.decisionAssessment!.outcome!, branch: 'conflict', readiness: 'qualified',
+    summary: reason, notCovered: reason, nextStep: question, nextActionId: 'clarify:recordIdentity', uncertain: ['recordIdentity'] };
+  const original = structuredClone(conflict);
+  const edited = structuredClone(conflict);
+  edited.sequence = 2; edited.revision = 2;
+  edited.facts.opening.amountPaise = 10000;
+  vi.spyOn(api, 'settings').mockResolvedValue(settings);
+  vi.spyOn(api, 'current').mockResolvedValue(projectWorkspace(saved));
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace(edited));
+  const user = userEvent.setup();
+  render(<App />);
+  await user.click(await screen.findByRole('button', { name: /Review saved picture/ }));
+  await waitFor(() => expect(Stream.instances).toHaveLength(1));
+  const stream = Stream.instances[0];
+  act(() => { stream.onopen?.(); stream.emit('snapshot', conflict); });
+  const picture = screen.getByRole('region', { name: 'Your financial picture' });
+  const focus = within(picture).getByRole('article', { name: 'Qualified outlook' });
+  const next = within(picture).getByRole('article', { name: 'Information that changes the plan' });
+  expect(focus).toHaveTextContent(reason);
+  expect(focus).toHaveTextContent('Needs checking');
+  expect(focus).not.toHaveTextContent('Known commitments look covered');
+  expect(next).toHaveTextContent(question);
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000.00');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept 2026');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹8,000.00');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('18 Sept 2026');
+  expect(next).toHaveTextContent(reason);
+
+  const moneyLink = within(screen.getByRole('navigation', { name: 'Main navigation' })).getByRole('link', { name: 'Money' });
+  await waitFor(() => expect(moneyLink).not.toHaveAttribute('aria-disabled', 'true'));
+  await user.click(moneyLink);
+  await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
+  const cash = screen.getByRole('textbox', { name: 'Amount (₹)' });
+  await user.clear(cash);
+  await user.type(cash, '100');
+  expect(api.save).not.toHaveBeenCalled();
+  expect(conflict).toEqual(original);
+  await user.click(screen.getByRole('button', { name: 'Save correction' }));
+  await waitFor(() => expect(api.save).toHaveBeenCalledOnce());
+  expect(vi.mocked(api.save).mock.calls[0][0]).toEqual({ commandId: expect.any(String), expectedRevision: 1,
+    operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '100', status: 'exact' } } } });
+  await user.click(await screen.findByRole('button', { name: 'Done' }));
+  await user.click(screen.getByRole('link', { name: 'Continue conversation' }));
+  expect(focus).toBeVisible();
+  expect(focus).toHaveTextContent(reason);
+  expect(next).toHaveTextContent(question);
+  act(() => stream.emit('snapshot', edited));
+  expect(next).toHaveTextContent(question);
+
+  const corrected = structuredClone(edited);
+  corrected.sequence = 3; corrected.revision = 3;
+  corrected.facts.decision!.ambiguousRecordIds = [];
+  corrected.facts.records[1].amount.amountPaise = 750000;
+  corrected.facts.records[1].schedule.date = '2026-09-19';
+  corrected.plan = structuredClone(saved.plan);
+  act(() => stream.emit('snapshot', corrected));
+  expect(focus).not.toHaveTextContent(reason);
+  expect(next).toHaveTextContent(corrected.plan.decisionAssessment!.actions![0].question);
+  expect(next).not.toHaveTextContent(question);
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹7,500.00');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('19 Sept 2026');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('₹12,000.00');
+  expect(within(picture).getByRole('listitem', { name: 'Rent' })).toHaveTextContent('13 Sept 2026');
+  act(() => { stream.emit('snapshot', edited); stream.emit('snapshot', conflict); });
+  expect(focus).not.toHaveTextContent(reason);
+  expect(next).not.toHaveTextContent(question);
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('₹7,500.00');
+  expect(within(picture).getByRole('listitem', { name: 'Office rent' })).toHaveTextContent('19 Sept 2026');
+  await user.click(moneyLink);
+  await user.click(screen.getByRole('button', { name: 'Correct starting cash' }));
+  expect(screen.getByRole('textbox', { name: 'Amount (₹)' })).toHaveValue('100.00');
+  await user.click(screen.getByRole('button', { name: /Close correct cash/ }));
+  await user.click(within(screen.getByRole('navigation', { name: 'Money navigation' })).getByRole('link', { name: 'Bills & spending' }));
+  await user.click(screen.getByRole('button', { name: 'Edit Office rent' }));
+  const item = within(screen.getByRole('dialog', { name: 'Correct Office rent' }));
+  expect(item.getByLabelText('Amount (₹)')).toHaveValue('7500.00');
+  await user.selectOptions(item.getByLabelText('Detail'), 'schedule.date');
+  expect(item.getByLabelText('Date')).toHaveValue('2026-09-19');
+  expect(corrected.facts.decision!.ambiguousRecordIds).toEqual([]);
+  expect(api.save).toHaveBeenCalledOnce();
+  expect(conflict).toEqual(original);
+});

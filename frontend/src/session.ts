@@ -2,15 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { api, ApiError, authEpoch, errorMessage, exactNumbers, reportAuthLoss, readSnapshot } from './api';
-import type { Command, FactsInput, Settings, Snapshot } from './api';
-import { draftFacts } from './money';
+import type { Command, Settings, Snapshot } from './api';
 
 export type State = {
   phase: 'loading' | 'empty' | 'ready' | 'expired' | 'deleted' | 'unavailable' | 'unreadable';
   settings: Settings | null;
   snapshot: Snapshot | null;
   connection: 'connecting' | 'live' | 'reconnecting' | 'closed';
-  draft: { facts: FactsInput; baseRevision: number; conflict: boolean } | null;
   pending: Command | null;
   busy: boolean;
   message: string;
@@ -19,7 +17,7 @@ export type State = {
 
 export const initialState: State = {
   phase: 'loading', settings: null, snapshot: null, connection: 'closed',
-  draft: null, pending: null, busy: false, message: '', messageKind: 'status',
+  pending: null, busy: false, message: '', messageKind: 'status',
 };
 
 type Action =
@@ -29,8 +27,7 @@ type Action =
   | { type: 'snapshot'; snapshot: Snapshot }
   | { type: 'connection'; connection: State['connection'] }
   | { type: 'terminal'; phase: State['phase']; message: string }
-  | { type: 'edit' | 'cancel' | 'useSaved' | 'reconcile' | 'deleted' }
-  | { type: 'draft'; facts: FactsInput }
+  | { type: 'deleted' }
   | { type: 'busy'; busy: boolean }
   | { type: 'pending'; command: Command }
   | { type: 'saved'; snapshot: Snapshot }
@@ -42,14 +39,12 @@ function receive(state: State, snapshot: Snapshot): State {
   const affected = snapshot.invalidatedAssumptions?.length ?? 0;
   return { ...state, snapshot, messageKind: 'status', message: affected
     ? `${affected} planning assumption(s) need fresh consent. ${snapshot.accepted?.adjustments.length ?? 0} remain saved.`
-    : cleared ? 'Planning assumptions and preview cleared. The reported baseline is shown.' : state.messageKind === 'error' ? '' : state.message, draft: state.draft ? {
-    ...state.draft, conflict: state.draft.conflict || snapshot.revision > state.draft.baseRevision,
-  } : null };
+    : cleared ? 'Planning assumptions and preview cleared. The reported baseline is shown.' : state.messageKind === 'error' ? '' : state.message };
 }
 
 export function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case 'loaded': return { ...state, settings: action.settings, snapshot: action.snapshot, phase: action.snapshot ? 'ready' : 'empty', message: '', messageKind: 'status' };
+    case 'loaded': return { ...state, settings: action.settings, snapshot: action.snapshot, phase: action.snapshot ? 'ready' : 'empty', busy: false, message: '', messageKind: 'status' };
     case 'settings': return { ...state, settings: action.settings };
     case 'started': return state.snapshot?.sessionId === action.snapshot.sessionId
       ? receive(state, action.snapshot)
@@ -57,26 +52,22 @@ export function reducer(state: State, action: Action): State {
     case 'snapshot': return receive(state, action.snapshot);
     case 'connection': return { ...state, connection: action.connection };
     case 'terminal': return { ...state, phase: action.phase, connection: 'closed', busy: false, message: action.message, messageKind: 'status' };
-    case 'edit':
-    case 'useSaved': return state.snapshot && !state.pending ? { ...state, draft: { facts: draftFacts(state.snapshot), baseRevision: state.snapshot.revision, conflict: false }, message: '', messageKind: 'status' } : state;
-    case 'cancel': return state.pending ? state : { ...state, draft: null, message: '', messageKind: 'status' };
-    case 'draft': return state.draft && !state.pending ? { ...state, draft: { ...state.draft, facts: action.facts } } : state;
-    case 'reconcile': return state.draft && state.snapshot && !state.pending ? { ...state, draft: { ...state.draft, baseRevision: state.snapshot.revision, conflict: false }, message: 'Review your draft alongside the saved figures, then save to replace them.', messageKind: 'status' } : state;
     case 'busy': return { ...state, busy: action.busy, message: action.busy ? '' : state.message, messageKind: action.busy ? 'status' : state.messageKind };
     case 'pending': return { ...state, pending: action.command, busy: true, message: '', messageKind: 'status' };
     case 'saved': {
       if (action.snapshot.sessionId !== state.snapshot?.sessionId) return state;
       const operation = state.pending?.operation.type;
-      const messages = {
+      const messages: Record<Command['operation']['type'], string> = {
         replaceFacts: `Your figures are saved. ${action.snapshot.accepted?.adjustments.length ?? 0} planning assumption(s) remain saved; ${action.snapshot.invalidatedAssumptions?.length ?? 0} need fresh consent. The preview is cleared.`,
+        updateFacts: `Your corrections are saved. ${action.snapshot.accepted?.adjustments.length ?? 0} planning assumption(s) remain saved; ${action.snapshot.invalidatedAssumptions?.length ?? 0} need fresh consent. The preview is cleared.`,
         previewAdjustments: 'Preview ready to review. Your saved projection has not changed.',
         acceptPreview: 'Planning assumptions saved. No payments or account changes have been made.',
-        discardPreview: 'Preview rejected. Your saved projection has not changed.',
+        discardPreview: 'Preview closed, not rejected. Your saved projection has not changed.',
+        rejectPreview: 'Your decision not to use this proposal is saved. No payments or account changes have been made.',
         clearAccepted: 'Planning assumptions and preview cleared. The reported baseline is shown.',
         respondToAction: 'Your answer is saved.',
       };
-      return { ...receive(state, action.snapshot), pending: null,
-        draft: operation === 'replaceFacts' ? null : state.draft, busy: false,
+      return { ...receive(state, action.snapshot), pending: null, busy: false,
         messageKind: 'status',
         message: action.snapshot.sequence < state.snapshot.sequence
           ? 'The action was confirmed, but later changes superseded it. The latest saved projection is shown.'
@@ -97,6 +88,7 @@ export function useSession() {
   const lock = useRef(false);
   const generation = useRef(0);
   const stream = useRef<EventSource | null>(null);
+  const deleting = useRef(false);
   const latest = useRef(state.snapshot);
   useEffect(() => { latest.current = state.snapshot; }, [state.snapshot]);
 
@@ -105,6 +97,7 @@ export function useSession() {
     const load = async () => {
       try {
         const settings = await api.settings(controller.signal);
+        if (!controller.signal.aborted) dispatch({ type: 'settings', settings });
         let snapshot: Snapshot | null = null;
         try { snapshot = await api.current(controller.signal); }
         catch (error) {
@@ -137,7 +130,7 @@ export function useSession() {
     stream.current = source;
     let recovery = 0;
     const current = () => !controller.signal.aborted && epoch === authEpoch() && stream.current === source;
-    dispatch({ type: 'connection', connection: 'connecting' });
+    dispatch({ type: 'connection', connection: streamKey ? 'reconnecting' : 'connecting' });
     // An open socket is not evidence that its financial picture is current.
     source.onopen = () => { if (current()) recovery++; };
     source.addEventListener('snapshot', (event) => {
@@ -165,8 +158,10 @@ export function useSession() {
       source.addEventListener(name, () => {
         if (!current()) return;
         source.close(); controller.abort();
+        if (name === 'deleted' && deleting.current) return;
+        if (name !== 'unavailable') generation.current++;
         dispatch({ type: 'terminal', phase: name === 'notFound' ? 'deleted' : name,
-          message: name === 'unavailable' ? 'Live updates are unavailable. Your draft is still here.'
+          message: name === 'unavailable' ? 'Live updates are unavailable. Your last saved figures are still shown.'
             : name === 'expired' ? 'This projection has expired. Start again with fresh figures.'
               : 'This projection was deleted or is no longer available.',
         });
@@ -197,19 +192,20 @@ export function useSession() {
     if (lock.current) return;
     if (state.pending && action !== 'save') return;
     if (action === 'save' && !state.pending) {
-      if (state.phase !== 'ready') return;
-      if (operation && (state.draft || state.connection !== 'live')) return;
-      if (!operation && (!state.draft || state.draft.conflict)) return;
+      if (!operation || state.phase !== 'ready' || state.connection !== 'live') return;
     }
     if (state.pending?.operation.type !== 'replaceFacts' && state.pending && (state.phase !== 'ready' || state.connection !== 'live')) return;
     lock.current = true;
+    deleting.current = action === 'delete';
     dispatch({ type: 'busy', busy: true });
     const epoch = generation.current;
+    const authentication = authEpoch();
+    const current = () => epoch === generation.current && authentication === authEpoch();
     let command: Command | null = null;
     try {
       if (action === 'delete') {
         await api.delete();
-        if (epoch === generation.current) {
+        if (current()) {
           stream.current?.close();
           stream.current = null;
           generation.current += 1;
@@ -217,19 +213,19 @@ export function useSession() {
         }
       } else if (action === 'start') {
         if (state.phase === 'expired' || state.phase === 'deleted') await api.delete();
+        if (!current()) return;
         const snapshot = await api.start();
-        if (epoch === generation.current) dispatch({ type: 'started', snapshot });
+        if (current()) dispatch({ type: 'started', snapshot });
       } else {
         command = state.pending ?? {
-          commandId: crypto.randomUUID(), expectedRevision: operation ? state.snapshot!.revision : state.draft!.baseRevision,
-          operation: operation ?? { type: 'replaceFacts' as const, facts: state.draft!.facts },
+          commandId: crypto.randomUUID(), expectedRevision: state.snapshot!.revision, operation: operation!,
         };
         dispatch({ type: 'pending', command });
         const snapshot = await api.save(command);
-        if (epoch === generation.current) dispatch({ type: 'saved', snapshot });
+        if (current()) dispatch({ type: 'saved', snapshot });
       }
     } catch (error) {
-      if (epoch !== generation.current) return;
+      if (!current()) return;
       dispatch({ type: 'failure', message: errorMessage(error, command?.operation.type),
         uncertain: action === 'save' && (!(error instanceof ApiError) || error.status >= 500 || error.body.code === 'commandConflict'),
         snapshot: error instanceof ApiError ? error.body.snapshot : null,
@@ -241,15 +237,21 @@ export function useSession() {
       }
     } finally {
       lock.current = false;
-      if (epoch === generation.current) dispatch({ type: 'busy', busy: false });
+      deleting.current = false;
+      if (current()) dispatch({ type: 'busy', busy: false });
     }
   }, [state]);
 
   function retryConnection() {
+    if (state.busy) return;
     if (state.snapshot) {
       dispatch({ type: 'terminal', phase: 'ready', message: '' });
+      dispatch({ type: 'connection', connection: 'reconnecting' });
       reconnect();
-    } else reload();
+    } else {
+      dispatch({ type: 'busy', busy: true });
+      reload();
+    }
   }
 
   return { state, dispatch, perform, retryConnection };

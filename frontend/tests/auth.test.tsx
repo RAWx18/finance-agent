@@ -9,6 +9,8 @@ import { api, ApiError, reportAuthLoss } from '../src/api';
 import type { AuthSession, Snapshot } from '../src/api';
 import { appRouter, authSession, mockAuth } from './appSupport';
 import { planningSnapshot, settings, Stream } from './fixtures';
+import { projectWorkspace } from './workspace';
+import { moneyRoutes } from '../src/moneyRoutes';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -51,51 +53,113 @@ beforeEach(() => {
 });
 
 describe('authentication boundary and routes', () => {
+  it('keeps a verified account usable when Google does not supply a profile name', async () => {
+    const session = authSession();
+    session.user.googleName = '';
+    vi.mocked(api.auth.session).mockRestore();
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify(session)));
+    show('/account');
+    await screen.findByRole('heading', { name: 'Settings' });
+    expect(screen.queryByText('Google name')).not.toBeInTheDocument();
+    expect(screen.queryByText('Not provided by Google')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Display name' })).toHaveValue(session.user.displayName);
+    expect(screen.getByText(session.user.email)).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Delete app account' })).toBeEnabled();
+  });
+
+  it.each(['/app', ...Object.keys(moneyRoutes), '/account', '/history'])('redirects an already signed-in login visit to %s', async returnTo => {
+    const { router } = show(`/login?returnTo=${returnTo}`);
+    await waitFor(() => expect(router.state.location.pathname).toBe(returnTo));
+    expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument();
+    expect(api.auth.login).not.toHaveBeenCalled();
+  });
+
+  it('keeps a cancelled recent sign-in recoverable while allowing the existing account to continue', async () => {
+    const { router } = show('/login?error=cancelled&returnTo=/account');
+    vi.mocked(api.auth.login).mockRejectedValue(new TypeError('private diagnostic'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Continue with Google' }));
+    expect(api.auth.login).toHaveBeenCalledWith('/account');
+    expect(router.state.location.pathname).toBe('/login');
+    await userEvent.click(screen.getByRole('link', { name: 'Continue to your plan' }));
+    await screen.findByDisplayValue('Sam');
+  });
+
+  it.each([null, {}, { expiresAt: '2099-01-01T00:00:00Z', user: { id: 'user-one' } }])('fails closed before financial reads for malformed sign-in data %j', async value => {
+    vi.mocked(api.auth.session).mockRestore();
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(value)));
+    show('/money');
+    await screen.findByRole('heading', { name: 'Your saved plan is safe.', level: 1 });
+    expect(api.current).not.toHaveBeenCalled(); expect(api.settings).not.toHaveBeenCalled();
+    expect(Stream.instances).toHaveLength(0);
+  });
+
   it('restores auth before every financial read without creating a plan or microphone session', async () => {
     const pending = deferred<AuthSession>();
     vi.mocked(api.auth.session).mockReturnValue(pending.promise);
-    show('/figures', true);
-    expect(screen.getByRole('heading', { name: 'Checking your sign-in…' })).toBeVisible();
+    show('/money', true);
+    expect(screen.getByRole('heading', { name: 'Opening your plan…' })).toBeVisible();
     expect(api.settings).not.toHaveBeenCalled(); expect(api.current).not.toHaveBeenCalled(); expect(api.call).not.toHaveBeenCalled();
     await act(async () => pending.resolve(authSession()));
-    await screen.findByRole('region', { name: 'Your figures' });
+    await screen.findByRole('region', { name: 'Money' });
     await waitFor(() => expect(api.current).toHaveBeenCalled());
     expect(api.start).not.toHaveBeenCalled(); expect(api.startCall).not.toHaveBeenCalled();
     expect(api.auth.session).toHaveBeenCalledBefore(vi.mocked(api.settings));
-    expect(screen.queryByRole('dialog', { name: 'Your figures' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: /Correct cash/ })).not.toBeInTheDocument();
   });
 
-  it.each(['/app', '/figures', '/account', '/'])('gates an unauthorized deep link %s with a safe return path', async path => {
+  it.each(['/app', ...Object.keys(moneyRoutes), '/account', '/history', '/'])('gates an unauthorized deep link %s with a safe return path', async path => {
     vi.mocked(api.auth.session).mockRejectedValue(unauthenticated());
     const { router } = show(path);
     await screen.findByRole('button', { name: 'Continue with Google' });
     expect(router.state.location.pathname).toBe('/login');
-    expect(router.state.location.search).toBe(path === '/figures' || path === '/account' ? `?returnTo=${path}` : '');
+    expect(router.state.location.search).toBe([...Object.keys(moneyRoutes), '/account', '/history'].includes(path) ? `?returnTo=${path}` : '');
     expect(api.settings).not.toHaveBeenCalled(); expect(api.current).not.toHaveBeenCalled(); expect(api.start).not.toHaveBeenCalled();
     expect(screen.queryByText(/private auth/)).not.toBeInTheDocument();
   });
 
-  it('redirects the signed-in root and keeps figures, drafts, dates and browser history in one financial session', async () => {
+  it('redirects the signed-in root and protects corrections, dates and browser history in one financial session', async () => {
     const { router } = show('/');
-    await screen.findByRole('button', { name: 'Your figures' });
-    expect(router.state.location.pathname).toBe('/app');
-    await userEvent.click(screen.getByRole('link', { name: 'Your figures' }));
-    const figures = screen.getByRole('region', { name: 'Your figures' });
-    expect(router.state.location.pathname).toBe('/figures');
-    expect(within(figures).getByRole('heading', { level: 1 })).toHaveFocus();
-    expect(figures).toHaveTextContent('11 Sept 2026 – 10 Oct 2026');
-    expect(figures).toHaveTextContent('Starting figures from');
-    await userEvent.click(within(figures).getByRole('button', { name: 'Edit figures' }));
-    const cash = within(figures).getByLabelText('Available cash (₹)');
+    const ready = await screen.findByRole('link', { name: 'Money' });
+    await waitFor(() => expect(api.call).toHaveBeenCalledOnce());
+    await waitFor(() => expect(ready).not.toHaveAttribute('aria-disabled', 'true'));
+    await waitFor(() => expect(router.state.location.pathname).toBe('/app'));
+    await userEvent.click(ready);
+    const money = await screen.findByRole('region', { name: 'Money' });
+    await waitFor(() => expect(router.state.location.pathname).toBe('/money'));
+    await waitFor(() => expect(within(money).getByRole('heading', { level: 1 })).toHaveFocus());
+    expect(money).toHaveTextContent('11 Sept 2026 – 10 Oct 2026');
+    expect(money).toHaveTextContent('Cash at plan start');
+    await waitFor(() => expect(Stream.instances).toHaveLength(1));
+    act(() => Stream.instances[0].emit('snapshot', planningSnapshot()));
+    await userEvent.click(within(money).getByRole('button', { name: 'Correct starting cash' }));
+    const correction = screen.getByRole('dialog', { name: /Correct cash on/ });
+    const cash = within(correction).getByRole('textbox', { name: 'Amount (₹)' });
     await userEvent.clear(cash); await userEvent.type(cash, '777');
-    await userEvent.click(screen.getByRole('link', { name: 'Account' }));
-    await screen.findByRole('heading', { name: 'Your account' });
-    await act(async () => router.navigate(-1));
+    await act(async () => router.navigate('/account'));
+    expect(router.state.location.pathname).toBe('/money');
+    expect(screen.getByRole('status', { name: 'Finish your correction' })).toHaveTextContent('Save or discard the correction before leaving Money.');
     expect(cash).toBeVisible(); expect(cash).toHaveValue('777');
+    expect(ready).toHaveAccessibleDescription('Unsaved corrections');
     await act(async () => router.navigate(-1));
-    expect(screen.getByRole('button', { name: 'Review your draft' })).toBeVisible();
+    expect(router.state.location.pathname).toBe('/money');
+    expect(cash).toHaveValue('777');
+    await userEvent.click(within(correction).getByRole('button', { name: /Close correct cash/ }));
+    await userEvent.click(within(correction).getByRole('button', { name: 'Discard correction' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
+    await screen.findByRole('heading', { name: 'Settings' });
+    await act(async () => router.navigate(-1));
+    expect(money).toBeVisible();
+    expect(within(money).getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹5,000.00');
+    await act(async () => router.navigate(-1));
+    expect(router.state.location.pathname).toBe('/app');
+    expect(screen.getByRole('link', { name: 'Money' })).toBe(ready);
+    expect(ready).toBeVisible();
+    expect(ready).not.toHaveAccessibleDescription();
     await act(async () => router.navigate(1));
-    expect(cash).toBeVisible(); expect(api.current).toHaveBeenCalledTimes(1); expect(api.start).not.toHaveBeenCalled();
+    expect(money).toBeVisible(); expect(api.current).toHaveBeenCalledTimes(1); expect(api.start).not.toHaveBeenCalled();
+    expect(api.save).not.toHaveBeenCalled(); expect(api.startCall).not.toHaveBeenCalled();
   });
 
   it.each(['cancelled', 'failed', 'expired', 'unavailable'])('offers nonterminal recovery for callback error %s', async error => {
@@ -103,15 +167,19 @@ describe('authentication boundary and routes', () => {
     vi.mocked(api.auth.login).mockRejectedValue(new TypeError('private diagnostic'));
     const { router } = show(`/login?error=${error}&returnTo=/account`);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeEnabled());
-    expect(screen.getByRole('alert')).toBeVisible();
+    const notices = within(screen.getByRole('complementary', { name: 'Notifications' }));
+    expect(notices.getByRole(error === 'cancelled' ? 'status' : 'alert')).toBeVisible();
+    if (error === 'cancelled') expect(notices.queryByRole('alert')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Continue with Google' }));
     expect(api.auth.login).toHaveBeenCalledExactlyOnceWith('/account');
     expect(router.state.location.search).toBe('?returnTo=/account');
-    expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeEnabled();
-    expect(screen.getByRole('alert')).not.toHaveTextContent('private diagnostic');
+    const recovery = screen.getByRole('region', { name: 'Let’s try signing in again.' });
+    expect(within(recovery).getByRole('button', { name: 'Retry sign in' })).toBeEnabled();
+    expect(recovery).not.toHaveTextContent('private diagnostic');
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
   });
 
-  it.each(['https://other.example/account', '//other.example', '/app?email=private@example.com'])('rejects an unapproved return target %s', async returnTo => {
+  it.each(['https://other.example/account', '//other.example', '/app?email=private@example.com', '/figures'])('rejects an unapproved return target %s', async returnTo => {
     vi.mocked(api.auth.session).mockRejectedValue(unauthenticated());
     vi.mocked(api.auth.login).mockRejectedValue(new TypeError());
     const { router } = show(`/login?returnTo=${encodeURIComponent(returnTo)}`);
@@ -130,51 +198,212 @@ describe('authentication boundary and routes', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(screen.queryByText(/CLIENT_SECRET|ENCRYPTION|API_KEY/)).not.toBeInTheDocument();
     vi.mocked(api.auth.settings).mockResolvedValue({ googleAvailable: true, sessionHours: 168 });
-    await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    await userEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Check again' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeEnabled());
   });
 
   it('keeps an auth outage distinct from anonymous and retries before exposing any cached financial content', async () => {
     vi.mocked(api.auth.session).mockRejectedValueOnce(new ApiError(503, { code: 'authUnavailable', message: 'private provider failure' }));
-    show('/figures');
-    await screen.findByRole('heading', { name: 'Sign-in connection unavailable' });
+    show('/money');
+    await screen.findByRole('heading', { name: 'Your saved plan is safe.', level: 1 });
     expect(api.settings).not.toHaveBeenCalled(); expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
-    await screen.findByRole('region', { name: 'Your figures' });
+    const recovery = screen.getByRole('region', { name: 'Your saved plan is safe.' });
+    expect(recovery).toHaveTextContent('Retry to see your figures.');
+    expect(recovery).not.toHaveClass('card');
+    expect(within(recovery).getByRole('button', { name: 'Sign out' })).toHaveClass('quiet');
+    expect(screen.getAllByRole('button', { name: 'Retry connection' })).toHaveLength(1);
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/private provider failure|connection restored|sign-in connection/i)).not.toBeInTheDocument();
+    await userEvent.click(within(recovery).getByRole('button', { name: 'Retry connection' }));
+    await screen.findByRole('region', { name: 'Money' });
     expect(api.auth.session).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the recovery view in place during a retry and after another failure', async () => {
+    const pending = deferred<AuthSession>();
+    vi.mocked(api.auth.session).mockRejectedValueOnce(new TypeError('private network')).mockReturnValueOnce(pending.promise);
+    show('/money');
+    const heading = await screen.findByRole('heading', { name: 'Your saved plan is safe.' });
+    expect(heading).toHaveFocus();
+    const recovery = screen.getByRole('region', { name: 'Your saved plan is safe.' });
+    const retry = within(recovery).getByRole('button', { name: 'Retry connection' });
+    await userEvent.click(retry);
+    expect(recovery).toHaveAttribute('aria-busy', 'true');
+    expect(within(recovery).getByRole('button', { name: 'Trying again…' })).toBe(retry);
+    expect(retry).toBeDisabled();
+    expect(heading).toBeVisible();
+    await userEvent.click(retry);
+    expect(api.auth.session).toHaveBeenCalledTimes(2);
+    expect(api.current).not.toHaveBeenCalled();
+    expect(api.startCall).not.toHaveBeenCalled();
+    await act(async () => pending.reject(new TypeError('private network')));
+    expect(recovery).toHaveAttribute('aria-busy', 'false');
+    expect(within(recovery).getByRole('button', { name: 'Retry connection' })).toBe(retry);
+    expect(retry).toBeEnabled();
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
+    await userEvent.click(retry);
+    await screen.findByRole('region', { name: 'Money' });
+    expect(api.auth.session).toHaveBeenCalledTimes(3);
+    expect(api.start).not.toHaveBeenCalled();
+  });
+
+  it('replaces an outage with sign-in only after the server confirms the login has ended', async () => {
+    vi.mocked(api.auth.session).mockRejectedValueOnce(new TypeError('private network')).mockRejectedValueOnce(unauthenticated());
+    show('/money');
+    await userEvent.click(await screen.findByRole('button', { name: 'Retry connection' }));
+    await screen.findByRole('button', { name: 'Continue with Google' });
+    expect(screen.getByText('Please sign in again to continue.')).toBeVisible();
+    expect(screen.queryByText(/lost the connection|Retry to see your figures/)).not.toBeInTheDocument();
+    expect(api.current).not.toHaveBeenCalled();
+    expect(api.startCall).not.toHaveBeenCalled();
+  });
+
+  it('keeps a failed sign-in availability check beside its retry and does not open Google automatically', async () => {
+    vi.mocked(api.auth.session).mockRejectedValue(unauthenticated());
+    vi.mocked(api.auth.settings).mockRejectedValueOnce(new TypeError('private network'));
+    show('/login');
+    const recovery = await screen.findByRole('region', { name: 'Let’s get you connected.' });
+    expect(within(recovery).getByRole('button', { name: 'Retry connection' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Continue with Google' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
+    await userEvent.click(within(recovery).getByRole('button', { name: 'Retry connection' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue with Google' })).toBeEnabled());
+    expect(api.auth.settings).toHaveBeenCalledTimes(2);
+    expect(api.auth.login).not.toHaveBeenCalled();
+  });
+});
+
+describe('profile menu', () => {
+  it('keeps identity and account actions behind the icon beside primary navigation', async () => {
+    const session = authSession();
+    session.user.displayName = 'Samira Patel';
+    session.user.email = 'samira@example.com';
+    vi.mocked(api.auth.session).mockResolvedValue(session);
+    show();
+    const trigger = await screen.findByRole('button', { name: 'Profile menu' });
+    expect(trigger).toHaveAttribute('title', 'Profile menu');
+    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveTextContent('');
+    expect(screen.getByRole('link', { name: 'Cash flow home' })).toBeVisible();
+    expect(within(screen.getByRole('navigation', { name: 'Main navigation' })).getAllByRole('link').map(link => link.textContent))
+      .toEqual(['Conversation', 'History', 'Money']);
+    expect(screen.queryByRole('link', { name: 'Account' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem')).not.toBeInTheDocument();
+    expect(screen.queryByText(session.user.email)).not.toBeInTheDocument();
+    await userEvent.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(session.user.displayName)).toBeVisible();
+    expect(screen.getByText(session.user.email)).toBeVisible();
+    const menu = screen.getByRole('menu', { name: 'Profile' });
+    expect(menu).toHaveAttribute('id', trigger.getAttribute('aria-controls'));
+    expect(within(menu).getAllByRole('menuitem')).toHaveLength(2);
+    expect(within(menu).getByRole('menuitem', { name: 'Settings' })).toHaveAttribute('href', '/account');
+    expect(within(menu).getByRole('menuitem', { name: 'Settings' })).toHaveFocus();
+    expect(within(menu).getByRole('menuitem', { name: 'Sign out' }).tagName).toBe('BUTTON');
+    await userEvent.click(trigger);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(api.auth.logout).not.toHaveBeenCalled();
+  });
+
+  it.each([['{Enter}', 'Settings'], [' ', 'Settings'], ['{ArrowDown}', 'Settings'], ['{ArrowUp}', 'Sign out']])('opens with %s on %s and roves with arrows, Home and End', async (key, first) => {
+      show();
+      const trigger = await screen.findByRole('button', { name: 'Profile menu' });
+      trigger.focus();
+      await userEvent.keyboard(key);
+      expect(screen.getByRole('menuitem', { name: first })).toHaveFocus();
+      for (const [key, name] of [['{Home}', 'Settings'], ['{ArrowUp}', 'Sign out'], ['{ArrowDown}', 'Settings'],
+        ['{End}', 'Sign out'], ['{ArrowUp}', 'Settings'], ['{ArrowDown}', 'Sign out']]) {
+        await userEvent.keyboard(key);
+        expect(screen.getByRole('menuitem', { name })).toHaveFocus();
+      }
+      await userEvent.keyboard('{Escape}');
+      expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger).toHaveFocus();
+      expect(api.auth.logout).not.toHaveBeenCalled();
+    });
+
+  it.each([false, true])('dismisses on Tab without trapping focus (shift: %s)', async shift => {
+    show('/account');
+    const name = await screen.findByRole('textbox', { name: 'Display name' });
+    const trigger = screen.getByRole('button', { name: 'Profile menu' });
+    await userEvent.click(trigger);
+    await userEvent.tab({ shift });
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(shift ? screen.getByRole('link', { name: 'Money' }) : name).toHaveFocus();
+  });
+
+  it.each(['pointerdown', 'focusin'])('dismisses on outside %s without restoring trigger focus', async event => {
+    show('/account');
+    const name = await screen.findByRole('textbox', { name: 'Display name' });
+    const trigger = screen.getByRole('button', { name: 'Profile menu' });
+    await userEvent.click(trigger);
+    if (event === 'pointerdown') fireEvent.pointerDown(name);
+    else act(() => name.focus());
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).not.toHaveFocus();
+    if (event === 'focusin') expect(name).toHaveFocus();
+  });
+
+  it.each(['{Enter}', ' '])('navigates Settings with %s without creating a plan and closes on route changes', async press => {
+    const { router } = show();
+    await userEvent.click(await screen.findByRole('button', { name: 'Profile menu' }));
+    await userEvent.keyboard(press);
+    const heading = await screen.findByRole('heading', { name: 'Settings', level: 1 });
+    expect(router.state.location.pathname).toBe('/account');
+    expect(heading).toHaveFocus();
+    expect(document.title).toBe('Settings · Cash flow');
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    expect(screen.getByRole('menuitem', { name: 'Settings' })).toHaveAttribute('aria-current', 'page');
+    const key = router.state.location.key;
+    await act(async () => router.navigate('/account'));
+    expect(router.state.location.key).not.toBe(key);
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await act(async () => router.navigate(-1));
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Profile menu' })).toHaveAttribute('aria-expanded', 'false');
+    expect(api.start).not.toHaveBeenCalled();
+    expect(api.startCall).not.toHaveBeenCalled();
+    expect(api.save).not.toHaveBeenCalled();
   });
 });
 
 describe('auth expiry, revalidation and race isolation', () => {
   it.each(['unauthenticated', 'sessionExpired', 'authUnavailable'] as const)('closes SSE and clears financial data on %s', async code => {
-    show('/figures');
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
+    show('/money/spending');
+    await screen.findByRole('listitem', { name: 'Rent' });
     await waitFor(() => expect(Stream.instances).toHaveLength(1));
     vi.mocked(api.auth.session).mockRejectedValue(new ApiError(code === 'authUnavailable' ? 503 : 401, { code, message: 'private diagnostic' }));
     act(() => Stream.instances[0].emit(code, { code }));
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
     expect(Stream.instances[0].closed).toBe(true);
-    if (code === 'authUnavailable') await screen.findByRole('heading', { name: 'Sign-in connection unavailable' });
+    if (code === 'authUnavailable') await screen.findByRole('heading', { name: 'Your saved plan is safe.', level: 1 });
     else await screen.findByRole('button', { name: 'Continue with Google' });
     expect(api.auth.session).toHaveBeenCalledTimes(2);
   });
 
   it('checks refresh on focus and blocks on transient errors rather than leaving a private cache usable', async () => {
-    show('/figures');
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
+    show('/money/spending');
+    await screen.findByRole('listitem', { name: 'Rent' });
     vi.mocked(api.auth.refresh).mockRejectedValueOnce(new ApiError(503, { code: 'authUnavailable', message: 'private diagnostic' }));
     fireEvent(window, new Event('focus'));
-    await screen.findByRole('heading', { name: 'Sign-in connection unavailable' });
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
-    expect(Stream.instances.every(item => item.closed)).toBe(true);
-    await userEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
+    await screen.findByRole('heading', { name: 'Your saved plan is safe.', level: 1 });
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
+    await waitFor(() => expect(Stream.instances.every(item => item.closed)).toBe(true));
+    await userEvent.click(within(screen.getByRole('region', { name: 'Your saved plan is safe.' })).getByRole('button', { name: 'Retry connection' }));
+    await screen.findByRole('listitem', { name: 'Rent' });
     expect(api.current).toHaveBeenCalledTimes(2);
   });
 
   it('refreshes while visible on the five-minute cadence but never starts voice', async () => {
     show();
-    await screen.findByRole('button', { name: 'Your figures' });
+    await screen.findByRole('link', { name: 'Money' });
     vi.useFakeTimers();
     const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
     await act(async () => { fireEvent(window, new Event('focus')); });
@@ -194,48 +423,53 @@ describe('auth expiry, revalidation and race isolation', () => {
     const first = deferred<Snapshot>();
     const second = { ...planningSnapshot(), sessionId: 'second-plan' };
     second.facts.records[0].label = 'Second user bill';
-    vi.mocked(api.current).mockReturnValueOnce(first.promise).mockResolvedValue(second);
-    show('/figures');
+    vi.mocked(api.current).mockReturnValueOnce(first.promise).mockResolvedValue(projectWorkspace(second));
+    show('/money/spending');
     await waitFor(() => expect(api.current).toHaveBeenCalledTimes(1));
     vi.mocked(api.auth.refresh).mockResolvedValue(authSession('user-two'));
     fireEvent(window, new Event('focus'));
-    await screen.findByText('Second user bill', { selector: '.saved-items h3' });
+    await screen.findByRole('listitem', { name: 'Second user bill' });
     await act(async () => first.resolve(planningSnapshot()));
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
-    expect(screen.getByText('Second user bill', { selector: '.saved-items h3' })).toBeVisible();
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
+    expect(screen.getByRole('listitem', { name: 'Second user bill' })).toBeVisible();
     expect(api.current).toHaveBeenCalledTimes(2);
   });
 
   it('ignores pending first-user commands after identity changes without replaying them for a second user', async () => {
     const pending = deferred<Snapshot>();
     vi.mocked(api.save).mockReturnValue(pending.promise);
-    show('/figures');
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
-    await userEvent.click(screen.getByRole('button', { name: 'Edit figures' }));
-    const cash = screen.getByLabelText('Available cash (₹)');
+    show('/money');
+    await screen.findByRole('region', { name: 'Money in this plan' });
+    await waitFor(() => expect(Stream.instances).toHaveLength(1));
+    act(() => Stream.instances[0].emit('snapshot', planningSnapshot()));
+    const edit = screen.getByRole('button', { name: 'Correct starting cash' });
+    await waitFor(() => expect(edit).toBeEnabled());
+    await userEvent.click(edit);
+    const cash = await screen.findByRole('textbox', { name: 'Amount (₹)' });
     await userEvent.clear(cash); await userEvent.type(cash, '111');
-    await userEvent.click(screen.getByRole('button', { name: 'Save figures' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
     vi.mocked(api.auth.refresh).mockResolvedValue(authSession('user-two'));
     const second = structuredClone(planningSnapshot()); second.facts.opening.amountPaise = 22200;
-    vi.mocked(api.current).mockResolvedValue(second);
+    vi.mocked(api.current).mockResolvedValue(projectWorkspace(second));
     fireEvent(window, new Event('focus'));
-    await waitFor(() => expect(screen.queryByLabelText('Available cash (₹)')).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Correct cash on/ })).not.toBeInTheDocument());
     const late = structuredClone(planningSnapshot()); late.sequence = 5; late.facts.opening.amountPaise = 11100;
-    await act(async () => pending.resolve(late));
-    expect(screen.getByText('Available cash', { selector: 'dt' }).parentElement).toHaveTextContent('₹222.00');
+    await act(async () => pending.resolve(projectWorkspace(late)));
+    expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹222.00');
+    expect(screen.getByRole('region', { name: 'Money in this plan' })).not.toHaveTextContent('₹111.00');
     expect(api.save).toHaveBeenCalledTimes(1);
   });
 
   it('treats a cross-tab logout hint only as a reason to recheck the backend', async () => {
-    show('/figures');
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
+    show('/money/spending');
+    await screen.findByRole('listitem', { name: 'Rent' });
     const pending = deferred<AuthSession>();
     vi.mocked(api.auth.session).mockReturnValueOnce(pending.promise);
     act(() => Channel.instances[0].emit('logout'));
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Checking your sign-in…' })).toBeVisible();
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Opening your plan…' })).toBeVisible();
     await act(async () => pending.resolve(authSession()));
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
+    await screen.findByRole('listitem', { name: 'Rent' });
     expect(api.auth.session).toHaveBeenCalledTimes(2);
     expect(api.current).toHaveBeenCalledTimes(2);
     expect(Channel.instances[0].postMessage).not.toHaveBeenCalled();
@@ -252,26 +486,80 @@ describe('auth expiry, revalidation and race isolation', () => {
 });
 
 describe('account profile and deliberate deletion', () => {
-  it('shows the display name with readonly Google identity and independent retention, then saves a trimmed name', async () => {
+  it('ignores a pending deletion after leaving the account page without claiming success', async () => {
+    const pending = deferred<{ deleted: true }>();
+    vi.mocked(api.account.delete).mockReturnValue(pending.promise);
+    const { router } = show('/account');
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
+    await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');
+    await userEvent.click(screen.getByRole('button', { name: 'Permanently delete app account' }));
+    await act(async () => router.navigate('/app'));
+    await act(async () => pending.resolve({ deleted: true }));
+    expect(screen.queryByText(/have been deleted/)).not.toBeInTheDocument();
+    expect(Channel.instances[0].postMessage).not.toHaveBeenCalledWith('delete');
+    expect(api.account.delete).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply or announce a profile result belonging to another user', async () => {
+    vi.mocked(api.account.update).mockResolvedValue(authSession('user-two').user);
+    show('/account');
+    const name = await screen.findByRole('textbox', { name: 'Display name' });
+    await userEvent.clear(name); await userEvent.type(name, 'Samira');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await screen.findByRole('alert', { name: 'Your name could not be saved' });
+    expect(name).toHaveValue('Samira');
+    expect(screen.getByText('user-one@example.com')).toBeVisible();
+    expect(screen.queryByText('Your name is saved.')).not.toBeInTheDocument();
+    expect(Channel.instances[0].postMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps Settings minimal and updates menu identity only after a trimmed name save completes', async () => {
+    const pending = deferred<AuthSession['user']>();
+    vi.mocked(api.account.update).mockReturnValueOnce(pending.promise);
     show('/account');
     const name = await screen.findByRole('textbox', { name: 'Display name' });
     expect(name).toHaveValue('Sam');
     expect(screen.getByText('Sam Google')).toBeVisible(); expect(screen.getByText('user-one@example.com')).toBeVisible();
     expect(screen.getAllByRole('textbox')).toHaveLength(1);
-    await screen.findByText(/kept for 24 hours/); expect(screen.getByText(/up to 7 days/)).toBeVisible();
+    const region = screen.getByRole('region', { name: 'Settings' });
+    expect(within(region).getAllByRole('heading').map(heading => heading.textContent)).toEqual(['Settings', 'Account Google']);
+    expect(within(region).getByRole('form', { name: 'Display name' })).toBeVisible();
+    expect(within(region).getByRole('region', { name: 'Account Google' })).toBeVisible();
+    expect(within(region).getByRole('button', { name: 'Delete app account' })).toHaveClass('quiet');
+    expect(region.querySelector('.card')).not.toBeInTheDocument();
+    for (const paragraph of within(region).queryAllByRole('paragraph'))
+      expect(paragraph).not.toHaveTextContent(/Your account|Your profile|kept for|up to 7 days|session|retention|privacy/i);
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(within(screen.getByRole('contentinfo')).getByRole('button', { name: 'Privacy' })).toBeVisible();
     await userEvent.clear(name); await userEvent.type(name, '  Samira  ');
-    await userEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    expect(name).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    expect(within(screen.getByRole('banner')).getByText('Sam', { exact: true })).toBeVisible();
+    await act(async () => pending.resolve({ ...authSession().user, displayName: 'Samira' }));
     await screen.findByText('Your name is saved.');
     expect(name).toHaveValue('Samira'); expect(api.account.update).toHaveBeenCalledExactlyOnceWith('Samira');
-    expect(Channel.instances[0].postMessage).toHaveBeenCalledExactlyOnceWith('profile');
+    expect(within(screen.getByRole('banner')).getByText('Samira', { exact: true })).toBeVisible();
+    expect(within(screen.getByRole('banner')).getByText(authSession().user.email)).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    await userEvent.clear(name); await userEvent.type(name, 'Sam');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    expect(within(screen.getByRole('banner')).getByText('Sam', { exact: true })).toBeVisible();
+    expect(api.account.update).toHaveBeenLastCalledWith('Sam');
+    expect(Channel.instances[0].postMessage).toHaveBeenCalledTimes(2);
+    expect(Channel.instances[0].postMessage).toHaveBeenLastCalledWith('profile');
     expect(api.save).not.toHaveBeenCalled();
+    expect(api.startCall).not.toHaveBeenCalled();
   });
 
   it.each(['   ', 'x'.repeat(81), 'Sam\u200b'])('rejects an invalid display name without touching the saved profile', async value => {
     show('/account');
     const name = await screen.findByRole('textbox', { name: 'Display name' });
     fireEvent.change(name, { target: { value } });
-    await userEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(screen.getByRole('alert')).toHaveTextContent('1–80 characters'); expect(api.account.update).not.toHaveBeenCalled();
     expect(name).toHaveValue(value);
   });
@@ -283,10 +571,11 @@ describe('account profile and deliberate deletion', () => {
     show('/account');
     const name = await screen.findByRole('textbox', { name: 'Display name' });
     await userEvent.clear(name); await userEvent.type(name, 'Samira');
-    await userEvent.click(screen.getByRole('button', { name: 'Save name' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(screen.getByRole('alert')).not.toHaveTextContent('private network'); expect(name).toHaveValue('Samira');
-    await userEvent.click(screen.getByRole('button', { name: 'Save name' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
     await screen.findByRole('button', { name: 'Continue with Google' });
     await act(async () => pending.resolve({ ...authSession().user, displayName: 'Samira' }));
     expect(screen.queryByDisplayValue('Samira')).not.toBeInTheDocument();
@@ -336,14 +625,33 @@ describe('account profile and deliberate deletion', () => {
 });
 
 describe('confirmed and uncertain logout', () => {
+  it('keeps private data hidden when both logout and its status check fail, then retries sign-out', async () => {
+    vi.mocked(api.auth.logout).mockRejectedValueOnce(new TypeError('private network'));
+    show('/account'); await screen.findByDisplayValue('Sam');
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
+    await screen.findByRole('heading', { name: 'Let’s finish signing out.', level: 1 });
+    vi.mocked(api.auth.session).mockRejectedValueOnce(new TypeError('private network'));
+    await userEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Retry connection' }));
+    await waitFor(() => expect(api.auth.session).toHaveBeenCalledTimes(2));
+    expect(screen.queryByDisplayValue('Sam')).not.toBeInTheDocument();
+    expect(screen.queryByText('You’re signed out.')).not.toBeInTheDocument();
+    expect(Stream.instances.every(stream => stream.closed)).toBe(true);
+    expect(api.current).toHaveBeenCalledTimes(1);
+    await userEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Retry sign out' }));
+    await screen.findByText('You’re signed out.');
+    expect(api.auth.logout).toHaveBeenCalledTimes(2);
+  });
+
   it('hides private state and closes streams while logout is pending, without claiming it succeeded', async () => {
     const pending = deferred<void>();
     vi.mocked(api.auth.logout).mockReturnValue(pending.promise);
-    show('/figures');
-    await screen.findByText('Rent', { selector: '.saved-items h3' });
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    show('/money/spending');
+    await screen.findByRole('listitem', { name: 'Rent' });
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
     expect(screen.getByRole('heading', { name: 'Signing out…' })).toBeVisible();
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
     expect(Stream.instances.every(item => item.closed)).toBe(true);
     expect(Channel.instances[0].postMessage).not.toHaveBeenCalled();
     await act(async () => pending.resolve());
@@ -354,21 +662,27 @@ describe('confirmed and uncertain logout', () => {
   it('keeps failed-network logout uncertain and hidden, and confirms retry with the server', async () => {
     vi.mocked(api.auth.logout).mockRejectedValueOnce(new TypeError('private network'));
     show('/account'); await screen.findByDisplayValue('Sam');
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    await screen.findByRole('heading', { name: 'Sign-out not confirmed' });
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
+    await screen.findByRole('heading', { name: 'Let’s finish signing out.', level: 1 });
+    const recovery = screen.getByRole('region', { name: 'Let’s finish signing out.' });
+    expect(screen.queryByRole('complementary', { name: 'Notifications' })).not.toBeInTheDocument();
+    expect(recovery).not.toHaveTextContent('private network');
+    expect(recovery).toHaveTextContent('Your figures are hidden for now.');
     expect(screen.queryByDisplayValue('Sam')).not.toBeInTheDocument(); expect(screen.queryByText('You’re signed out.')).not.toBeInTheDocument();
     expect(Channel.instances[0].postMessage).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry sign out' }));
+    await userEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Retry sign out' }));
     await screen.findByText('You’re signed out.'); expect(api.auth.logout).toHaveBeenCalledTimes(2);
   });
 
   it.each([true, false])('checks the backend after a lost logout response (session survives: %s)', async survives => {
     vi.mocked(api.auth.logout).mockRejectedValueOnce(new TypeError());
     show('/account'); await screen.findByDisplayValue('Sam');
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    await screen.findByRole('heading', { name: 'Sign-out not confirmed' });
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
+    await screen.findByRole('heading', { name: 'Let’s finish signing out.', level: 1 });
     if (!survives) vi.mocked(api.auth.session).mockRejectedValue(unauthenticated());
-    await userEvent.click(screen.getByRole('button', { name: 'Check sign-in' }));
+    await userEvent.click(within(screen.getByRole('main')).getByRole('button', { name: 'Retry connection' }));
     if (survives) await screen.findByDisplayValue('Sam'); else await screen.findByText('You’re signed out.');
     expect(api.auth.session).toHaveBeenCalledTimes(2);
   });
@@ -376,12 +690,13 @@ describe('confirmed and uncertain logout', () => {
   it('aborts a stale refresh so it cannot undo an explicit sign-out', async () => {
     const pending = deferred<AuthSession>();
     vi.mocked(api.auth.refresh).mockReturnValue(pending.promise);
-    show('/figures'); await screen.findByText('Rent', { selector: '.saved-items h3' });
+    show('/money/spending'); await screen.findByRole('listitem', { name: 'Rent' });
     fireEvent(window, new Event('focus'));
-    await userEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Profile menu' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));
     await screen.findByText('You’re signed out.');
     await act(async () => pending.resolve(authSession()));
-    expect(screen.queryByText('Rent', { selector: '.saved-items h3' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('listitem', { name: 'Rent' })).not.toBeInTheDocument();
     act(() => reportAuthLoss('unauthenticated'));
     await waitFor(() => expect(api.auth.session).toHaveBeenCalledTimes(2));
   });

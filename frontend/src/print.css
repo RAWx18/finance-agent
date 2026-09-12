@@ -8,20 +8,15 @@
   #root { display: block !important; height: auto !important; }
   .product-main { display: block !important; min-height: 0 !important; }
   dialog.dialog { display: none !important; }
-  .figures-page, .figures-content { display: block !important; height: auto !important; overflow: visible !important; padding: 0 !important; }
-  .figures-page .page-heading, .figure-navigation, .page-feedback, .figures-content > .notice, .account-page, .figures-content .editor { display: none !important; }
-  .product-main[data-route="/account"] .figures-page { display: none !important; }
-  .saved-report[hidden] { display: block !important; }
+  .page-feedback, .account-page { display: none !important; }
   .scroll-region:has(~ .print-only) { display: none !important; }
   .print-only { display: block !important; }
   .site-header { background: #fff !important; color: #000 !important; padding: 0 0 1rem !important; }
   main { padding: 0 !important; }
-  .workspace, .projection, .intro { display: block !important; }
   .card { border-color: #aaa !important; margin-bottom: 1rem; padding: 1rem !important; }
   .scroll-region { max-height: none !important; overflow: visible !important; }
-  .timeline li, .saved-items li, .gap-summary, .metrics > div { break-inside: avoid; }
-  .metrics { grid-template-columns: repeat(2, 1fr) !important; }
+  .saved-items li, .money-record, .money-event { break-inside: avoid; }
   h2, h3 { break-after: avoid; }
-  .warning, .gap-summary { background: #fff !important; }
+  .warning { background: #fff !important; }
   footer { padding: 1rem 0 !important; }
 }

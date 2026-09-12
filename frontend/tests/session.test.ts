@@ -1,10 +1,63 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
+import type { Command } from '../src/api';
+import { draftFacts } from '../src/money';
 import { initialState, reducer } from '../src/session';
 import { scenario, settings, snapshot } from './fixtures';
 
-describe('session snapshot and draft reducer', () => {
+describe('session snapshot and command reducer', () => {
+  it.each<{ operation: Command['operation']; message: string }>([
+    { operation: { type: 'replaceFacts', facts: draftFacts(snapshot()) },
+      message: 'Your figures are saved. 1 planning assumption(s) remain saved; 0 need fresh consent. The preview is cleared.' },
+    { operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '20', status: 'exact' } } },
+      message: 'Your corrections are saved. 1 planning assumption(s) remain saved; 0 need fresh consent. The preview is cleared.' },
+    { operation: { type: 'rejectPreview', previewId: 'preview-one' },
+      message: 'Your decision not to use this proposal is saved. No payments or account changes have been made.' },
+  ])('confirms $operation.type after an uncertain save using the returned snapshot', ({ operation, message }) => {
+    const saved = { ...snapshot(), revision: 1, sequence: 2, accepted: scenario('accepted'), preview: scenario() };
+    let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
+    state = reducer(state, { type: 'pending', command: { commandId: 'confirmation', expectedRevision: 1, operation } });
+    state = reducer(state, { type: 'failure', uncertain: true, message: 'Your save is not confirmed.' });
+    const confirmed = { ...saved, revision: 2, sequence: 3, preview: null,
+      facts: operation.type === 'updateFacts' ? { ...saved.facts, opening: { amountPaise: 2000, status: 'exact' as const } } : saved.facts,
+      rejectedProposals: operation.type === 'rejectPreview' ? [{ id: saved.preview.id, adjustments: saved.preview.adjustments }] : [],
+    };
+    state = reducer(state, { type: 'saved', snapshot: confirmed });
+    expect(state.snapshot).toBe(confirmed);
+    expect(state.snapshot?.accepted).toBe(saved.accepted);
+    expect(state.pending).toBeNull();
+    expect(state.busy).toBe(false);
+    expect(state.messageKind).toBe('status');
+    expect(state.message).toBe(message);
+  });
+  it('reports a saved correction without granting fresh consent or inventing results', () => {
+    const saved = { ...snapshot(), revision: 1, sequence: 2, accepted: scenario('accepted'), preview: scenario() };
+    let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
+    state = reducer(state, { type: 'pending', command: { commandId: 'correction', expectedRevision: 1,
+      operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '20', status: 'exact' } } } } });
+    const corrected = { ...saved, revision: 2, sequence: 3, preview: null, accepted: null,
+      invalidatedAssumptions: [{ eventId: 'optional:2026-09-27', reason: 'Confirm a fresh proposal.' }] };
+    state = reducer(state, { type: 'saved', snapshot: corrected });
+    expect(state.snapshot).toBe(corrected);
+    expect(state.pending).toBeNull();
+    expect(state.message).toBe('Your corrections are saved. 0 planning assumption(s) remain saved; 1 need fresh consent. The preview is cleared.');
+    expect(state.messageKind).toBe('status');
+  });
+  it('reports an explicit proposal rejection while preserving previously accepted assumptions', () => {
+    const saved = { ...snapshot(), revision: 1, sequence: 2, accepted: scenario('accepted'), preview: scenario() };
+    let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
+    state = reducer(state, { type: 'pending', command: { commandId: 'rejection', expectedRevision: 1,
+      operation: { type: 'rejectPreview', previewId: saved.preview.id } } });
+    const rejected = { ...saved, revision: 2, sequence: 3, preview: null,
+      rejectedProposals: [{ id: saved.preview.id, adjustments: saved.preview.adjustments }] };
+    state = reducer(state, { type: 'saved', snapshot: rejected });
+    expect(state.snapshot).toBe(rejected);
+    expect(state.snapshot?.accepted).toBe(saved.accepted);
+    expect(state.pending).toBeNull();
+    expect(state.message).toBe('Your decision not to use this proposal is saved. No payments or account changes have been made.');
+    expect(state.messageKind).toBe('status');
+  });
   it('clears a known failed command but preserves its preview, facts and saved consent until an explicit discard', () => {
     const accepted = scenario('accepted'); accepted.adjustments[0].acceptedRevision = 1;
     const saved = { ...snapshot(), revision: 1, sequence: 2, accepted, preview: scenario() };
@@ -49,12 +102,10 @@ describe('session snapshot and draft reducer', () => {
     expect(state.messageKind).toBe('status');
     expect(state.message).toBe('');
     expect(state.pending).toBe(command);
-    expect(reducer(state, { type: 'cancel' })).toBe(state);
   });
-  it('applies a clock refresh without changing facts or making the draft stale', () => {
+  it('applies a clock refresh without changing facts or their revision', () => {
     const saved = { ...snapshot(), revision: 2, sequence: 3 };
     let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
-    state = reducer(state, { type: 'edit' });
     const refreshed = { ...saved, sequence: 4, plan: { ...saved.plan, evaluatedOn: '2026-09-12',
       decisionAssessment: { ...saved.plan.decisionAssessment, nextQuestionId: null, nextActionId: 'reconcile',
         actions: [{ id: 'reconcile', kind: 'reconcileStatus' as const, recordIds: [], beforeDate: '2026-09-12',
@@ -64,7 +115,6 @@ describe('session snapshot and draft reducer', () => {
     expect(state.snapshot?.plan.decisionAssessment?.nextActionId).toBe('reconcile');
     expect(state.snapshot?.facts).toEqual(saved.facts);
     expect(state.snapshot?.revision).toBe(2);
-    expect(state.draft?.conflict).toBe(false);
     expect(reducer(state, { type: 'snapshot', snapshot: saved })).toBe(state);
     expect(reducer(state, { type: 'snapshot', snapshot: refreshed })).toBe(state);
   });
@@ -96,15 +146,14 @@ describe('session snapshot and draft reducer', () => {
     accepted.adjustments[0].acceptedRevision = 1;
     const saved = { ...snapshot(), revision: 1, sequence: 2, accepted, preview: scenario() };
     let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
-    state = reducer(state, { type: 'edit' });
     state = reducer(state, { type: 'pending', command: { commandId: 'correct', expectedRevision: 1,
-      operation: { type: 'replaceFacts', facts: state.draft!.facts } } });
+      operation: { type: 'updateFacts', changes: { expectedRevision: 1, opening: { amount: '20.10', status: 'exact' } } } } });
     const corrected = { ...saved, revision: 2, sequence: 3, preview: null };
     state = reducer(state, { type: 'saved', snapshot: corrected });
     expect(state.snapshot?.accepted).toEqual(accepted);
     expect(state.snapshot?.preview).toBeNull();
-    expect(state.draft).toBeNull();
-    expect(state.message).toBe('Your figures are saved. 1 planning assumption(s) remain saved; 0 need fresh consent. The preview is cleared.');
+    expect(state.pending).toBeNull();
+    expect(state.message).toBe('Your corrections are saved. 1 planning assumption(s) remain saved; 0 need fresh consent. The preview is cleared.');
   });
   it('reports affected occurrences without clearing unaffected assumptions on a live correction', () => {
     const accepted = scenario('accepted');
@@ -129,42 +178,40 @@ describe('session snapshot and draft reducer', () => {
       expect(reducer(state, { type: 'snapshot', snapshot: value })).toBe(state);
     }
   });
-  it('preserves draft and base revision during live corrections and reconnects', () => {
+  it('preserves a pending correction and its base revision during live corrections and reconnects', () => {
     let state = reducer(initialState, { type: 'loaded', settings, snapshot: snapshot() });
-    state = reducer(state, { type: 'edit' });
-    const facts = { ...state.draft!.facts, opening: { status: 'exact' as const, amount: '20.10' } };
-    state = reducer(state, { type: 'draft', facts });
+    const command: Command = { commandId: 'correction', expectedRevision: 0,
+      operation: { type: 'updateFacts', changes: { expectedRevision: 0, opening: { status: 'exact', amount: '20.10' } } } };
+    const original = structuredClone(command);
+    state = reducer(state, { type: 'pending', command });
+    state = reducer(state, { type: 'failure', uncertain: true, message: 'Retry' });
     state = reducer(state, { type: 'connection', connection: 'reconnecting' });
     state = reducer(state, { type: 'snapshot', snapshot: { ...snapshot(), revision: 1, sequence: 1 } });
-    expect(state.draft).toEqual({ facts, baseRevision: 0, conflict: true });
-    state = reducer(state, { type: 'reconcile' });
-    expect(state.draft).toEqual({ facts, baseRevision: 1, conflict: false });
-    state = reducer(state, { type: 'useSaved' });
-    expect(state.draft?.facts.opening.amount).toBeNull();
+    expect(state.pending).toBe(command);
+    expect(state.pending).toEqual(original);
+    expect(state.snapshot?.revision).toBe(1);
+    expect(state.snapshot?.facts.opening.amountPaise).toBeNull();
   });
-  it('locks an uncertain command and rejects editing or cancel until its outcome is known', () => {
+  it('retains an uncertain correction until confirmation without rolling back newer facts', () => {
     let state = reducer(initialState, { type: 'loaded', settings, snapshot: snapshot() });
-    state = reducer(state, { type: 'edit' });
-    const command = { commandId: 'id', expectedRevision: 0, operation: { type: 'replaceFacts' as const, facts: state.draft!.facts } };
+    const command: Command = { commandId: 'id', expectedRevision: 0,
+      operation: { type: 'updateFacts', changes: { expectedRevision: 0, opening: { amount: '20', status: 'exact' } } } };
     state = reducer(state, { type: 'pending', command });
     state = reducer(state, { type: 'failure', uncertain: true, message: 'Retry' });
     expect(state.pending).toBe(command);
-    expect(reducer(state, { type: 'cancel' })).toBe(state);
-    expect(reducer(state, { type: 'draft', facts: { ...command.operation.facts, reserve: '10' } })).toBe(state);
     state = reducer(state, { type: 'snapshot', snapshot: { ...snapshot(), sequence: 3, revision: 3 } });
     state = reducer(state, { type: 'saved', snapshot: { ...snapshot(), sequence: 1, revision: 1 } });
     expect(state.snapshot?.revision).toBe(3);
     expect(state.pending).toBeNull();
-    expect(state.draft).toBeNull();
   });
-  it('keeps draft on terminal events but explicit deletion clears everything', () => {
-    let state = reducer(initialState, { type: 'loaded', settings, snapshot: snapshot() });
-    state = reducer(state, { type: 'edit' });
+  it('keeps saved facts on terminal events but explicit deletion clears the session', () => {
+    const saved = snapshot();
+    let state = reducer(initialState, { type: 'loaded', settings, snapshot: saved });
     state = reducer(state, { type: 'terminal', phase: 'expired', message: 'Expired' });
-    expect(state.draft).not.toBeNull();
+    expect(state.snapshot).toBe(saved);
     state = reducer(state, { type: 'deleted' });
     expect(state.phase).toBe('empty');
     expect(state.snapshot).toBeNull();
-    expect(state.draft).toBeNull();
+    expect(state.pending).toBeNull();
   });
 });

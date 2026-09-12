@@ -7,7 +7,7 @@ import { Dialog } from './Dialog';
 import { GoogleSignIn } from './Login';
 import { dismiss, notify } from './Toast';
 
-export function Account({ retentionHours }: { retentionHours: number | undefined }) {
+export function Account() {
   const auth = useAuth();
   const user = auth.session!.user;
   const [name, setName] = useState(user.displayName);
@@ -61,6 +61,7 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
     try {
       const saved = await api.account.update(displayName);
       if (!mounted.current || epoch !== authEpoch()) return;
+      if (saved.id !== user.id) throw new Error('The saved profile could not be confirmed.');
       auth.updateUser(saved); setName(saved.displayName);
       notify({ id: 'account:save', title: 'Your name is saved.', severity: 'success', duration: 6000 });
     } catch (reason) {
@@ -95,28 +96,27 @@ export function Account({ retentionHours }: { retentionHours: number | undefined
   }
 
   return <section className="account-page" aria-labelledby="account-heading">
-    <header className="page-heading"><p className="eyebrow">Your profile</p><h1 id="account-heading" tabIndex={-1}>Your account</h1></header>
-    <div className="account-layout">
-      <section className="card" aria-labelledby="profile-heading"><h2 id="profile-heading">How should we address you?</h2>
-        <form onSubmit={event => { event.preventDefault(); void save(); }}>
+    <div className="account-content">
+      <h1 id="account-heading" tabIndex={-1}>Settings</h1>
+      <form className="profile-form" aria-label="Display name" onSubmit={event => { event.preventDefault(); void save(); }}>
           <label htmlFor="display-name">Display name</label>
-          <input id="display-name" autoComplete="nickname" value={name} disabled={busy} aria-invalid={!!error} aria-describedby={error ? 'name-error' : undefined}
-            onChange={event => { setName(event.target.value); setError(''); }} />
+          <div className="profile-field">
+            <input id="display-name" autoComplete="nickname" value={name} disabled={busy} aria-invalid={!!error} aria-describedby={error ? 'name-error' : undefined}
+              onChange={event => { setName(event.target.value); setError(''); }} />
+            <button className="primary" disabled={busy || name === user.displayName}>{busy && !deleting ? 'Saving…' : 'Save'}</button>
+          </div>
           {error && <p id="name-error" className="field-error" role="alert">{error}</p>}
-          <button className="primary" disabled={busy || name === user.displayName}>{busy && !deleting ? 'Saving…' : 'Save name'}</button>
-        </form>
-        <div className="google-identity"><h3>Signed in with Google</h3><dl>
-          <div><dt>Google name</dt><dd>{user.googleName}</dd></div><div><dt>Email</dt><dd>{user.email}</dd></div>
-        </dl><p className="hint">These details come from Google and can’t be edited here. Your display name only changes in this app.</p></div>
+      </form>
+      <section className="account-info" aria-labelledby="identity-heading">
+        <h2 id="identity-heading">Account <span>Google</span></h2>
+        <dl>
+          <div><dt>Email</dt><dd>{user.email}</dd></div>
+          {user.googleName && <div><dt>Google name</dt><dd>{user.googleName}</dd></div>}
+        </dl>
       </section>
-      <div className="account-details"><section className="card"><h2>Your sign-in and saved plan</h2>
-        <p>You can stay signed in for up to 7 days. Signing out ends this app session, not other independent browser sign-ins.</p>
-        <p>{retentionHours === undefined ? 'Figures and plans have a separate, shorter retention period.' : `Figures and plans are kept for ${retentionHours} hours, separately from your sign-in.`} Download a plan you want to keep.</p>
-      </section>
-      <section className="card account-delete" aria-labelledby="delete-heading"><h2 id="delete-heading">Delete app account</h2>
-        <p>Permanently delete your figures, plan, assumptions and every app login session.</p>
+      <section className="account-delete" aria-label="Account deletion">
         <button className="quiet danger" disabled={busy} onClick={() => { setDeleting(true); setConfirmation(''); setDeleteFailed(false); setRequiresSignin(false); }}>Delete app account</button>
-      </section></div>
+      </section>
     </div>
     <Dialog open={deleting} title="Delete your app account?" onClose={() => { if (!pending.current) setDeleting(false); }} actions={!requiresSignin && <>
       <button disabled={busy} onClick={() => { if (!pending.current) setDeleting(false); }}>Keep account</button>
