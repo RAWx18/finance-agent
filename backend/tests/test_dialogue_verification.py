@@ -271,13 +271,17 @@ async def test_cases_use_explicit_financial_input_and_isolated_state(
     for index, row in enumerate(rows):
         request = requests[index * 2].args[0]
         assert request.tool_choice == "required"
-        assert request.get_messages()[-1] == {"role": "user", "content": row["user"]}
+        assert [message for message in request.get_messages() if message["role"] == "user"][-1] == {
+            "role": "user",
+            "content": row["user"],
+        }
         following = requests[index * 2 + 1].args[0]
         assert following.tool_choice == "auto"
-        assert following.get_messages()[-1] == {
+        assert {
             "role": "developer",
             "content": verify_dialogue.response_guidance(row["canonical"]),
-        }
+        } in following.get_messages()
+        assert following.get_messages()[-1]["content"].startswith(verify_dialogue.WRITE_GUIDANCE)
         if row["turn"] == 1:
             assert len(request.get_messages()) == 2
             state = json.loads(request.get_messages()[0]["content"].split("\n", 1)[1])

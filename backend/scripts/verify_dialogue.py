@@ -24,6 +24,7 @@ from app.store import Store
 from app.voice_tools import (
     AFTER_TOOLS,
     TOOL_DEFINITIONS,
+    WRITE_GUIDANCE,
     VoiceTools,
     canonical,
     conversation,
@@ -266,6 +267,15 @@ async def verify(output: Path, selected: list[str]) -> None:
                                         ),
                                     }
                                 )
+                            if tools.writes:
+                                messages.append(
+                                    {
+                                        "role": "developer",
+                                        "content": WRITE_GUIDANCE
+                                        + "\n"
+                                        + json.dumps(tools.write_context()),
+                                    }
+                                )
                             request = LLMContext(
                                 messages,
                                 tools=context.tools,
@@ -325,14 +335,17 @@ async def verify(output: Path, selected: list[str]) -> None:
                             for call in calls.values():
                                 arguments = json.loads(call["arguments"])
                                 result = await tools.invoke(call["name"], arguments, call["id"])
-                                needs_tools = result.get("code") == "invalidFacts"
+                                needs_tools = (
+                                    result.get("code") == "invalidFacts"
+                                    and call["name"] != "retry_write"
+                                )
                                 if result.get("code"):
                                     snapshot = await store.get(case)
                                     refresh(snapshot)
                                     result = {
+                                        "saved": False,
                                         **result,
                                         "currentState": canonical(snapshot),
-                                        "saved": False,
                                     }
                                 row["tools"].append(
                                     {

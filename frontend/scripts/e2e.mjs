@@ -22,16 +22,26 @@ const server = spawn('uv', ['run', '--project', backend, '--locked', 'uvicorn', 
 });
 let runner;
 function stop() { runner?.kill('SIGTERM'); server.kill('SIGTERM'); }
+server.stdout.resume();
+server.stderr.resume();
 process.once('SIGINT', stop);
 process.once('SIGTERM', stop);
 try {
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Isolated test backend did not start')), 30000);
-    server.once('error', (error) => { clearTimeout(timer); reject(error); });
-    server.once('exit', (code) => { clearTimeout(timer); reject(new Error(`Backend exited ${code}`)); });
-    server.stderr.on('data', (chunk) => {
-      if (chunk.toString().includes('Uvicorn running on')) { clearTimeout(timer); resolve(); }
-    });
+    let checking = false;
+    const timer = setTimeout(() => { clearInterval(probe); reject(new Error('Isolated test backend did not start')); }, 30000);
+    const probe = setInterval(async () => {
+      if (checking) return;
+      checking = true;
+      try {
+        const response = await fetch(`${origin}/health/ready`, { signal: AbortSignal.timeout(1000) });
+        await response.body?.cancel();
+        if (response.ok) { clearTimeout(timer); clearInterval(probe); resolve(); }
+      } catch { /* The server may not be listening until startup completes. */ }
+      finally { checking = false; }
+    }, 100);
+    server.once('error', (error) => { clearTimeout(timer); clearInterval(probe); reject(error); });
+    server.once('exit', (code) => { clearTimeout(timer); clearInterval(probe); reject(new Error(`Backend exited ${code}`)); });
   });
   console.log(`Isolated authenticated backend ready at ${origin}; storage and Google identity are synthetic.`);
   if (process.argv.includes('--serve')) {

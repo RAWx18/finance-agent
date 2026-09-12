@@ -121,6 +121,7 @@ def browser_app():
     @asynccontextmanager
     async def observed_lifespan(app):
         """Install recognition observation for the app lifespan and restore it during cleanup."""
+
         async def observe():
             """Retain pipelines, attach model request capture, and record rooms for cleanup."""
             while True:

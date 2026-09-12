@@ -121,7 +121,6 @@ async def verify(phase, initial_wait=False):
         raise FileNotFoundError("Build the current frontend before verification")
     server = browser = logs = None
     failures = []
-    ready = asyncio.Event()
     result = 1
     with tempfile.TemporaryDirectory(prefix="finance-continuous-") as directory:
         samples = Path(directory) / "samples.json"
@@ -138,6 +137,10 @@ async def verify(phase, initial_wait=False):
                         "thirty days. I have no income, no other essential expenses, no optional "
                         "spending, and no loans or credit card payments. Please give me my "
                         "thirty-day plan using those facts."
+                    )
+                    payload["samples"]["summary"] = (
+                        "Please summarize my whole thirty-day plan for me in detail, including "
+                        "every amount, every date, what I should do, and what it depends on."
                     )
                 async with aiohttp.ClientSession(
                     timeout=aiohttp.ClientTimeout(total=25),
@@ -201,18 +204,38 @@ async def verify(phase, initial_wait=False):
                 )
 
                 async def drain():
-                    """Drain server logs, signal readiness, and retain bounded failure metadata."""
+                    """Drain server logs and retain bounded failure metadata."""
                     while line := await server.stderr.readline():
-                        if b"Uvicorn running on" in line:
-                            ready.set()
                         if category := failure_category(line):
                             failures.append(category)
                             del failures[:-12]
-                    ready.set()
+                        if any(
+                            marker in line
+                            for marker in (
+                                b"Voice stopped call=",
+                                b"Voice lifecycle call=",
+                                b"Voice response paused source=",
+                                b"Speech synthesis canceled code=",
+                                b"Voice watcher failed call=",
+                                b'"severity": "warning"',
+                                b'"severity": "error"',
+                                b'"level": "warning"',
+                                b'"level": "error"',
+                            )
+                        ):
+                            print(line.decode("utf-8", errors="replace").rstrip(), flush=True)
 
                 logs = asyncio.create_task(drain())
-                async with asyncio.timeout(35):
-                    await ready.wait()
+                # Structured server logs carry no fixed banner; readiness is observed over HTTP.
+                async with asyncio.timeout(35), aiohttp.ClientSession() as probe:
+                    while server.returncode is None:
+                        try:
+                            async with probe.get(origin + "/health/ready") as response:
+                                if response.status == 200:
+                                    break
+                        except aiohttp.ClientError:
+                            pass
+                        await asyncio.sleep(0.25)
                 if server.returncode is not None:
                     raise RuntimeError("Isolated server stopped")
                 browser = await asyncio.create_subprocess_exec(

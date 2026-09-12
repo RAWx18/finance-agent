@@ -106,6 +106,7 @@ def browser_app():
     @asynccontextmanager
     async def observed_lifespan(app):
         """Run the lifecycle monitor inside the application lifespan and cancel it on exit."""
+
         async def monitor():
             """Sample the active call repeatedly so short-lived lifecycle states are retained."""
             while True:

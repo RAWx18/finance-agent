@@ -238,8 +238,8 @@ async function run(values) {
     { timeout: 35000, intervals: [100] }).toBe(true);
     await energy(after);
   };
-  const quiet = async (silenceMs = 1000) => {
-    await expect(page.locator('.voice-status')).toHaveText('Listening', { timeout: 45000 });
+  const quiet = async (silenceMs = 1000, statusTimeout = 45000) => {
+    await expect(page.locator('.voice-status')).toHaveText('Listening', { timeout: statusTimeout });
     await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
     await expect.poll(async () => {
       const last = Math.max(...(await media()).map(frame => frame.lastEnergyAt));
@@ -406,6 +406,24 @@ async function run(values) {
       await expect(page.locator('main')).toContainText('₹6,500.00');
       report('demoOutcome', { passed: true, closingPaise: saved.plan.closingPaise, outcome,
         dialogue: (await api('/__test/voice?diagnostics=true')).syntheticDialogue });
+
+      stage = 'planSummary';
+      const beforeSummary = await api('/__test/voice');
+      const summaryAt = Date.now();
+      await play([{ name: 'summary' }]);
+      await spoken(summaryAt);
+      await quiet(1500, 90000);
+      const afterSummary = await api('/__test/voice?diagnostics=true');
+      const summary = afterSummary.syntheticDialogue.filter(message => message.role === 'assistant').at(-1)?.content ?? '';
+      assert.equal(afterSummary.waiting, false, 'Plan summary entered Paused');
+      assert.equal(afterSummary.metrics.waiting ?? 0, beforeSummary.metrics.waiting ?? 0, 'Plan summary paused the response');
+      assert.equal(afterSummary.metrics.errors ?? 0, beforeSummary.metrics.errors ?? 0, 'Plan summary raised a pipeline error');
+      assert.ok(summary.length >= 300, `Plan summary too short to exercise long synthesis (${summary.length} chars)`);
+      assert.deepEqual((await api('/api/session')).facts, saved.facts, 'Plan summary changed saved facts');
+      report('planSummary', { passed: true, chars: summary.length, spokenMs: Date.now() - summaryAt,
+        publishedAudio: afterSummary.metrics.published_audio - beforeSummary.metrics.published_audio,
+        synthesisContexts: afterSummary.metrics.synthesis_contexts - beforeSummary.metrics.synthesis_contexts });
+      await checkpoint(stage);
     }
 
     stage = 'thinkingPause';
