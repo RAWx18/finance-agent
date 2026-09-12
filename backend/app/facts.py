@@ -133,6 +133,10 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
     decision = supplied.pop("decision", {})
     if decision is None:
         raise ValueError("Supply individual decision fields, not null decision")
+    if any(
+        key in decision and decision[key] != data["decision"][key] for key in ("intent", "concern")
+    ):
+        data["decision"]["scope_checked"] = False
     data["decision"] = Decision.model_validate({**data["decision"], **decision}).model_dump()
     responses = {item["event_id"]: item for item in data["provider_responses"]}
     for identity in supplied.pop("remove_provider_response_ids", []):

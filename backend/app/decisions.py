@@ -231,6 +231,19 @@ def assess(
         if item.dependency_key == action_dependency_key(facts, plan, item.action_id)
     }
     focus = set(facts.decision.focus_record_ids)
+    undated = plan.undated_impact
+    covered_from_cash = (
+        facts.opening.amount_paise is not None
+        and not facts.conflicts
+        and not any(
+            item.reason in {"missingAmount", "unknownTarget"}
+            and records[item.record_id].kind != "income"
+            for item in plan.budget_basis.unresolved_amounts
+        )
+        and (undated is None or not undated.unknown_record_ids)
+        and facts.opening.amount_paise
+        >= plan.outflow_paise + (undated.outflow_paise if undated else 0) + facts.reserve_paise
+    )
     dues = [event for event in plan.events if event.kind != "income" and event.amount_paise != 0]
     deadline = (
         plan.first_gap.date
@@ -483,19 +496,21 @@ def assess(
             plan.first_gap and field == "target" and record.amount.amount_paise is not None
         )
         uncertain_receipt = record.kind == "income" and record.reliability == "uncertain"
-        unneeded_receipt = (
-            record.kind == "income"
-            and facts.decision.intent == "specificDecision"
+        unneeded_receipt = record.kind == "income" and (
+            covered_from_cash
+            or facts.decision.intent == "specificDecision"
             and plan.closing_paise is not None
             and plan.first_gap is None
             and not plan.reserve_shortfall_paise
         )
+        optional_date = field == "schedule.date" and record.kind != "income" and covered_from_cash
         immediate = (
             (day is None or day <= deadline)
             and not minimum_short
             and not uncertain_receipt
             and (required or record.kind == "income" or record.id in focus)
             and not unneeded_receipt
+            and not optional_date
         )
         action = question(
             f"{record.id}:{field}",
@@ -537,13 +552,14 @@ def assess(
             else "This qualifies later spending, not the earlier required deadline.",
             day=day,
             immediate=immediate,
-            ask=not uncertain_receipt and not unneeded_receipt,
+            ask=not uncertain_receipt and not unneeded_receipt and not optional_date,
         )
         if (
             not immediate
             and not minimum_short
             and not uncertain_receipt
             and not unneeded_receipt
+            and not optional_date
             and (facts.decision.intent == "plan30Days" or required or record.id in focus)
         ):
             deferred.append(action)
@@ -685,14 +701,22 @@ def assess(
                 assessment.actions.append(action)
                 followups.append(action)
         elif any(
-            (event.amount_status == "estimate" and event.amount_basis != "assumed")
+            (
+                event.amount_status == "estimate"
+                and event.amount_basis != "assumed"
+                and (record.schedule.basis != "allowance" or record.amount.status == "estimate")
+            )
             or event.required_status == "estimate"
             for event in events
         ):
             selected = next(
                 event
                 for event in events
-                if (event.amount_status == "estimate" and event.amount_basis != "assumed")
+                if (
+                    event.amount_status == "estimate"
+                    and event.amount_basis != "assumed"
+                    and (record.schedule.basis != "allowance" or record.amount.status == "estimate")
+                )
                 or event.required_status == "estimate"
             )
             field = (
@@ -765,8 +789,11 @@ def assess(
         ask = issue.code != "sameDayTiming" and not (
             issue.code == "uncertainDate"
             and affected is not None
-            and affected.kind == "income"
-            and affected.reliability == "uncertain"
+            and (
+                covered_from_cash
+                or affected.kind == "income"
+                and affected.reliability == "uncertain"
+            )
         )
         action = question(
             f"{issue.record_id or 'schedule'}:{issue.code}"
@@ -1279,7 +1306,7 @@ def assess(
             and bool(needs_scope)
             and not any(record.kind != "income" for record in facts.records)
         )
-        ask = any(
+        ask = not facts.decision.scope_checked and any(
             status in {"notDiscussed", "reported"}
             for status in (
                 scope.values()
@@ -1516,7 +1543,12 @@ def assess(
     }
     assessment.choices.sort(key=lambda item: choice_order[item.id])
 
-    qualified = bool(assessment.uncertainties or assessment.consequences or plan.projection_partial)
+    qualified = bool(
+        assessment.uncertainties
+        or assessment.consequences
+        or plan.projection_partial
+        or any(event.date_assumption or event.amount_status == "estimate" for event in plan.events)
+    )
     incomplete = list(
         dict.fromkeys(
             f"{records[item.record_id].label} "
@@ -1603,7 +1635,7 @@ def assess(
         )
     elif any(event.date_assumption for event in plan.events):
         summary = (
-            f"Reported amounts and estimated monthly timing leave {rupees(plan.closing_paise)} "
+            f"Reported amounts and assumed timing leave {rupees(plan.closing_paise)} "
             f"at period end, with a minimum balance of {rupees(plan.trough_paise)}. "
             "Pattern-based receipts are excluded until confirmed."
         )
@@ -1643,8 +1675,10 @@ def assess(
             summary += (
                 " Some amounts or occurrence counts remain unknown and may increase the need."
             )
-    if any(event.date_assumption for event in plan.events):
+    if any(records[event.record_id].schedule.pattern is not None for event in plan.events):
         summary += " Monthly-pattern dates are estimates; timing remains unconfirmed."
+    if any(records[event.record_id].schedule.basis == "allowance" for event in plan.events):
+        summary += " Recurring living costs use forecast timing, not confirmed payment dates."
     covered = (
         f"Reported opening cash is {rupees(facts.opening.amount_paise)}; payments and receipts "
         "have not been fully placed, so no available-to-spend amount is established."
@@ -1727,8 +1761,13 @@ def assess(
         conditions += " Unresolved amounts or dates prevent any available-to-spend conclusion."
     if undated is not None:
         conditions += " " + undated.qualification
-    if any(event.date_assumption for event in plan.events):
+    if any(records[event.record_id].schedule.pattern is not None for event in plan.events):
         conditions += " Monthly-pattern dates are calculated estimates, not confirmed due dates."
+    if any(records[event.record_id].schedule.basis == "allowance" for event in plan.events):
+        conditions += (
+            " Recurring allowances are per-occurrence forecasts. When no start was supplied, "
+            "the first occurrence is assumed at the plan start; actual spending timing may differ."
+        )
     if plan.income_comparisons:
         conditions += " Uncertain receipts are excluded; arrival comparisons are conditional."
     if any(issue.code == "monthlyBudget" for issue in plan.issues):
@@ -1761,6 +1800,16 @@ def assess(
         if qualified
         else "fits",
         readiness="qualified" if qualified else "ready",
+        plan_ready=selected_action.kind != "clarify"
+        and bool(
+            any(record.kind != "income" for record in facts.records)
+            or all(
+                status == "none"
+                for kind, status in facts.coverage.model_dump().items()
+                if kind != "income"
+            )
+            or answered.get("clarify:coverage") == "unavailable"
+        ),
         summary=summary,
         covered=covered,
         not_covered=not_covered,

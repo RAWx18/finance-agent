@@ -34,8 +34,8 @@ async def test_response_evidence_preserves_unknowns_and_uses_the_active_plan(sto
     guidance = response_guidance(canonical(saved))
     assert '"closingPaise":400000' in guidance
     assert '"troughPaise":400000' in guidance
-    assert "include one short plan-specific understanding question" in guidance
-    assert "do not repeat a check already answered accurately" in guidance
+    assert "Present the 30-day plan now" in guidance
+    assert "Finish without another intake" in guidance
     assert "ask after goodbye" in guidance
     assert await store.get("owner") == saved
 

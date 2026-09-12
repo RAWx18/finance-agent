@@ -1059,6 +1059,11 @@ export interface components {
              * @enum {string}
              */
             responsePreference: "standard" | "brief";
+            /**
+             * Scopechecked
+             * @default false
+             */
+            scopeChecked: boolean;
             /** Responses */
             readonly responses?: components["schemas"]["ActionResponse"][];
         };
@@ -1098,6 +1103,8 @@ export interface components {
             ambiguousRecordIds?: string[] | null;
             /** Responsepreference */
             responsePreference?: ("standard" | "brief") | null;
+            /** Scopechecked */
+            scopeChecked?: boolean | null;
         };
         /**
          * Deleted
@@ -1456,6 +1463,11 @@ export interface components {
              * @enum {string}
              */
             readiness: "ready" | "qualified";
+            /**
+             * Planready
+             * @default false
+             */
+            planReady: boolean;
             /** Summary */
             summary: string;
             /** Covered */

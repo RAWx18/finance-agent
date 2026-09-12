@@ -66,7 +66,8 @@ async def test_clarification_then_correction_keeps_current_thirty_day_outcome(st
     saved = await store.get("owner")
     rent = saved.facts.records[0]
     assert saved.facts.decision.responses == []
-    assert any(
+    assert any(item.id == f"{rent.id}:schedule.date" for item in saved.workspace.issues)
+    assert not any(
         question.action_id == f"clarify:{rent.id}:schedule.date"
         for question in saved.workspace.questions
     )

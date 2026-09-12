@@ -461,6 +461,7 @@ class DecisionPatch(Model):
     focus_record_ids: list[RecordId] | None = Field(default=None, max_length=200)
     ambiguous_record_ids: list[RecordId] | None = Field(default=None, max_length=200)
     response_preference: Literal["standard", "brief"] | None = None
+    scope_checked: bool | None = None
 
 
 class FactsPatch(Model):
@@ -510,6 +511,7 @@ class Decision(Model):
     focus_record_ids: list[RecordId] = Field(default_factory=list, max_length=200)
     ambiguous_record_ids: list[RecordId] = Field(default_factory=list, max_length=200)
     response_preference: Literal["standard", "brief"] = "standard"
+    scope_checked: bool = False
     responses: list[ActionResponse] = Field(
         default_factory=list, max_length=1000, json_schema_extra={"readOnly": True}
     )
@@ -814,6 +816,7 @@ class Outcome(Model):
 
     branch: Literal["fits", "uncertain", "gap", "conflict"]
     readiness: Literal["ready", "qualified"]
+    plan_ready: bool = False
     summary: str
     covered: str
     not_covered: str

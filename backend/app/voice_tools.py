@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Callable
 from copy import deepcopy
+from datetime import date, timedelta
 from typing import Any, Literal, cast
 from uuid import UUID, uuid5
 
@@ -90,13 +91,14 @@ For each completed turn, choose the response in this order:
 4. Ask one decision-changing follow-up only when its answer is still obtainable and changes
     the near-term action or safety. Say briefly why it matters when that is not obvious.
     Choose financial intake from dialogue.questionOptions, not an unrelated missing field.
-5. Otherwise give the useful qualified conclusion or finish. Zero questions is often correct.
-Do not confuse checking understanding with checking category completeness. At the first useful
-conclusion, when an early gap, conditional income or minimum payment is easy to misunderstand,
-invite the consumer to say their first step in their own words. Ground that invitation in this
-plan's actual risk, not a rote 'Does that make sense?' or an exam. If they already accurately
-restated the plan, acknowledge and finish; do not ask another understanding question. A polite
-'okay' alone is not evidence they understood, but never force a check after they say goodbye.
+5. When outcome.planReady is true, deliver the current 30-day plan and finish without another
+    intake or routine understanding question. Explain the result, the key dated action and
+    material assumptions; qualification does not mean the plan is unfinished. No extra tool
+    is needed to generate a plan: activePlan is already recalculated after every saved change.
+Do not confuse checking understanding with checking category completeness. Explain material
+risks clearly in the plan, without routinely requiring the consumer to restate it before finishing.
+If they accurately restated the plan, acknowledge and finish. A polite 'okay' is not financial
+confirmation or consent, and does not require another check. Respect goodbye or a request to stop.
 When they explicitly say they are confused, explain one consequence simply, then ask one
 plan-specific understanding question about their next step or what must be true before acting.
 Choose the next step OR its condition, not both in one question. This replaces a financial
@@ -200,9 +202,19 @@ Speak the engine's net INR separately from the original currency, rate and fee. 
 foreign-currency digits into a rupee amount or write a duplicate converted-INR income record.
 Only income supports conversion. A sparse scalar correction retains source terms; conversion:null
 explicitly replaces foreign terms with an INR amount when the user actually reports that change.
-A monthly living-cost total is not automatically one payment on an invented date. Clarify the
-unpaid amounts and when money is needed. Use monthlyBudget only after the consumer explicitly
-chooses an evenly-per-day forecast of a calendar-month essential or optional spending budget.
+For ordinary recurring living costs such as groceries or travel, capture the reported amount
+and daily, weekly, fortnightly (every two weeks), or monthly recurrence with schedule.basis
+'allowance'. If no start was reported, omit date: the backend derives a conservative sequence
+from the fixed plan start and labels that timing as assumed. Do not ask for each shopping date.
+This is an amount per occurrence, not a prorated spending rate: a 30-day window starting today
+can contain five weekly or three fortnightly occurrences. Explain the returned count/assumption,
+never silently use four weeks. Honor a supplied start, count, end or variable amounts; a finite
+sequence still needs its actual origin. 'Biweekly' can mean twice a week or every two weeks;
+clarify only if context does not settle that meaning. Do not invent twice-weekly support.
+Use basis 'payment' for contractual bills, rent, instalments, subscriptions, committed costs
+and automatic debits. Never turn these into daily budgets or assumed actual due dates.
+Use monthlyBudget only for an explicitly evenly-per-day calendar-month spending budget;
+ordinary monthly allowance instead forecasts one monthly occurrence from the plan start.
 When a consumer gives a monthly timing pattern, preserve it as schedule.pattern instead of
 inventing a reported date. 'On the first each month' uses {kind:'dayOfMonth',day:1};
 'around month-end' uses {kind:'monthEnd'}. Set recurrence:'monthly' and omit date; the backend
@@ -343,8 +355,13 @@ conversation order. Only workspace.actions and workspace.choices are current sup
 When dialogue.purpose is explainNextStep or offerChoice, do not replace that help with later
 workspace.questions or a completeness interview. Keep missing details as qualifications.
 If the current purpose is checking for other commitments, ask for one next payment or expense,
-not all categories at once. At conclusion, one brief 'Anything important missing?' is enough;
-respect an explicit none or unavailable answer without asking the categories separately.
+not all categories at once. Make at most one brief contextual check for important omissions.
+When the user answers that check, including by supplying another expense, save
+decision.scopeChecked:true with scopeEvidence quoting that answer in the same update_facts.
+This records the check, NOT category completeness: do not mark unmentioned categories none or
+reviewed. Keep remaining scope qualified and produce the plan once material details are known.
+Do not reset scopeChecked for corrections or gradual additions; only a genuinely different goal
+reopens the check. Explicit none or unavailable answers must not trigger a category interview.
 Correct guidance takes priority over minimizing questions. Ask another question when it can change
 the safe action, timing, affordability, or the qualification of your explanation; never because
 the schema has a field. Do not interview every category before helping with a known urgent gap.
@@ -467,6 +484,32 @@ def response_guidance(state: dict[str, Any]) -> str:
         + json.dumps(
             {
                 "revision": state["snapshot"]["revision"],
+                "planReady": outcome["planReady"] if outcome else False,
+                "periodStart": state["snapshot"]["anchorDate"],
+                "periodThrough": (
+                    date.fromisoformat(state["snapshot"]["endDateExclusive"]) - timedelta(days=1)
+                ).isoformat(),
+                "unconfirmedCategories": [
+                    kind
+                    for kind, status in state["snapshot"]["facts"]["coverage"].items()
+                    if status not in {"none", "reviewed"}
+                ],
+                "recurringAllowances": [
+                    {
+                        "label": record["label"],
+                        "recurrence": record["schedule"]["recurrence"],
+                        "dates": [
+                            event["date"]
+                            for event in plan["events"]
+                            if event["recordId"] == record["id"]
+                        ],
+                        "occurrences": sum(
+                            event["recordId"] == record["id"] for event in plan["events"]
+                        ),
+                    }
+                    for record in state["snapshot"]["facts"]["records"]
+                    if record["schedule"]["basis"] == "allowance"
+                ],
                 "decisionConcern": state["snapshot"]["facts"]["decision"]["concern"],
                 "questionOptions": state["dialogue"]["questionOptions"],
                 "projectionPartial": plan["projectionPartial"],
@@ -489,17 +532,18 @@ def response_guidance(state: dict[str, Any]) -> str:
             "category or optional detail. An explicit stop, inability to answer, or request "
             "to explain takes precedence; never repeat an answered or unavailable question "
             "and do not append a second question."
-            if state["dialogue"]["questionOptions"]
-            else "\nGive the useful conclusion and its next step simply. If this is the first "
-            "completed explanation, include one short plan-specific understanding question "
-            "about that step or its condition, not a financial intake question. Check the "
-            "heard dialogue: do not repeat a check already answered accurately, turn every "
-            "correction into another check, or ask after goodbye. If the user is confused, "
-            "simplify that one point before checking."
-            if outcome
-            and outcome["branch"] != "conflict"
-            and state["snapshot"]["facts"]["records"]
-            and state["dialogue"]["purpose"] == "explainNextStep"
+            if state["dialogue"]["questionOptions"] and not (outcome and outcome["planReady"])
+            else "\nPresent the 30-day plan now: the current result, the most useful next action "
+            "and its timing, and the material assumptions. Finish without another intake, "
+            "generic category or routine understanding question. A qualified plan is still "
+            "a useful conclusion. Do not replay saves or generate a separate calculation. "
+            "Use periodThrough as the inclusive last day and each allowance's own occurrence "
+            "count, never all events. Unconfirmed categories may contain more costs or income; "
+            "never say they are absent or assume none. Do not tell the user to keep the entire "
+            "closing balance as a buffer: only their explicit reserve is a reserve instruction. "
+            "Speak briefly in plain English without markdown or a ledger readout. "
+            "If the user explicitly asks for an explanation, address it; never ask after goodbye."
+            if outcome and outcome["planReady"]
             else "\nUse only the relevant clarification or choice; do not append a second question."
         )
     )
@@ -683,6 +727,13 @@ class VoiceFacts(FactsPatch):
         "current user clause explicitly confirming its absence or completeness. Omit "
         "unmentioned categories; a validation error does not establish absence.",
     )
+    scope_evidence: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Quote the current user's answer to the contextual missing-items check "
+        "when setting decision.scopeChecked:true. An additional expense is a valid answer; "
+        "this does not establish category completeness or absence.",
+    )
 
 
 TOOL_DEFINITIONS: tuple[tuple[str, type[Model], str], ...] = (
@@ -717,6 +768,10 @@ TOOL_DEFINITIONS: tuple[tuple[str, type[Model], str], ...] = (
         "Explicit category absence uses coverage:none, not placeholder records. Each supplied "
         "none/reviewed category requires coverageEvidence quoting the current user's explicit "
         "category confirmation. Omit unmentioned categories even when repairing an error. "
+        "Use schedule.basis:allowance for recurring living-cost forecasts; omit unreported "
+        "dates so the backend derives and labels assumed occurrences. Bills/debts stay payment. "
+        "After an answer to the one missing-items check, use decision.scopeChecked:true and "
+        "scopeEvidence quoting that current answer, without claiming all categories complete. "
         "Merges require confirmed duplicate IDs "
         "and explicit reason. Calculated totals and acceptance cannot be written here.",
     ),
@@ -753,6 +808,7 @@ def canonical(snapshot: Snapshot) -> dict[str, Any]:
         question
         for question in workspace.questions
         if action is not None
+        and not (outcome and outcome.plan_ready)
         and (
             question.action_id == action.id
             or action.kind == "clarify"
@@ -847,6 +903,15 @@ class VoiceTools:
     async def update_facts(self, arguments: dict[str, Any], tool_call_id: str) -> dict[str, Any]:
         """Validate and commit a fact patch with a call-scoped idempotent command identity."""
         request = VoiceFacts.model_validate(arguments)
+        if request.decision is not None and request.decision.scope_checked is True:
+            evidence = " ".join((request.scope_evidence or "").casefold().split())
+            if not evidence or evidence not in " ".join(self.user_turn.casefold().split()):
+                raise Problem(
+                    422,
+                    "invalidFacts",
+                    "scopeChecked needs scopeEvidence quoting the current user's answer to "
+                    "the missing-items check. Omit it if no answer was given.",
+                )
         if request.coverage is not None:
             for kind, status in request.coverage.model_dump(exclude_unset=True).items():
                 if status not in {"none", "reviewed"}:
@@ -864,7 +929,7 @@ class VoiceTools:
                         "infer absence or ask again about already supplied facts.",
                     )
         patch = FactsPatch.model_validate(
-            request.model_dump(exclude={"coverage_evidence"}, exclude_unset=True)
+            request.model_dump(exclude={"coverage_evidence", "scope_evidence"}, exclude_unset=True)
         )
         result = await self.store.command(
             self.owner,

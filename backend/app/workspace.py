@@ -503,6 +503,8 @@ def evidence(
                 if event.amount_paise is None
                 else "conditionalReceipt"
                 if not event.included and event.kind == "income"
+                else "spendingForecast"
+                if record.schedule.basis == "allowance"
                 else "monthlyPattern"
                 if event.date_assumption is not None
                 else "monthlyBudget"
@@ -568,10 +570,14 @@ def evidence(
         assumptions.append(
             "proposedAdjustments" if projection_ref == "preview.plan" else "acceptedAdjustments"
         )
-    if any(event.amount_basis == "budget" for event in plan.events):
+    if any(
+        records[event.record_id].schedule.recurrence == "monthlyBudget" for event in plan.events
+    ):
         assumptions.append("monthlyBudgetEvenDailyForecastActualMonthLength")
-    if any(event.date_assumption for event in plan.events):
+    if any(records[event.record_id].schedule.pattern is not None for event in plan.events):
         assumptions.append("reportedMonthlyPatternEstimatedDatesNoArrears")
+    if any(records[event.record_id].schedule.basis == "allowance" for event in plan.events):
+        assumptions.append("recurringAllowanceForecastTiming")
     if any(event.source is not None for event in plan.events):
         assumptions.append("currencyConversionReportedRateAndFeeOnly")
     trough_date = (
@@ -704,6 +710,7 @@ def evidence(
             for item in excluded
         }
         qualifications = []
+        forecast_records: set[str] = set()
         for item in selected:
             source = records.get(item.record_id or "")
             occurrence = events.get(item.event_id or "")
@@ -720,7 +727,15 @@ def evidence(
                 )
             reason = excluded_reasons.get(item.id)
             if occurrence and occurrence.date_assumption:
-                qualifications.append(f"{label}: {occurrence.date_assumption}.")
+                if source is None or source.schedule.basis != "allowance":
+                    qualifications.append(f"{label}: {occurrence.date_assumption}.")
+                elif source.id not in forecast_records:
+                    qualifications.append(
+                        f"{label}: {source.schedule.recurrence} spending forecast; "
+                        "amounts apply per occurrence and are not prorated. "
+                        "Unreported start timing is assumed from the plan start."
+                    )
+                    forecast_records.add(source.id)
             if reason:
                 if (
                     occurrence is not None
@@ -767,7 +782,10 @@ def evidence(
                     )
             if occurrence and occurrence.amount_basis == "budget":
                 qualifications.append(
-                    f"Uses {label}{amount_text} per day: estimated share of a monthly budget, "
+                    f"Uses {label}{amount_text} per {source.schedule.recurrence} occurrence: "
+                    "spending forecast, not a contractual bill."
+                    if source and source.schedule.basis == "allowance"
+                    else f"Uses {label}{amount_text} per day: estimated share of a monthly budget, "
                     "not a bill."
                 )
             elif occurrence and occurrence.amount_basis == "assumed":

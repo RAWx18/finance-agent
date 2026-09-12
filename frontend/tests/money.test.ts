@@ -66,7 +66,7 @@ describe('exact money boundaries', () => {
   });
   it('preserves decision and reported provider evidence when converting a saved picture to editable inputs', () => {
     const saved = snapshot();
-    saved.facts.decision = { intent: 'specificDecision', concern: 'Can I cover rent before salary?', focusRecordIds: ['rent'], responsePreference: 'brief' };
+    saved.facts.decision = { intent: 'specificDecision', concern: 'Can I cover rent before salary?', focusRecordIds: ['rent'], responsePreference: 'brief', scopeChecked: false };
     saved.facts.providerResponses = [{ eventId: 'rent:2026-09-13', status: 'reportedTerms', reportedOn: '2026-09-11', paymentDate: '2026-09-20',
       payment: { amountPaise: 123401, status: 'estimate' }, cost: { amountPaise: null, status: 'unknown' }, dependencyKey: 'server-owned' }];
     const facts = draftFacts(saved);

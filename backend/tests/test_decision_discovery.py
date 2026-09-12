@@ -87,11 +87,11 @@ async def test_cash_and_income_do_not_answer_the_outing_decision(discovery, stor
 
 async def test_next_commitment_answer_selects_its_missing_detail(discovery, store):
     """Follow the supplied bill's material missing date rather than repeating cash or income."""
-    discovery.user_turn = "Rent is 10000 rupees, still unpaid."
+    discovery.user_turn = "Rent is 22000 rupees, still unpaid."
     await discovery.update_facts(
         {
             "expectedRevision": 3,
-            "records": [{"kind": "essential", "label": "Rent", "amount": money("10000")}],
+            "records": [{"kind": "essential", "label": "Rent", "amount": money("22000")}],
         },
         "rent",
     )
