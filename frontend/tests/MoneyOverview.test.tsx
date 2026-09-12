@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router';
 import { expect, it, vi } from 'vitest';
 import { MoneyOverview } from '../src/MoneyOverview';
 import { MoneyChart } from '../src/MoneyChart';
+import { financialText } from '../src/money';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
 
 const controls = { blocked: false, onEdit: vi.fn(), onChecks: vi.fn(), onCommand: vi.fn() };
@@ -22,7 +23,7 @@ it('shows server totals with the first and largest shortfalls, not a misleading 
   expect(metrics).toHaveTextContent('Closing forecast₹10,000');
   expect(metrics).toHaveTextContent('Not a spending allowance');
   const attention = screen.getByRole('region', { name: 'What needs attention' });
-  expect(within(attention).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
+  expect(within(attention).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
   expect(within(attention).getByLabelText('First shortfall')).toHaveTextContent('₹7,000First shortfall · 13 Sept');
   expect(attention).not.toHaveTextContent('payments fit');
   expect(document.querySelector('.money-overview-footnotes')).not.toHaveTextContent(/^0$/);
@@ -30,6 +31,27 @@ it('shows server totals with the first and largest shortfalls, not a misleading 
   const details = screen.getByRole('dialog', { name: 'Plan details' });
   expect(within(details).getByText('Largest shortfall').parentElement).toHaveTextContent('₹16,000 · 18 Sept');
   expect(details).toHaveTextContent('The first and largest shortfalls are not amounts to add together.');
+});
+
+it('shows formatted qualifications once beside closing rather than repeating them in attention', () => {
+  const saved = planningSnapshot();
+  saved.facts.records[0].amount.status = 'estimate';
+  saved.plan.events[0].amountStatus = 'estimate';
+  saved.workspace!.results!.find(result => result.id === 'closing')!.state = 'estimated';
+  for (const result of saved.workspace!.results!.filter(result => ['closing', 'firstGap'].includes(result.id))) {
+    result.qualifications = ['Uses estimated Rent (INR 12000.00) on 2026-09-13.'];
+  }
+  render(<MemoryRouter><MoneyOverview {...controls} snapshot={saved} /></MemoryRouter>);
+  const closing = document.querySelector('.money-metric-closing') as HTMLElement;
+  expect(closing).toHaveTextContent('Closing forecast₹10,000');
+  expect(within(closing).getByText('Uses estimated Rent (₹12,000) on 13 Sept 2026.')).toBeVisible();
+  expect(closing).toHaveTextContent('Includes estimates · Not a spending allowance');
+  expect(screen.getAllByText('Uses estimated Rent (₹12,000) on 13 Sept 2026.')).toHaveLength(1);
+  expect(screen.getAllByText(/Not a spending allowance/)).toHaveLength(1);
+  const attention = screen.getByRole('region', { name: 'What needs attention' });
+  expect(attention).not.toHaveTextContent(/Uses estimated Rent|Not a spending allowance/);
+  expect(within(attention).getByLabelText('First shortfall')).toHaveTextContent('₹7,000');
+  expect(attention).toHaveTextContent('Next step Contact the provider before the due date.');
 });
 
 it('preserves same-day low balances in the graph before a later receipt', () => {
@@ -122,7 +144,7 @@ it('keeps a reserve breach distinct from missing details and cash shortage', () 
   saved.workspace!.actions = [];
   render(<MemoryRouter><MoneyOverview {...controls} snapshot={saved} /></MemoryRouter>);
   const attention = screen.getByRole('region', { name: 'What needs attention' });
-  expect(within(attention).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome.summary);
+  expect(within(attention).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome.summary));
   expect(attention).toHaveTextContent('Cash buffer at risk: ₹2,000 below your ₹5,000 buffer · 13 Sept. Separate from payment shortfalls.');
   expect(within(attention).queryByLabelText('First shortfall')).not.toBeInTheDocument();
   expect(attention).not.toHaveTextContent('details still need');

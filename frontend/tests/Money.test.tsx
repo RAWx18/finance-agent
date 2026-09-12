@@ -32,6 +32,7 @@ beforeEach(() => {
   vi.spyOn(api, 'options').mockResolvedValue({ revision: 0, today: settings.today, options: [] });
 });
 
+/** Opens a Money route with a supplied snapshot and delivers its live-update fixture. */
 async function open(path = '/money', saved = planningSnapshot()) {
   vi.mocked(api.current).mockResolvedValue(saved);
   const router = appRouter(path); render(<RouterProvider router={router} />);
@@ -122,6 +123,26 @@ it('keeps all ordinary views on the accepted plan, never the preview', async () 
   await act(async () => { await router.navigate('/money/upcoming'); });
   expect(screen.getByRole('region', { name: 'Upcoming money and payments' })).toHaveTextContent('-₹3,456.00');
   expect(screen.getByRole('region', { name: 'Upcoming money and payments' })).not.toHaveTextContent('₹99,999.00');
+});
+
+it('removes the clear plan signal when live updates are lost and restores it only on a snapshot', async () => {
+  const saved = planningSnapshot();
+  saved.plan.firstGap = null; saved.plan.peakGapPaise = 0; saved.plan.reserveShortfallPaise = 0;
+  saved.plan.projectionPartial = false; saved.plan.budgetBasis.datedProjectionComplete = true;
+  saved.plan.decisionAssessment!.outcome!.branch = 'fits';
+  saved.plan.decisionAssessment!.outcome!.readiness = 'ready';
+  await open('/money', saved);
+  const summary = screen.getByRole('region', { name: 'What needs attention' });
+  expect(summary).toHaveAttribute('data-tone', 'clear');
+  act(() => Stream.instances[0].onerror?.());
+  expect(screen.getByText('Updates paused · showing your saved plan')).toBeVisible();
+  expect(summary).toHaveAttribute('data-tone', 'neutral');
+  expect(screen.getByRole('button', { name: 'Correct starting cash' })).toBeDisabled();
+  act(() => Stream.instances[0].onopen?.());
+  expect(summary).toHaveAttribute('data-tone', 'neutral');
+  act(() => Stream.instances[0].emit('snapshot', saved));
+  expect(summary).toHaveAttribute('data-tone', 'clear');
+  expect(api.save).not.toHaveBeenCalled();
 });
 
 it('separates required, intended-including-minimum and outstanding debt; absence is not unknown or zero', async () => {
@@ -439,6 +460,7 @@ it('distinguishes loading, empty and failed reads, with no automatic data creati
 });
 
 // Supplied eligible actions model the server filter; questions require their matching action.
+/** Projects a cloned fixture with test-selected actions and their matching questions and choices. */
 function moneyProjection(source: Snapshot, eligibleIds?: string[]): Snapshot {
   const saved = projectWorkspace(structuredClone(source));
   const assessment = (saved.accepted?.plan ?? saved.plan).decisionAssessment;

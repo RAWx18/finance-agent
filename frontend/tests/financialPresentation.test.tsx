@@ -158,7 +158,7 @@ it('labels estimated calculations in the live card and its explanation', async (
   const { unmount } = render(<FinancialContext snapshot={saved} locked={false} stale={false} proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
   const status = screen.getByRole('region', { name: 'Financial status' });
   expect(within(status).getByLabelText('Projected closing cash')).toHaveTextContent('Includes estimates');
-  expect(status).toHaveTextContent('Plan is incomplete · Not a spending allowance');
+  expect(status).toHaveTextContent('Dates and remaining costs can change this picture. Not a spending allowance.');
   expect(status).not.toHaveTextContent('Uses estimated Rent (INR 12000.00).');
   unmount();
   render(<ResultDetails snapshot={saved} result={result} />);

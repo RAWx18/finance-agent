@@ -3,6 +3,7 @@
 import type { Snapshot } from './api';
 import { cardDate, cardMoney } from './cardFields';
 
+/** Presents conditional comparisons for undated payments and unconfirmed income. */
 export function PlanningPossibilities({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const impact = plan.undatedImpact;

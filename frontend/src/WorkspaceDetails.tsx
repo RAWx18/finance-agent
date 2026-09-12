@@ -49,6 +49,8 @@ const assumptions: Record<string, string> = {
   proposedAdjustments: 'Includes the proposed changes; they are not saved.', acceptedAdjustments: 'Includes saved planning assumptions, not completed actions.',
   monthlyBudgetEvenDailyForecastActualMonthLength: budgetDescription,
   currencyConversionReportedRateAndFeeOnly: 'INR income uses only your reported original amount, exchange rate and INR deduction. No live rate is fetched.',
+  reportedMonthlyPatternEstimatedDatesNoArrears: 'Dates are calculated estimates from your reported monthly pattern. Earlier unpaid payments are not inferred.',
+  undatedPaymentWhatIfNotAccepted: 'What-if only: one eligible payment per undated item, if unpaid and due in this period. Not a maximum or an accepted change.',
 };
 export const reasons: Record<string, string> = {
   reportedOpening: 'Reported opening cash', unknownOpening: 'Opening cash is unknown', reported: 'Reported amount',
@@ -63,18 +65,22 @@ export const reasons: Record<string, string> = {
   monthlyBudget: 'Monthly cash budget distributed across calendar days as an estimate',
   currencyConversion: 'INR receipt calculated from the original currency amount, reported rate and INR deduction',
   variableAmounts: 'The amount reported for this occurrence in the ordered schedule',
+  undatedWhatIf: 'Included only in the separate undated-payment comparison, not the dated balance',
+  unknownOccurrenceAmount: 'Amount or number of occurrences is unknown',
 };
 
+/** Describes unresolved receipt, amount, conversion, and timing details for income. */
 export function incomeChecks(record: Fact, occurrence?: MoneyInput): string[] {
   const amounts = occurrence ? [occurrence] : record.schedule.amounts?.length ? record.schedule.amounts : [moneyInput(record.amount)];
   return [record.reliability !== 'reliable' ? record.reliability === 'uncertain' ? 'Receipt is uncertain' : 'Receipt reliability is not confirmed' : null,
     amounts.some(amount => amount.status === 'unknown') ? 'Amount is unknown' : amounts.some(amount => amount.status === 'estimate') ? 'Amount is estimated' : null,
     amounts.some(amount => amount.conversion && (amount.conversion.rateStatus === 'unknown' || amount.conversion.rate === null)) ? 'Exchange rate is unknown' : amounts.some(amount => amount.conversion?.rateStatus === 'estimate') ? 'Exchange rate is estimated' : null,
     amounts.some(amount => amount.conversion && (amount.conversion.feeStatus === 'unknown' || amount.conversion.fee === null)) ? 'INR deduction is unknown' : amounts.some(amount => amount.conversion?.feeStatus === 'estimate') ? 'INR deduction is estimated' : null,
-    record.schedule.date === null ? 'Date is unknown' : record.schedule.certainty !== 'exact' ? 'Date is estimated or unconfirmed' : null,
+    record.schedule.pattern ? 'Calculated date from your monthly pattern, not confirmed' : record.schedule.date === null ? 'Date is unknown' : record.schedule.certainty !== 'exact' ? 'Date is estimated or unconfirmed' : null,
   ].filter((item): item is string => item !== null);
 }
 
+/** Explains a contribution's amount, qualifications, and inclusion in a calculated result. */
 function EvidenceRow({ item, snapshot, selected, reason }: { item: Contribution; snapshot: Snapshot; selected: boolean; reason?: string }) {
   const record = snapshot.facts.records.find(record => record.id === item.recordId);
   const event = (snapshot.accepted?.plan ?? snapshot.plan).events.find(event => event.id === item.eventId);
@@ -83,6 +89,7 @@ function EvidenceRow({ item, snapshot, selected, reason }: { item: Contribution;
     <strong>{record?.label ?? 'Opening cash'}</strong> · {!event && record?.schedule.amounts?.length ? 'Varies by occurrence' : money(item.amountPaise)}{item.date && <> · {dateLabel(item.date)}</>}
     {event?.source?.conversion && <p>{sourceDescription(event.source)}</p>}
     {event && <p>{amountStatus[event.amountStatus]} amount for this occurrence.</p>}
+    {event?.dateAssumption && <p>{event.dateAssumption}</p>}
     {event?.amountBasis === 'budget' && <p>Estimated daily budget share · not a payment due.</p>}
     <p>{selected ? 'Included in this result.' : 'Not counted in this result.'} {reasons[reason ?? item.reason] ?? 'Based on the reported item.'}</p>
     {checks.length > 0 && <p>{checks.join(' · ')}.</p>}
@@ -90,8 +97,10 @@ function EvidenceRow({ item, snapshot, selected, reason }: { item: Contribution;
   </li>;
 }
 
+/** Presents a result's calculation basis, contributing figures, unresolved checks, and assumptions. */
 export function ResultDetails({ result, snapshot, label = 'Why this result?' }: { result: WorkspaceResult; snapshot: Snapshot; label?: string }) {
   const workspace = snapshot.workspace!;
+  // Inclusion is result-specific: a receipt can support closing cash yet arrive too late for an earlier gap.
   const included = workspace.contributions!.filter(item => result.contributionIds.includes(item.id));
   const excluded = workspace.contributions!.filter(item => result.excludedIds.includes(item.id));
   const questions = workspace.issues?.filter(item => result.issueIds.includes(item.id)) ?? [];
@@ -108,6 +117,7 @@ export function ResultDetails({ result, snapshot, label = 'Why this result?' }: 
   </Details>;
 }
 
+/** Supports resolving conflicting reports with a selected report or a corrected value. */
 export function ConflictReview({ conflict, snapshot, blocked, onCommand }: {
   conflict: Conflict; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
@@ -120,6 +130,7 @@ export function ConflictReview({ conflict, snapshot, blocked, onCommand }: {
   if (selection.key !== key) setSelection({ key, id: '', other: false, value: '', status: 'exact' });
   const record = snapshot.facts.records.find(item => item.id === conflict.recordId);
   const label = `${record ? `${record.label} · ` : ''}${fieldLabels[conflict.field]}`;
+  /** Describes a conflicting amount or date and its reporting certainty. */
   const valueLabel = (value: Conflict['values'][number]) => `${conflict.field === 'schedule.date'
     ? value.date ? dateLabel(value.date) : 'Date unknown' : amountLabel({ amountPaise: value.amountPaise ?? null, status: value.status, source: value.source })} · ${value.status === 'estimate' ? 'Estimated' : 'Reported'}`;
   const selected = selection.key === key ? conflict.values.find(item => item.id === selection.id) : undefined;

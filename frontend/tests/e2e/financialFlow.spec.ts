@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import { expect } from '@playwright/test';
 import type { Snapshot } from '../../src/api';
+import { financialText } from '../../src/money';
 import { cleanup, command, dateAt, test } from './moneySupport';
 
 test('qualified cash becomes an actionable gap after a correction and survives reload', async ({ page, context }, info) => {
@@ -18,10 +19,12 @@ test('qualified cash becomes an actionable gap after a correction and survives r
     await page.goto('/money');
     const closing = page.locator('.money-metric-closing');
     await expect(closing).toContainText('₹9,000');
-    await expect(closing).toContainText('Excludes Rent and utilities (INR 33000.00): date unknown.');
+    await expect(closing).toContainText('Excludes Rent and utilities (₹33,000): date unknown.');
     await expect(closing).toContainText('Not a spending allowance');
     const attention = page.getByRole('region', { name: 'What needs attention', exact: true });
-    await expect(attention).toContainText(saved.plan.decisionAssessment!.outcome!.nextStep);
+    await expect(attention).toContainText(financialText(saved.plan.decisionAssessment!.outcome!.nextStep));
+    await expect(attention).not.toContainText('Excludes Rent and utilities');
+    await expect(page.locator('.money-overview').getByText('Excludes Rent and utilities (₹33,000): date unknown.', { exact: true })).toHaveCount(1);
     const download = await page.request.get('/api/session/export');
     expect(await download.text()).toContain('Excludes Rent and utilities (INR 33000.00): date unknown.');
     await expect(page.getByRole('link', { name: 'Download saved plan', exact: true })).toBeVisible();
@@ -34,9 +37,9 @@ test('qualified cash becomes an actionable gap after a correction and survives r
     await expect(attention.getByLabel('First shortfall', { exact: true })).toContainText('₹24,000');
     await expect(closing).toContainText('-₹24,000');
     await expect(closing).not.toContainText('date unknown');
-    await expect(attention).toContainText(saved.plan.decisionAssessment!.outcome!.nextStep);
+    await expect(attention).toContainText(financialText(saved.plan.decisionAssessment!.outcome!.nextStep));
     await page.reload();
-    await expect(attention).toContainText(saved.plan.decisionAssessment!.outcome!.nextStep);
+    await expect(attention).toContainText(financialText(saved.plan.decisionAssessment!.outcome!.nextStep));
     await expect(page.locator('.plan-expiry').first()).toContainText('Saved plan available until');
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     if (info.project.name === 'mobile') {
@@ -79,7 +82,7 @@ test('same-day timing remains advisory and grocery support does not invent a cre
       coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
       records: [{ id: 'food', label: 'Groceries', kind: 'essential', autoDebit: false, controllability: 'controllable', amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } }],
     } });
-    await expect(attention).toContainText(saved.plan.decisionAssessment!.outcome!.nextStep);
+    await expect(attention).toContainText(financialText(saved.plan.decisionAssessment!.outcome!.nextStep));
     await page.getByRole('button', { name: 'Explore support options', exact: true }).click();
     await expect(dialog).toContainText('Still needs funding; support is not confirmed.');
     await expect(dialog).not.toContainText(/payee declines|creditor|overdue bill/i);

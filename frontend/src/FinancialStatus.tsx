@@ -7,6 +7,7 @@ import { lastDate, recurrenceLabels } from './money';
 import { fieldLabels, reasons } from './WorkspaceDetails';
 import { PlanningPossibilities } from './PlanningPossibilities';
 
+/** Explains projected closing cash, unresolved details, and excluded figures. */
 export function FinancialStatus({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const closing = snapshot.workspace?.results?.find(result => result.id === 'closing');
@@ -21,6 +22,7 @@ export function FinancialStatus({ snapshot }: { snapshot: Snapshot }) {
   const excluded = snapshot.workspace?.contributions?.filter(item => closing.excludedIds.includes(item.id)
     && !dates.some(date => date.recordId === item.recordId)) ?? [];
   const needsAttention = partial || conflicting || unconfirmed || closing.amountPaise === null || issues.length > 0;
+  /** Describes an unresolved item's amount, certainty, and recurrence. */
   const amount = (item: typeof unresolved[number]) => {
     const record = snapshot.facts.records.find(record => record.id === item.recordId);
     return `${record?.label ?? 'Commitment'} ${record?.kind === 'income' ? '+' : ''}${record?.schedule.amounts?.length ? 'Varies by occurrence' : cardMoney(item.amount.amountPaise)}${item.amount.status === 'estimate' ? ' est.' : ''}${item.recurrence !== 'once' ? ` · ${recurrenceLabels[item.recurrence]}` : ''}`;

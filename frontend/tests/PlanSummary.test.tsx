@@ -4,11 +4,13 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { Snapshot } from '../src/api';
+import { financialText } from '../src/money';
 import { PlanSummary, ResultQualification } from '../src/PlanSummary';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
 import { projectWorkspace } from './workspace';
 
 // Qualifications match the backend financial-flow regression; they are supplied, not inferred by the view.
+/** Builds a partial forecast fixture with dated food spending and explicit undated-rent exclusions. */
 function partialSnapshot(): Snapshot {
   const saved = planningSnapshot();
   saved.facts.opening = { amountPaise: 1000000, status: 'exact' };
@@ -48,6 +50,7 @@ function partialSnapshot(): Snapshot {
   return saved;
 }
 
+/** Builds a fully dated cinema-expense fixture with a supplied fits outcome and known results. */
 function fundedSnapshot(): Snapshot {
   const saved = partialSnapshot();
   saved.facts.records = [{ ...saved.facts.records[0], label: 'Cinema', kind: 'optional', controllability: 'controllable' }];
@@ -83,27 +86,61 @@ describe('canonical plan summary', () => {
     const original = structuredClone(saved);
     render(<PlanSummary snapshot={saved} />);
     const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
-    expect(summary).toHaveTextContent('INR 9000.00');
-    expect(summary).toHaveTextContent('Incomplete forecast · Not a spending allowance');
-    expect(within(summary).getByText('Excludes Rent and utilities (INR 33000.00): date unknown.')).toBeVisible();
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
+    expect(summary).toHaveTextContent('₹9,000');
+    expect(summary).toHaveTextContent('Based on dated items · Not a spending allowance');
+    expect(within(summary).getByText('Excludes Rent and utilities (₹33,000): date unknown.')).toBeVisible();
     expect(summary).toHaveTextContent('Next step When are Rent and utilities due?');
     expect(summary).toHaveAttribute('data-tone', 'neutral');
     expect(summary).not.toHaveTextContent(/payments fit|ready|available to spend/i);
     expect(within(summary).queryByLabelText('First shortfall')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /review|finish|download/i })).not.toBeInTheDocument();
     await userEvent.click(within(summary).getByText('What this depends on', { selector: 'summary' }));
-    expect(within(summary).getByText(saved.plan.decisionAssessment!.outcome!.conditions)).toBeVisible();
-    expect(within(summary).getByText(saved.plan.decisionAssessment!.outcome!.revisit)).toBeVisible();
+    expect(within(summary).getByText(financialText(saved.plan.decisionAssessment!.outcome!.conditions))).toBeVisible();
+    expect(within(summary).getByText(financialText(saved.plan.decisionAssessment!.outcome!.revisit))).toBeVisible();
     expect(saved).toEqual(original);
+  });
+
+  it('formats canonical amounts and dates across the conclusion, action and dependencies without rewriting facts', async () => {
+    const saved = partialSnapshot();
+    Object.assign(saved.plan.decisionAssessment!.outcome!, {
+      summary: 'If Rent falls in this period, INR -24000.50 remains on 2026-09-14.',
+      conditions: 'Only INR 9000.25 is dated; Rent of INR 33000.75 is not yet dated.',
+      revisit: 'Recalculate by 2026-09-15 if INR 0.01 changes; no payment has been made.',
+    });
+    saved.workspace!.actions![0].question = 'Can Rent of INR 33000.75 be confirmed for 2026-09-14?';
+    const original = structuredClone(saved);
+    render(<PlanSummary snapshot={saved} />);
+    const summary = screen.getByRole('region', { name: 'What needs attention' });
+    expect(within(summary).getByRole('heading')).toHaveTextContent('If Rent falls in this period, -₹24,000.50 remains on 14 Sept 2026.');
+    expect(summary).toHaveTextContent('Next step Can Rent of ₹33,000.75 be confirmed for 14 Sept 2026?');
+    await userEvent.click(within(summary).getByText('What this depends on', { selector: 'summary' }));
+    expect(within(summary).getByText('Only ₹9,000.25 is dated; Rent of ₹33,000.75 is not yet dated.')).toBeVisible();
+    expect(within(summary).getByText('Recalculate by 15 Sept 2026 if ₹0.01 changes; no payment has been made.')).toBeVisible();
+    expect(summary).not.toHaveTextContent(/INR |2026-09-/);
+    expect(saved).toEqual(original);
+  });
+
+  it('allows qualification placement elsewhere without hiding the conclusion or next step', async () => {
+    const saved = partialSnapshot();
+    const { rerender } = render(<PlanSummary snapshot={saved} showQualifications={false} />);
+    const summary = screen.getByRole('region', { name: 'What needs attention' });
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
+    expect(summary).toHaveTextContent('Next step When are Rent and utilities due?');
+    expect(summary).not.toHaveTextContent(/Excludes Rent|Based on dated items|Not a spending allowance/);
+    await userEvent.click(within(summary).getByText('What this depends on', { selector: 'summary' }));
+    expect(within(summary).getByText(saved.plan.decisionAssessment!.outcome!.conditions)).toBeVisible();
+    rerender(<PlanSummary snapshot={saved} />);
+    expect(within(summary).getByText('Excludes Rent and utilities (₹33,000): date unknown.')).toBeVisible();
+    expect(summary).toHaveTextContent('Not a spending allowance');
   });
 
   it.each(['opening', 'reliableIncome', 'uncertainIncome'])('does not attach excluded rent to the %s result', id => {
     const saved = partialSnapshot();
     const { rerender, container } = render(<ResultQualification snapshot={saved} id="closing" />);
-    expect(container).toHaveTextContent('Excludes Rent and utilities (INR 33000.00): date unknown.');
+    expect(container).toHaveTextContent('Excludes Rent and utilities (₹33,000): date unknown.');
     rerender(<ResultQualification snapshot={saved} id={id} />);
-    expect(container).not.toHaveTextContent(/Rent and utilities|33000|Excludes|Not a spending allowance/);
+    expect(container).not.toHaveTextContent(/Rent and utilities|33,000|Excludes|Not a spending allowance/);
     expect(saved.workspace!.results!.find(result => result.id === id)!.qualifications).toEqual([]);
   });
 
@@ -135,8 +172,12 @@ describe('canonical plan summary', () => {
       'Excludes Rent and utilities (INR 33000.00): date unknown.',
     ];
     render(<ResultQualification snapshot={saved} id="closing" />);
-    expect(screen.getByText('Incomplete forecast · Includes estimates · Not a spending allowance')).toBeVisible();
-    for (const qualification of result.qualifications) expect(screen.getByText(qualification)).toBeVisible();
+    expect(screen.getByText('Based on dated items · Includes estimates · Not a spending allowance')).toBeVisible();
+    for (const qualification of [
+      "Includes only Card's required/minimum payment (₹500); intended payment amount unknown.",
+      'Uses estimated Food (₹1,000).',
+      'Excludes Rent and utilities (₹33,000): date unknown.',
+    ]) expect(screen.getByText(qualification)).toBeVisible();
   });
 
   it.each(['listed', 'missing', 'no selection'] as const)('shows only the selected supported workspace action (%s)', state => {
@@ -151,12 +192,12 @@ describe('canonical plan summary', () => {
     const summary = screen.getByRole('region', { name: 'What needs attention' });
     expect(summary).not.toHaveTextContent('Do not substitute a free-text next step.');
     if (state === 'listed') {
-      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(selected.question);
-      expect(summary).not.toHaveTextContent(other.question);
+      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(financialText(selected.question));
+      expect(summary).not.toHaveTextContent(financialText(other.question));
     }
     else {
-      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(other.question);
-      expect(summary).not.toHaveTextContent(selected.question);
+      expect(within(summary).getByText('Next step').parentElement).toHaveTextContent(financialText(other.question));
+      expect(summary).not.toHaveTextContent(financialText(selected.question));
     }
   });
 
@@ -172,8 +213,8 @@ describe('canonical plan summary', () => {
     saved.preview.plan.decisionAssessment!.nextActionId = 'preview:food';
     const { rerender } = render(<PlanSummary snapshot={saved} />);
     let summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
-    expect(summary).not.toHaveTextContent(/Preview would|Saved assumptions included|10000\.00/);
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
+    expect(summary).not.toHaveTextContent(/Preview would|Saved assumptions included|₹10,000/);
     const accepted = structuredClone(saved);
     accepted.revision++; accepted.sequence++; accepted.preview!.sourceRevision = accepted.revision;
     accepted.accepted = scenario('accepted');
@@ -188,13 +229,13 @@ describe('canonical plan summary', () => {
     accepted.workspace!.results!.find(result => result.id === 'closing')!.qualifications = ['Uses accepted Cinema (INR 500.00) on 2026-09-12: not a completed payment.'];
     rerender(<PlanSummary snapshot={accepted} />);
     summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(accepted.accepted.plan.decisionAssessment!.outcome!.summary);
-    expect(summary).toHaveTextContent('Uses accepted Cinema (INR 500.00) on 2026-09-12: not a completed payment.');
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(accepted.accepted.plan.decisionAssessment!.outcome!.summary));
+    expect(summary).toHaveTextContent('Uses accepted Cinema (₹500) on 12 Sept 2026: not a completed payment.');
     expect(summary).toHaveTextContent('Saved assumptions included · No payments made');
-    expect(summary).not.toHaveTextContent(/Preview would|10000\.00|9000\.00/);
+    expect(summary).not.toHaveTextContent(/Preview would|₹10,000|₹9,000/);
     expect(saved.plan.closingPaise).toBe(900000);
     rerender(<PlanSummary snapshot={saved} />);
-    expect(screen.getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
+    expect(screen.getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
     expect(screen.queryByText('Saved assumptions included · No payments made')).not.toBeInTheDocument();
   });
 
@@ -238,14 +279,14 @@ describe('canonical plan summary', () => {
     const original = structuredClone(saved);
     render(<PlanSummary snapshot={saved} />);
     const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(saved.plan.decisionAssessment!.outcome!.summary);
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(saved.plan.decisionAssessment!.outcome!.summary));
     const timing = within(summary).getByLabelText('Timing risk');
     expect(timing).toHaveTextContent('₹6,000Timing risk · 14 Sept');
     expect(timing).toHaveTextContent('If payments leave before same-day income.');
     expect(timing).toHaveTextContent(remaining ? '₹2,000 still unfunded after included income.' : 'No remaining gap after included income; payment timing is not guaranteed.');
-    expect(summary).toHaveTextContent(action.question);
+    expect(summary).toHaveTextContent(financialText(action.question));
     expect(summary).toHaveTextContent('Before 14 Sept');
-    expect(summary).toHaveTextContent(saved.workspace!.results!.find(result => result.id === 'firstGap')!.qualifications![0]);
+    expect(summary).toHaveTextContent(remaining ? 'Excludes Salary (₹4,000): after this balance point.' : 'Excludes Salary (₹10,000): after this balance point.');
     expect(within(summary).queryByLabelText('First shortfall')).not.toBeInTheDocument();
     expect(summary).toHaveAttribute('data-tone', 'risk');
     expect(saved).toEqual(original);
@@ -276,8 +317,8 @@ describe('canonical plan summary', () => {
     saved.workspace!.results!.find(result => result.id === 'firstGap')!.qualifications = ['Excludes Salary (INR 25000.00): after this balance point.'];
     render(<PlanSummary snapshot={saved} />);
     const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent('Groceries: first shortfall INR 7000.00 on 2026-09-14.');
-    expect(summary).toHaveTextContent(action.question);
+    expect(within(summary).getByRole('heading')).toHaveTextContent('Groceries: first shortfall ₹7,000 on 14 Sept 2026.');
+    expect(summary).toHaveTextContent('Groceries needs ₹7,000 by 14 Sept 2026. Check available funds or seek essential-needs support before then.');
     expect(summary).toHaveTextContent('Essential-needs support is not confirmed.');
     expect(summary).not.toHaveTextContent(/creditor|payee|lender|agreed|approved|negotiate|paid/i);
   });
@@ -285,7 +326,7 @@ describe('canonical plan summary', () => {
   it('replaces the exclusion, current summary and action after a dated correction', () => {
     const saved = partialSnapshot();
     const { rerender } = render(<PlanSummary snapshot={saved} />);
-    expect(screen.getByText('Excludes Rent and utilities (INR 33000.00): date unknown.')).toBeVisible();
+    expect(screen.getByText('Excludes Rent and utilities (₹33,000): date unknown.')).toBeVisible();
     const corrected = structuredClone(saved); corrected.revision++; corrected.sequence++;
     corrected.facts.records[1].schedule = { date: '2026-09-14', recurrence: 'once', certainty: 'exact' };
     corrected.plan = { ...corrected.plan, projectionPartial: false, budgetBasis: { datedProjectionComplete: true, unresolvedAmounts: [] },
@@ -300,10 +341,10 @@ describe('canonical plan summary', () => {
     for (const result of corrected.workspace!.results!) result.qualifications = [];
     rerender(<PlanSummary snapshot={corrected} />);
     const summary = screen.getByRole('region', { name: 'What needs attention' });
-    expect(within(summary).getByRole('heading')).toHaveTextContent(corrected.plan.decisionAssessment!.outcome.summary);
+    expect(within(summary).getByRole('heading')).toHaveTextContent(financialText(corrected.plan.decisionAssessment!.outcome.summary));
     expect(within(summary).getByLabelText('First shortfall')).toHaveTextContent('₹24,000First shortfall · 14 Sept');
-    expect(summary).toHaveTextContent(action.question);
-    expect(summary).not.toHaveTextContent(/INR 9000\.00|Excludes Rent|date unknown|When are Rent and utilities due/);
+    expect(summary).toHaveTextContent(financialText(action.question));
+    expect(summary).not.toHaveTextContent(/₹9,000|Excludes Rent|date unknown|When are Rent and utilities due/);
     expect(summary).toHaveAttribute('data-tone', 'risk');
     expect(corrected.facts.records[1].id).toBe(saved.facts.records[1].id);
     corrected.revision++; corrected.sequence++;
@@ -317,10 +358,10 @@ describe('canonical plan summary', () => {
     projectWorkspace(corrected);
     for (const result of corrected.workspace!.results!) result.qualifications = [];
     rerender(<PlanSummary snapshot={structuredClone(corrected)} />);
-    expect(within(summary).getByRole('heading')).toHaveTextContent('Home rent: first shortfall INR 3000.00 on 2026-09-14.');
+    expect(within(summary).getByRole('heading')).toHaveTextContent('Home rent: first shortfall ₹3,000 on 14 Sept 2026.');
     expect(within(summary).getByLabelText('First shortfall')).toHaveTextContent('₹3,000First shortfall · 14 Sept');
-    expect(summary).toHaveTextContent(action.question);
-    expect(summary).not.toHaveTextContent(/Rent and utilities|24000|24,000|33000|Excludes/);
+    expect(summary).toHaveTextContent(financialText(action.question));
+    expect(summary).not.toHaveTextContent(/Rent and utilities|24,000|33,000|Excludes/);
   });
 
   it('does not advertise a ready state when updates are stale or a forecast remains qualified', () => {
@@ -334,7 +375,7 @@ describe('canonical plan summary', () => {
     expect(summary).toHaveTextContent('Not a spending allowance');
     rerender(<PlanSummary snapshot={{ ...saved, plan: { ...saved.plan, projectionPartial: true } }} />);
     expect(summary).toHaveAttribute('data-tone', 'neutral');
-    expect(summary).toHaveTextContent('Incomplete forecast');
+    expect(summary).toHaveTextContent('Based on dated items');
   });
 
   it('renders no conclusion for empty facts or an absent canonical outcome', () => {

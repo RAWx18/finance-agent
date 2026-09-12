@@ -3,6 +3,13 @@
 import type { FactsInput, MoneyInput, Snapshot } from './api';
 import type { components } from './contracts';
 
+/** Formats financial prose with readable rupee amounts and calendar dates. */
+export function financialText(text: string): string {
+  return text.replace(/INR (-?\d+(?:\.\d+)?)/g, (_, amount: string) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: Number.isInteger(Number(amount)) ? 0 : 2 }).format(Number(amount)))
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, day => dateLabel(day));
+}
+
+/** Converts a safe integer paise amount to an exact two-decimal rupee string. */
 export function decimal(paise: number): string {
   if (!Number.isSafeInteger(paise)) throw new Error('Money must be an exact integer.');
   const value = BigInt(paise);
@@ -10,6 +17,7 @@ export function decimal(paise: number): string {
   return `${value < 0n ? '-' : ''}${magnitude / 100n}.${(magnitude % 100n).toString().padStart(2, '0')}`;
 }
 
+/** Parses a non-negative decimal amount into paise within the supplied limit. */
 export function parseAmount(value: string, limit: number): bigint | null {
   if (!/^(0|[1-9][0-9]{0,12})(\.[0-9]{1,2})?$/.test(value)) return null;
   const [whole, fraction = ''] = value.split('.');
@@ -17,6 +25,7 @@ export function parseAmount(value: string, limit: number): bigint | null {
   return amount <= BigInt(limit) ? amount : null;
 }
 
+/** Creates an editable money input preserving reported source amounts and conversion terms. */
 export function moneyInput(value: components['schemas']['Money']): MoneyInput {
   return value.source ? structuredClone(value.source) : { amount: value.amountPaise === null ? null : decimal(value.amountPaise), status: value.status };
 }
@@ -27,6 +36,7 @@ export const recurrenceLabels: Record<components['schemas']['Schedule']['recurre
 };
 export const budgetDescription = 'An estimated cash budget spread evenly across each calendar month’s actual days, not a scheduled payment or lender due date. Only days within the plan and start/end dates count.';
 
+/** Describes a foreign-currency source amount and its reported conversion assumptions. */
 export function sourceDescription(source: MoneyInput): string {
   const conversion = source.conversion;
   if (!conversion) return '';
@@ -36,10 +46,12 @@ export function sourceDescription(source: MoneyInput): string {
     + `INR deduction: ${conversion.fee == null ? 'Unknown' : `₹${conversion.fee}`} · ${amountStatus[conversion.feeStatus]}`;
 }
 
+/** Labels a monetary value, retaining its source currency alongside calculated INR when applicable. */
 export function amountLabel(value: components['schemas']['Money']): string {
   return value.source?.conversion ? `${value.source.conversion.currency} ${value.source.amount ?? 'Unknown amount'} · Calculated INR: ${money(value.amountPaise)}` : money(value.amountPaise);
 }
 
+/** Summarizes a schedule's recurrence, timing pattern, limits, and varying amounts. */
 export function scheduleLabel(schedule: components['schemas']['Schedule']): string {
   return [recurrenceLabels[schedule.recurrence], schedule.pattern ? `Reported ${schedule.pattern.kind === 'dayOfMonth' ? `day ${schedule.pattern.day} of each month` : 'month-end pattern'} · generated dates remain estimates` : null,
     schedule.endDate ? `Through ${dateLabel(schedule.endDate)} (inclusive)` : null,
@@ -47,6 +59,7 @@ export function scheduleLabel(schedule: components['schemas']['Schedule']): stri
     schedule.amounts?.length ? `${schedule.amounts.length} ordered amounts · varies by occurrence` : null].filter(Boolean).join(' · ');
 }
 
+/** Prepares money inputs with explicit unknown amounts and conversion terms. */
 export function submittedMoney(value: MoneyInput): MoneyInput {
   return { ...value, amount: value.status === 'unknown' ? null : value.amount,
     ...(value.conversion ? { conversion: { ...value.conversion,
@@ -56,6 +69,7 @@ export function submittedMoney(value: MoneyInput): MoneyInput {
   };
 }
 
+/** Reports invalid amount or currency-conversion inputs within the supplied money limit. */
 export function moneyError(value: MoneyInput, limit: number): string | null {
   if (value.status !== 'unknown' && parseAmount(value.amount ?? '', limit) === null)
     return value.conversion ? 'Enter a non-negative original currency amount with up to two decimal places.' : 'Enter a non-negative rupee amount with up to two decimal places.';
@@ -69,6 +83,7 @@ export function moneyError(value: MoneyInput, limit: number): string | null {
   return null;
 }
 
+/** Creates editable financial facts from a saved snapshot. */
 export function draftFacts(snapshot: Snapshot): FactsInput {
   return {
     opening: moneyInput(snapshot.facts.opening),
@@ -93,22 +108,26 @@ const currency = new Intl.NumberFormat('en-IN', {
   style: 'currency', currency: 'INR', minimumFractionDigits: 2, maximumFractionDigits: 2,
 });
 
+/** Formats paise as an exact rupee currency label or marks an unknown amount. */
 export function money(paise: number | null): string {
   if (paise === null) return 'Unknown';
   // Intl's decimal-string input avoids precision loss even at the aggregate limit.
   return currency.format(decimal(paise) as unknown as number);
 }
 
+/** Formats a calendar date with its day, abbreviated month, and year. */
 export function dateLabel(value: string): string {
   return new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' })
     .format(new Date(`${value}T00:00:00Z`));
 }
 
+/** Returns the final included calendar date before an exclusive end date. */
 export function lastDate(endExclusive: string): string {
   const [year, month, day] = endExclusive.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day - 1)).toISOString().slice(0, 10);
 }
 
+/** Formats a timestamp as a date and time in the requested time zone. */
 export function timestamp(value: string, timezone: string): string {
   return new Intl.DateTimeFormat('en-IN', {
     day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: timezone,

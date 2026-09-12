@@ -3,9 +3,10 @@
 import type { ReactNode } from 'react';
 import type { Plan, Snapshot } from './api';
 import { cardDate, cardMoney } from './cardFields';
-import { timestamp } from './money';
+import { financialText, timestamp } from './money';
 import './planSummary.css';
 
+/** Explains a calculated result's certainty and limitations. */
 export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: string }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const result = snapshot.workspace?.results?.find(item => item.id === id);
@@ -16,10 +17,11 @@ export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: 
       : result?.state === 'uncertain' || result?.state === 'unresolved' ? 'Based on what you shared' : 'Forecast';
   return <span className="result-qualification">
     <span>{state}{estimated && ' · Includes estimates'}{id === 'closing' && ' · Not a spending allowance'}</span>
-    {qualifications.map(text => <span key={text}>{text}</span>)}
+    {qualifications.map(text => <span key={text}>{financialText(text)}</span>)}
   </span>;
 }
 
+/** Presents the first shortfall, distinguishing same-day timing exposure from remaining funding needs. */
 export function GapFigure({ plan }: { plan: Plan }) {
   if (!plan.firstGap) return null;
   const timing = plan.timingRisks?.find(item => item.date === plan.firstGap!.date);
@@ -32,7 +34,8 @@ export function GapFigure({ plan }: { plan: Plan }) {
   </div>;
 }
 
-export function PlanSummary({ snapshot, stale = false, children }: { snapshot: Snapshot; stale?: boolean; children?: ReactNode }) {
+/** Highlights the plan outcome, cash risks, qualifications, and next action. */
+export function PlanSummary({ snapshot, stale = false, showQualifications = true, children }: { snapshot: Snapshot; stale?: boolean; showQualifications?: boolean; children?: ReactNode }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const assessment = plan.decisionAssessment;
   const outcome = assessment?.outcome;
@@ -43,18 +46,18 @@ export function PlanSummary({ snapshot, stale = false, children }: { snapshot: S
     && plan.budgetBasis.datedProjectionComplete && !snapshot.facts.conflicts?.length;
   const reserve = assessment?.consequences?.find(item => item.kind === 'reserveBreach');
   return <section className="plan-summary" aria-label="What needs attention" data-tone={plan.firstGap || plan.reserveShortfallPaise ? 'risk' : ready ? 'clear' : 'neutral'}>
-    <h3>{outcome.summary}</h3>
+    <h3>{financialText(outcome.summary)}</h3>
     <GapFigure plan={plan} />
-    {plan.firstGap && <ResultQualification snapshot={snapshot} id="firstGap" />}
+    {showQualifications && <ResultQualification snapshot={snapshot} id={plan.firstGap ? 'firstGap' : 'closing'} />}
     {!!plan.reserveShortfallPaise && <p className="plan-reserve">Cash buffer at risk: {cardMoney(reserve?.amountPaise ?? plan.reserveShortfallPaise)} below your {cardMoney(snapshot.facts.reservePaise)} buffer{reserve?.date && <> · {cardDate(reserve.date)}</>}.{reserve && reserve.amountPaise !== plan.reserveShortfallPaise && <> Largest buffer shortfall: {cardMoney(plan.reserveShortfallPaise)}.</>} Separate from payment shortfalls.</p>}
-    {!plan.firstGap && <ResultQualification snapshot={snapshot} id="closing" />}
-    {action && <p className="plan-next"><strong>Next step</strong> {action.question}{action.beforeDate && <span className="plan-deadline">Before {cardDate(action.beforeDate)}</span>}</p>}
-    {!!outcome.conditions && <details className="plan-conditions"><summary>What this depends on</summary><p>{outcome.conditions}</p><p>{outcome.revisit}</p></details>}
+    {action && <p className="plan-next"><strong>Next step</strong> {financialText(action.question)}{action.beforeDate && <span className="plan-deadline">Before {cardDate(action.beforeDate)}</span>}</p>}
+    {!!outcome.conditions && <details className="plan-conditions"><summary>What this depends on</summary><p>{financialText(outcome.conditions)}</p><p>{financialText(outcome.revisit)}</p></details>}
     {snapshot.accepted && <p className="plan-basis">Saved assumptions included · No payments made</p>}
     {children}
   </section>;
 }
 
+/** Displays the saved plan's expiry in the requested time zone. */
 export function PlanExpiry({ snapshot, timezone = 'Asia/Kolkata' }: { snapshot: Snapshot; timezone?: string }) {
   return <p className="plan-expiry">Saved plan available until <time dateTime={snapshot.expiresAt}>{timestamp(snapshot.expiresAt, timezone)} ({timezone})</time>. Download a copy to keep it.</p>;
 }

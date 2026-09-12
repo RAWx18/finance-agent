@@ -6,6 +6,7 @@ import { expect, it } from 'vitest';
 import { FinancialStatus } from '../src/FinancialStatus';
 import { planningSnapshot } from './fixtures';
 
+/** Builds a starting-cash-only forecast fixture with undated rent and optional spending. */
 function undated() {
   const saved = planningSnapshot();
   saved.facts.opening = { amountPaise: 100000000, status: 'exact' };
@@ -27,9 +28,9 @@ it('shows the dated-only example without engine paragraphs or the assistant ques
   render(<FinancialStatus snapshot={saved} />);
   const status = screen.getByRole('region', { name: 'Financial status' });
   expect(within(status).getByLabelText('Projected closing cash')).toHaveTextContent('₹10,00,000');
-  expect(status).toHaveTextContent('Needs dates: Rent ₹30,000 · Weekend outings ₹2,000 est.');
+  expect(status).toHaveTextContent('Timing to check: Rent ₹30,000 · Weekend outings ₹2,000 est.');
   expect(status).toHaveTextContent('Starting cash only · No dated forecast yet');
-  expect(status).toHaveTextContent('Plan is incomplete · Not a spending allowance');
+  expect(status).toHaveTextContent('Dates and remaining costs can change this picture. Not a spending allowance.');
   await userEvent.click(within(status).getByText('Needs attention', { selector: 'summary' }));
   expect(status).not.toHaveTextContent(/The dated items leave|INR 1000000|full-period affordability|Excludes Rent|Incomplete forecast|Next step/);
   expect(status).not.toHaveTextContent(saved.plan.decisionAssessment!.outcome!.nextStep);
@@ -46,8 +47,8 @@ it('takes a corrected closing balance and remaining missing dates from the next 
   next.workspace!.results!.find(result => result.id === 'closing')!.amountPaise = 97000000;
   rerender(<FinancialStatus snapshot={next} />);
   expect(screen.getByLabelText('Projected closing cash')).toHaveTextContent('₹9,70,000');
-  expect(screen.getByText('Needs dates').parentElement).toHaveTextContent('Needs dates: Weekend outings ₹2,000 est.');
-  expect(screen.getByText('Needs dates').parentElement).not.toHaveTextContent('Rent');
+  expect(screen.getByText('Timing to check').parentElement).toHaveTextContent('Timing to check: Weekend outings ₹2,000 est.');
+  expect(screen.getByText('Timing to check').parentElement).not.toHaveTextContent('Rent');
 });
 
 it('does not mistake unknown opening or incomplete coverage for zero or a complete plan', () => {
@@ -58,8 +59,8 @@ it('does not mistake unknown opening or incomplete coverage for zero or a comple
   expect(screen.getByLabelText('Projected closing cash')).toHaveTextContent('Unknown');
   expect(screen.getByLabelText('Projected closing cash')).not.toHaveTextContent('₹0');
   expect(screen.getByText('Cash amount needed to project an end balance.')).toBeVisible();
-  expect(screen.getByText('Plan is incomplete · Not a spending allowance')).toBeVisible();
-  expect(screen.queryByText('Needs dates')).not.toBeInTheDocument();
+  expect(screen.getByText('Dates and remaining costs can change this picture. Not a spending allowance.')).toBeVisible();
+  expect(screen.queryByText('Timing to check')).not.toBeInTheDocument();
 });
 
 it('retains paise, estimates and conflicts without printing raw calculation qualifications', () => {
@@ -79,7 +80,7 @@ it('bounds the missing-date summary but keeps every record and recurring basis i
   saved.plan.budgetBasis.unresolvedAmounts.push({ recordId: 'food', reason: 'missingDate', amount: saved.facts.records[2].amount, recurrence: 'monthlyBudget' });
   saved.plan.budgetBasis.unresolvedAmounts.push(saved.plan.budgetBasis.unresolvedAmounts[0]);
   render(<FinancialStatus snapshot={saved} />);
-  expect(screen.getByText('Needs dates').parentElement).toHaveTextContent('+1 more');
+  expect(screen.getByText('Timing to check').parentElement).toHaveTextContent('+1 more');
   const food = screen.getByText(/Food budget ₹2,000 est./);
   expect(food).not.toBeVisible();
   await userEvent.click(screen.getByText('Needs attention', { selector: 'summary' }));
@@ -92,7 +93,7 @@ it('distinguishes missing debt amounts and intended payments from missing dates'
     { recordId: 'rent', reason: 'unknownTarget', amount: { amountPaise: 3000000, status: 'exact' }, recurrence: 'once' },
   ];
   render(<FinancialStatus snapshot={saved} />);
-  expect(screen.queryByText('Needs dates')).not.toBeInTheDocument();
+  expect(screen.queryByText('Timing to check')).not.toBeInTheDocument();
   expect(screen.getByText('Payment amounts still need checking.')).toBeVisible();
   await userEvent.click(screen.getByText('Needs attention', { selector: 'summary' }));
   expect(screen.getByText('Amount needed:').parentElement).toHaveTextContent('Rent Unknown');
@@ -107,7 +108,7 @@ it('does not invent a single amount for a variable series or count uncertain inc
   saved.workspace!.contributions = [{ id: 'bonus', recordId: 'outings', eventId: null, amountPaise: 200000, date: '2026-09-20', included: false, reason: 'conditionalReceipt', references: [] }];
   saved.workspace!.results!.find(result => result.id === 'closing')!.excludedIds = ['bonus'];
   render(<FinancialStatus snapshot={saved} />);
-  expect(screen.getByText('Needs dates').parentElement).toHaveTextContent('Rent Varies by occurrence');
+  expect(screen.getByText('Timing to check').parentElement).toHaveTextContent('Rent Varies by occurrence');
   await userEvent.click(screen.getByText('Needs attention', { selector: 'summary' }));
   expect(screen.getByText(/Bonus · ₹2,000 est./)).toHaveTextContent('20 Sept · Receipt is not confirmed enough to count on');
 });

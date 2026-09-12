@@ -20,6 +20,7 @@ import { PagedList } from './PagedList';
 import { MoneyPrint } from './MoneyPrint';
 import './moneyPage.css';
 
+/** Coordinates money-workspace views, corrections, checks, and saved-plan tools. */
 export function MoneyPage({ session, active, voiceBusy, onEditing }: {
   session: ReturnType<typeof useSession>; active: boolean; voiceBusy: boolean; onEditing: (editing: boolean) => void;
 }) {
@@ -39,7 +40,9 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
   const route = isMoneyRoute(pathname) ? pathname : '/money';
   const title = moneyRoutes[route];
   const notes = snapshot ? changeNotes(snapshot, snapshot.workspace?.change) : [];
+  /** Submits a workspace operation only while changes are permitted. */
   const command = async (operation: Parameters<typeof perform>[1]) => { if (!blocked && operation) return perform('save', operation); };
+  /** Opens a fact correction only while editing is permitted. */
   const openEdit = (target: EditTarget) => { if (!blocked) setEdit(target); };
   return <section className="money-page" hidden={!active} aria-labelledby="money-heading">
     <header className="money-heading"><div className="money-title">
@@ -62,7 +65,7 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
             {!!notes.length && <div className="money-update"><p role="status" className="sr-only">{notes[0]}</p><Details label="Recent changes"><PagedList label="Recent changes" className="money-checks" pageSize={6}>{notes.map(note => <li key={note}>{note}</li>)}</PagedList></Details></div>}
           </div>
           <div className="money-views" data-page={route} tabIndex={0} aria-label={`${title} details`} role="region">
-            {route === '/money' && <MoneyOverview snapshot={snapshot} blocked={blocked} onEdit={openEdit} onChecks={() => setChecks(true)} onCommand={command} />}
+            {route === '/money' && <MoneyOverview snapshot={snapshot} blocked={blocked} stale={stale} onEdit={openEdit} onChecks={() => setChecks(true)} onCommand={command} />}
             {['/money/income', '/money/spending', '/money/debts'].includes(route) && <MoneyRecords key={route} category={route === '/money/income' ? 'income' : route === '/money/debts' ? 'debts' : 'spending'} snapshot={snapshot} blocked={blocked} onEdit={openEdit} onCommand={command} />}
             {route === '/money/upcoming' && <MoneyUpcoming snapshot={snapshot} />}
             <div hidden={route !== '/money/changes'}><MoneyChanges key={snapshot.sessionId} snapshot={snapshot} settings={settings} active={active && route === '/money/changes'} blocked={blocked} pending={!!state.pending} onCommand={command} /></div>

@@ -68,6 +68,23 @@ it('explains same-day income after the gap witness without claiming it covered t
   expect(screen.getByRole('dialog')).toHaveTextContent('On the same day, payments come before income.');
 });
 
+it.each([
+  ['reportedMonthlyPatternEstimatedDatesNoArrears', 'Dates are calculated estimates from your reported monthly pattern. Earlier unpaid payments are not inferred.'],
+  ['undatedPaymentWhatIfNotAccepted', 'What-if only: one eligible payment per undated item, if unpaid and due in this period. Not a maximum or an accepted change.'],
+])('explains the known %s assumption without inventing a conditional receipt', async (assumption, explanation) => {
+  const saved = planningSnapshot();
+  const result = saved.workspace!.results!.find(item => item.id === 'closing')!;
+  result.assumptions.push(assumption);
+  const original = structuredClone(saved);
+  render(<ResultDetails result={result} snapshot={saved} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Why this result?' }));
+  const dialog = screen.getByRole('dialog', { name: 'Why: Projected closing cash' });
+  expect(within(dialog).getByText(explanation)).toBeVisible();
+  expect(dialog).toHaveTextContent('These are requirements, not completed payments.');
+  expect(dialog).not.toHaveTextContent(/Conditional receipt|arrival must be confirmed/);
+  expect(saved).toEqual(original);
+});
+
 it.each(['pastReceipt', 'outsideHorizon'] as const)('keeps the server %s exclusion in result evidence for a reliable exact receipt', async reason => {
   const saved = planningSnapshot();
   saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 1000000, status: 'exact' },

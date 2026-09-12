@@ -1,9 +1,24 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it } from 'vitest';
-import { decimal, draftFacts, lastDate, money, moneyInput, parseAmount } from '../src/money';
+import { decimal, draftFacts, financialText, lastDate, money, moneyInput, parseAmount } from '../src/money';
 import { exactNumbers } from '../src/api';
 import { planningSnapshot, settings, snapshot } from './fixtures';
+
+describe('financial text formatting', () => {
+  it.each([
+    ['Excludes Rent (INR 33000.00): date unknown.', 'Excludes Rent (₹33,000): date unknown.'],
+    ['Closing INR -123456.78 on 2026-09-14.', 'Closing -₹1,23,456.78 on 14 Sept 2026.'],
+    ['INR 12500.50 and INR 0.01 remain; INR -0.01 is unfunded.', '₹12,500.50 and ₹0.01 remain; -₹0.01 is unfunded.'],
+    ['INR 0.00, INR -24000.00 and INR 10000000.', '₹0, -₹24,000 and ₹1,00,00,000.'],
+    ['From 2024-02-29 through 2026-10-01.', 'From 29 Feb 2024 through 1 Oct 2026.'],
+    ['USD 100.50 · INR deduction unknown · no payment made.', 'USD 100.50 · INR deduction unknown · no payment made.'],
+    ['', ''],
+  ])('formats %j without changing its meaning', (text, expected) => {
+    expect(financialText(text)).toBe(expected);
+    expect(financialText(expected)).toBe(expected);
+  });
+});
 
 describe('exact money boundaries', () => {
   it('preserves date certainty and isolates authoritative conflict candidates in editable drafts', () => {

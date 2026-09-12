@@ -4,12 +4,14 @@ import { readFile } from 'node:fs/promises';
 import { expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import type { Snapshot } from '../../src/api';
+import { cardDate } from '../../src/cardFields';
 import { dateLabel } from '../../src/money';
 import { browse, checkClosing, cleanup, command, correct, dateAt, golden, test } from './moneySupport';
 
 test.describe.configure({ timeout: 55000 });
 test.afterEach(async ({ context }) => { await cleanup(context); });
 
+/** Preview a custom spending amount without accepting it into the plan. */
 async function preview(page: Page, amount = '0', label = 'Optional purchase') {
   await browse(page, '/money/changes');
   const custom = page.getByRole('button', { name: 'Choose custom changes', exact: true }); if (await custom.isVisible()) await custom.click();
@@ -23,6 +25,7 @@ async function preview(page: Page, amount = '0', label = 'Optional purchase') {
   await page.getByRole('button', { name: 'Preview selected changes' }).click(); expect((await response).ok()).toBe(true);
   await expect(page.getByRole('heading', { name: 'Spending change preview' })).toBeVisible();
 }
+/** Expand the initially collapsed calculations for both sides of a preview. */
 async function calculatedResults(page: Page) {
   const proposal = page.getByRole('region', { name: 'Spending change preview', exact: true });
   for (const name of ['Before · active plan', 'After · preview']) {
@@ -32,6 +35,7 @@ async function calculatedResults(page: Page) {
     await more.locator('summary').click(); await expect(more).toHaveAttribute('open', '');
   }
 }
+/** Accept the preview and verify its explicit, unconditional consent command. */
 async function accept(page: Page) {
   await page.getByRole('checkbox', { name: /I agree to the exact amounts/ }).check();
   const response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
@@ -59,7 +63,7 @@ test('preview keeps the original dated gaps and rejection leaves exports and pri
   await calculatedResults(page);
   await expect(before).toContainText('₹10,000.00'); await expect(after).toContainText('₹12,000.00');
   for (const section of [before, after]) {
-    await expect(section.getByText('First cash gap', { exact: true }).locator('..')).toContainText('₹7,000.00'); await expect(section).toContainText(dateLabel(dateAt(baseline.anchorDate, 2)));
+    await expect(section.getByLabel('First shortfall', { exact: true })).toHaveText(`₹7,000First shortfall · ${cardDate(dateAt(baseline.anchorDate, 2))}`);
     await expect(section.getByText('Largest cash gap', { exact: true }).locator('..')).toContainText('₹16,000.00'); await expect(section).toContainText(dateLabel(dateAt(baseline.anchorDate, 7)));
   }
   expect(await (await page.request.get('/api/session/export')).text()).not.toContain('reduced planned outflow');
