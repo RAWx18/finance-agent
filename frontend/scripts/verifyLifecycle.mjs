@@ -97,7 +97,8 @@ export function observeLifecycle() {
 
 async function run(values) {
   const origin = new URL(values.url).origin;
-  const browser = await chromium.launch({ headless: true, args: [
+  // Headless-shell does not implement native permission overrides; prompts need visible Chromium.
+  const browser = await chromium.launch({ channel: 'chromium', headless: values.mode !== 'prompt', args: [
     '--use-fake-device-for-media-stream',
     `--use-file-for-fake-audio-capture=${values.audio}`,
     '--autoplay-policy=no-user-gesture-required',
@@ -227,7 +228,8 @@ async function run(values) {
         stage = 'microphone';
         const admitted = callIds.size;
         const observed = (await probe()).callsObserved;
-        await permission(values.mode === 'denied' ? 'denied' : values.mode === 'prompt' ? 'prompt' : 'granted');
+        if (values.mode === 'prompt') await context.clearPermissions();
+        else await permission(values.mode === 'denied' ? 'denied' : 'granted');
         if (await page.getByRole('button', { name: 'Start conversation', exact: true }).isVisible())
           await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
         await Promise.all(page.frames().map(frame => frame.evaluate(() => globalThis.lifecycle?.reset()).catch(() => undefined)));
@@ -245,7 +247,11 @@ async function run(values) {
           await page.getByRole('button', { name: 'End conversation', exact: true }).click();
           await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
           assert.ok((await media()).some(frame => frame.pending > 0));
-          await permission('granted');
+          await until(released);
+          report(stage, { passed: true, permissionStillPending: true,
+            ...measurements(await media()), lifecycle: await probe() });
+          // Navigation dismisses the real browser prompt; no synthetic device promise is resolved.
+          await page.reload({ waitUntil: 'domcontentloaded' });
           await until(async () => (await media()).every(frame => frame.pending === 0) && await released());
           assert.equal(callIds.size, admitted);
           assert.equal((await probe()).callsObserved, observed);

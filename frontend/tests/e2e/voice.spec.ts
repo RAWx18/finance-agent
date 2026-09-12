@@ -352,6 +352,22 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await microphone.dispose();
   });
 
+  test('stalled transport reconnect ends media and retains the financial session', async ({ page, voice }) => {
+    await speaking(page);
+    const saved = await current(page);
+    const settings: Settings = await (await page.request.get('/api/settings')).json();
+    await page.clock.install();
+    await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onTransportStateChanged!('connecting'));
+    await expect(page.locator('.voice-status')).toHaveText('Reconnecting');
+    await page.clock.fastForward(settings.voiceStartupSeconds * 1000);
+    await expect(page.getByRole('alert', { name: 'Connection timed out' })).toBeVisible();
+    await stopped(page);
+    expect(await current(page)).toEqual(saved);
+    expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
+    expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(1);
+    await expect(page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true })).toBeEnabled();
+  });
+
   test('server waiting: Continue keeps the call, captions and financial corrections until an active ACK', async ({ page, voice }, info) => {
     await speaking(page);
     const initial = await current(page);
@@ -393,6 +409,13 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     expect(await page.evaluate(() => window.voiceFixture.clients[0].messages)).toEqual([{ type: 'continue-conversation', data: { sequence: 2 } }]);
     expect(await page.evaluate(() => window.voiceFixture.clients[0].isMicEnabled)).toBe(false);
     await expect(page.locator('.voice-status')).toHaveText('Paused');
+    await page.evaluate(() => {
+      const callbacks = window.voiceFixture.clients[0].callbacks;
+      callbacks.onUserTranscript!({ text: 'Delayed recognition', final: false, timestamp: 'late', user_id: 'fixture-user' });
+      callbacks.onBotOutput!({ text: 'Obsolete amount: 9000', segment_id: 100, spoken_status: 'completed' });
+    });
+    await expect(page.getByRole('region', { name: 'Live caption' })).toContainText('Rent is due tomorrow');
+    await expect(page.getByText(/Delayed recognition|Obsolete amount: 9000/)).toHaveCount(0);
     await page.screenshot({ path: info.outputPath('server-waiting-ack.png'), fullPage: true });
     await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3 }));
     await expect(page.locator('.voice-status')).toHaveText('Listening');

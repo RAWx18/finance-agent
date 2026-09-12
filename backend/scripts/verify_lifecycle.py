@@ -6,6 +6,7 @@
 From the repository root: backend/.venv/bin/python backend/scripts/verify_lifecycle.py
 --allow-billable --cycles 2. Build the frontend first. Each cycle is bounded by 180s,
 including the shared server startup and emergency cleanup budget.
+The prompt mode uses visible Chromium and requires an existing desktop display.
 """
 
 import argparse
@@ -171,7 +172,14 @@ async def verify(cycles, mode):
                     "--audio",
                     str(directory / "silence.wav"),
                     cwd=ROOT,
-                    env=browser_environment(),
+                    env={
+                        **browser_environment(),
+                        **{
+                            name: os.environ[name]
+                            for name in ("DISPLAY", "XAUTHORITY")
+                            if mode == "prompt" and name in os.environ
+                        },
+                    },
                     start_new_session=os.name == "posix",
                     stderr=asyncio.subprocess.DEVNULL,
                 )
