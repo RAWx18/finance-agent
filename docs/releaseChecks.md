@@ -42,6 +42,14 @@ and Money export. Types, lint and build pass. Provider boundaries are doubled in
 The wider component run also found unrelated memory-copy, Money-region and card-summary
 expectation failures; it is not an all-suite-green result.
 
+Incomplete-input checks are in [backend scenarios](../backend/tests/test_incomplete_planning.py),
+[pattern controls](../frontend/tests/SchedulePatterns.test.tsx),
+[shared possibilities](../frontend/tests/PlanningPossibilities.test.tsx), and
+[desktop/mobile journeys](../frontend/tests/e2e/incompletePlanning.spec.ts). They cover unplaced
+rent, amount corrections, pattern entry, conditional salary, finite-schedule limits, calendar
+edges and unchanged dated calculations. Browser authentication/data are synthetic; these checks
+do not establish live speech interpretation accuracy.
+
 ## Opt-in real services
 
 These checks consume real provider usage. Keep Azure/Daily credentials and endpoint/region privately in the root
@@ -81,6 +89,15 @@ uv run --locked python -m scripts.verify_continuous_voice --allow-billable --pha
   outcome with ₹4,500 closing cash, synchronized cards, audible output and clean End.
 
 ## Voice timing and recovery
+
+The 12 September latency comparison used identical synthetic microphone clips, real
+Daily/Azure providers and six reported commitments. User-end to audible reply measured
+12.30/11.30 seconds before and 11.64/11.97 seconds after outbound-context compaction.
+Post-save input fell from 41,208 to 22,184 tokens; facts, consent, current calculations and
+numeric changes remain available. About 3 seconds precede inference, model rounds take
+7–9 seconds, tools take 9–16 ms, and TTS first audio takes 0.3–0.9 seconds. This sample
+does not establish an end-to-end speedup or a sub-10-second target. Completion gating and
+the continuation window remain intact; lower input volume alone is not a latency guarantee.
 
 The `[voice]` settings in [config.toml](../config.toml) are independent:
 

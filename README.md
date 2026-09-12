@@ -172,6 +172,13 @@ still unfunded after that day's included receipts; timing advice never establish
 Money offers **Download saved plan** beside its expiry notice. The default 24-hour retention is not
 30 days of online availability; saved conversational preferences do not preserve an expired plan.
 
+Missing dates do not hide known amounts: Money and the conversation cards show a separate
+**payments without dates** comparison, explicitly allowing one payment per eligible monthly/one-off
+item if unpaid and due within the period. It is not a guaranteed total or spending permission.
+Under **Repeats → Timing basis**, enter a reported monthly day or month-end pattern; the backend
+labels generated dates as calculated assumptions. “Monthly” alone never implies the first of the
+month. Expected income on assumed dates appears in a conditional comparison, not assured funds.
+
 For foreign income, edit **Amount** to enter the original currency amount, INR-per-unit rate,
 rate certainty/date and INR deduction. The backend calculates net INR; unknown rates or fees
 remain unknown, and estimated conversion terms stay conditional. There is no live rate lookup.
@@ -243,6 +250,12 @@ assumptions and command history, and stops active voice/access. It does not dele
 account or downloaded files. Deleting only the plan removes chat notes, not shared preferences.
 The app attempts Google grant revocation after local deletion; external-provider retention rules
 remain outside this application's control. SQLite deletion is not a forensic-erasure guarantee.
+Signed-out Google login requires account selection and fresh consent, even if Google retains its
+session. Cancelling leaves the app signed out; explicitly signing in after deletion creates a new,
+empty app account, not a restoration of deleted data.
+Committed account deletion takes connected tabs directly to the logged-out landing page, without
+a recovery panel or a return link to Settings. The initiating tab waits for cookie clearing before
+enabling Google sign-in.
 Audio travels through Daily and Azure Speech
 during a call; relevant profile/memory, conversation and financial context are sent to the configured
 Azure OpenAI resource.

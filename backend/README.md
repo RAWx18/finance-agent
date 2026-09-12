@@ -182,7 +182,9 @@ provider failures fail closed without erasing finances.
 | `DELETE /api/account` | `{confirmation:"DELETE"}` → `{deleted:true}`; recent login required |
 
 Account deletion atomically removes identity, grants, every login, financial rows and command
-history; queued streams and voice work are revoked before commit. `Access` is revalidated inside
+history; queued streams and voice work are revoked before commit. A revoked authenticated stream
+emits `accountDeleted` only after checking that its account no longer exists under the database lock.
+Post-commit checkpoint failure does not turn a completed deletion into an error. `Access` is revalidated inside
 financial transaction boundaries so a racing request cannot restore deleted data. Limits cover
 sign-in attempts, invalid cookies, sensitive mutations and voice starts; logs contain event codes,
 not tokens, profile details or financial values. Forwarded headers are not trusted. Serve one

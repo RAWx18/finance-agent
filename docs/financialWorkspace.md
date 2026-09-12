@@ -36,6 +36,25 @@ start date; they replace the scalar amount and stop at the list length. Replacem
 must include `conversion: null` for INR or complete foreign-source terms. Variable required debt
 payments cannot share a scalar intended-payment target.
 
+For an explicitly reported monthly day or month-end pattern, `schedule.pattern` preserves that
+statement while `schedule.date` remains null. The backend generates calendar occurrences with
+`event.dateAssumption`; neither the generated date nor its timing becomes a confirmed fact.
+Month-end handles February/leap years; an unavailable numbered day is not silently clamped.
+Patterns require one scalar monthly amount without finite counts or varying sequences. Explicit
+date corrections replace the pattern. Pattern-based income remains conditional, not assured cash.
+Inline timing edits require an explicit choice to replace the whole monthly pattern with a start
+date or remove it and retain unknown timing. Merely opening a calculated date never confirms it;
+editing one occurrence independently is not supported.
+
+`plan.undatedImpact` makes known undated spending useful without assigning dates. It compares the
+dated closing balance with one possible unpaid payment per eligible one-off/monthly item, if due
+within the window. This allowance is explicitly a what-if, not verified period membership, an
+upper bound, a spending limit or consent. An explicit one-off count of one retains the same allowance.
+Unknown amounts and unanchored occurrence counts remain
+unknown; undated income is not promoted into funds. Adding a date replaces that item's allowance
+with its dated occurrences exactly once. Money, the conversation status and exports share these
+backend figures and keep conditional-income comparisons separate.
+
 `monthlyBudget` represents an explicitly chosen even-daily calendar-month spending forecast.
 It uses each month's actual length, including leap years, with deterministic paise allocation.
 Only days within the start/end and plan window count; clipped days are not redistributed.
