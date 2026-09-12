@@ -69,7 +69,9 @@ def test_explicit_unknown_scope_is_qualified_without_repeated_category_interview
     "coverage",
     [{}, {"optional": "reviewed", "income": "none", "essential": "none", "debt": "none"}],
 )
-def test_affordable_focused_purchase_answers_without_cut_or_control_gate(config, control, coverage):
+def test_focused_purchase_checks_other_needs_once_without_cut_or_control_gate(
+    config, control, coverage
+):
     data = facts(
         "50000",
         [record("phone", "optional", "5000", "2026-09-20", controllability=control)],
@@ -81,12 +83,19 @@ def test_affordable_focused_purchase_answers_without_cut_or_control_gate(config,
         },
     )
     plan = project(data)
-    assert next_action(plan).kind == "reviewOutcome"
-    assert plan.decision_assessment.next_question_id is None
+    assert next_action(plan).kind == ("reviewOutcome" if coverage else "clarify")
+    assert plan.decision_assessment.next_question_id == (None if coverage else "coverage")
     assert not any(a.kind == "previewChange" for a in plan.decision_assessment.actions)
     assert not any(u.field == "controllability" for u in plan.decision_assessment.uncertainties)
-    assert "fit" in plan.decision_assessment.outcome.summary.lower()
-    assert "INR 45000.00" in plan.decision_assessment.outcome.summary
+    if coverage:
+        assert "fit" in plan.decision_assessment.outcome.summary.lower()
+        assert "INR 45000.00" in plan.decision_assessment.outcome.summary
+    else:
+        assert "fit" not in plan.decision_assessment.outcome.summary.lower()
+        assert plan.decision_assessment.outcome.readiness == "qualified"
+        assert "committed" in next_action(plan).question
+        assert "income" not in next_action(plan).question
+        assert next_action(plan).question.count("?") == 1
     assert adjustment_options(
         normalize(FactsInput.model_validate(data), config),
         plan.events,

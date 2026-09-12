@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import uuid4, uuid5
 from zoneinfo import ZoneInfo
 
 import aiosqlite
@@ -17,6 +17,7 @@ from pydantic import TypeAdapter, ValidationError
 from .auth_models import Access, Owner
 from .config import Config
 from .decisions import UNAVAILABLE_ACTIONS, action_dependency_key
+from .facts import merge_facts
 from .finance import adjustment_options, calculate, dependency_key, normalize, resolve_adjustments
 from .models import (
     AcceptPreview,
@@ -31,15 +32,19 @@ from .models import (
     DiscardPreview,
     Error,
     Facts,
+    FactsPatch,
     InvalidatedAssumption,
     Money,
     PreviewAdjustments,
+    RejectedProposal,
+    RejectPreview,
     ReplaceFacts,
     RespondToAction,
     Scenario,
     Snapshot,
+    UpdateFacts,
 )
-from .voice_facts import FactsPatch, merge_facts
+from .workspace import change_set, project
 
 
 class Problem(Exception):
@@ -174,6 +179,7 @@ class Store:
                 anchor if rebuild else TypeAdapter(date).validate_python(cached_plan["evaluatedOn"])
             )
             # Stored projections are caches, never inputs to current schema validation.
+            payload.pop("workspace", None)
             plan = calculate(facts, anchor, self.config, today=today or evaluated_on)
             payload["plan"] = plan
             for field in ("preview", "accepted"):
@@ -190,6 +196,7 @@ class Store:
                     plan.outflow_paise - scenario["plan"].outflow_paise
                 )
             snapshot = Snapshot.model_validate(payload)
+            snapshot.workspace = project(snapshot, self.config)
             if snapshot.expires_at.utcoffset() is None:
                 raise ValueError("Session expiry must include a timezone")
             return snapshot, rebuild
@@ -283,6 +290,7 @@ class Store:
                 facts=facts,
                 plan=calculate(facts, anchor, self.config),
             )
+            snapshot.workspace = project(snapshot, self.config)
             async with self.transaction():
                 await self.owner_key(access)
                 await db.execute(
@@ -295,18 +303,15 @@ class Store:
                 )
             return snapshot
 
-    async def command(
-        self, owner: Owner, command: Command, *, changes: FactsPatch | None = None
-    ) -> Snapshot:
+    async def command(self, owner: Owner, command: Command) -> Snapshot:
         await self.check(owner)
         access = owner
-        payload = command.model_dump_json()
-        if changes is not None:
-            if not isinstance(command.operation, ReplaceFacts):
-                raise ValueError("Fact changes require replaceFacts")
+        changes: FactsPatch | None = None
+        if isinstance(command.operation, UpdateFacts):
+            changes = command.operation.changes
             if changes.expected_revision != command.expected_revision:
-                raise ValueError("Fact changes require the advertised revision")
-            payload = changes.model_dump_json(exclude_unset=True)
+                raise Problem(422, "invalidFacts", "Fact changes require the advertised revision")
+        payload = command.model_dump_json(exclude_unset=True)
         fingerprint = hashlib.sha256(payload.encode()).hexdigest()
         async with self.lock:
             owner = await self.owner_key(owner)
@@ -342,9 +347,10 @@ class Store:
                     "Session edit limit reached; export and start a fresh session.",
                 )
             operation = command.operation
+            before = snapshot.model_copy(deep=True)
             now = self.clock()
             today = now.astimezone(ZoneInfo(self.config.timezone)).date()
-            if isinstance(operation, ReplaceFacts):
+            if isinstance(operation, ReplaceFacts | UpdateFacts):
                 try:
                     if changes is not None and not set(changes.remove_provider_response_ids) <= (
                         {event.id for event in snapshot.plan.events if event.kind != "income"}
@@ -355,7 +361,32 @@ class Store:
                         merge_facts(snapshot.facts, changes, command.command_id)
                         if changes is not None
                         else operation.facts
+                        if isinstance(operation, ReplaceFacts)
+                        else None
                     )
+                    if source is None:
+                        raise ValueError("Fact changes are required")
+                    if isinstance(operation, ReplaceFacts):
+                        if source.conflicts != snapshot.facts.conflicts:
+                            raise ValueError(
+                                "Conflicts are server-managed; "
+                                "use updateFacts to dispute or resolve"
+                            )
+                        source_records = {item.id: item for item in source.records}
+                        saved_records = {item.id: item for item in snapshot.facts.records}
+                        for conflict in snapshot.facts.conflicts:
+                            if conflict.field == "opening":
+                                if source.opening.amount is not None:
+                                    raise ValueError("Resolve the opening conflict explicitly")
+                            elif conflict.record_id not in source_records:
+                                raise ValueError("Delete a disputed item by exact updateFacts ID")
+                            elif (
+                                source_records[conflict.record_id].kind
+                                != saved_records[conflict.record_id].kind
+                            ):
+                                raise ValueError(
+                                    "Resolve the conflict before changing the record kind"
+                                )
                     if (
                         "responses" in source.decision.model_fields_set
                         and source.decision.responses != snapshot.facts.decision.responses
@@ -474,7 +505,45 @@ class Store:
                         facts, accepted.plan if accepted else plan, item.action_id
                     )
                 ]
-                if len(facts.decision.responses) != len(snapshot.facts.decision.responses):
+                if changes is not None:
+                    unknowns: set[str] = set()
+                    if changes.opening is not None and changes.opening.status == "unknown":
+                        unknowns.add("clarify:opening")
+                    for index, change in enumerate(changes.records):
+                        identity = change.id or str(uuid5(command.command_id, str(index)))
+                        if change.delete or identity in facts.decision.ambiguous_record_ids:
+                            continue
+                        for field in ("amount", "target", "outstanding"):
+                            value = getattr(change, field)
+                            if value is not None and value.status == "unknown":
+                                unknowns.add(f"clarify:{identity}:{field}")
+                        if (
+                            change.schedule is not None
+                            and "date" in change.schedule.model_fields_set
+                            and change.schedule.date is None
+                        ):
+                            unknowns.add(f"clarify:{identity}:schedule.date")
+                    # Only supplied unknowns answering actual questions enter the response ledger.
+                    active_plan = accepted.plan if accepted else plan
+                    for clarification in active_plan.decision_assessment.actions:
+                        if clarification.kind != "clarify" or clarification.id not in unknowns:
+                            continue
+                        response_key = action_dependency_key(facts, active_plan, clarification.id)
+                        if response_key is not None:
+                            facts.decision.responses.append(
+                                ActionResponse(
+                                    action_id=clarification.id,
+                                    response="unavailable",
+                                    dependency_key=response_key,
+                                )
+                            )
+                    try:
+                        facts.decision = Decision.model_validate(facts.decision.model_dump())
+                    except ValidationError as error:
+                        raise Problem(
+                            422, "invalidFacts", "Action response limit reached."
+                        ) from error
+                if facts.decision.responses != snapshot.facts.decision.responses:
                     plan = calculate(facts, snapshot.anchor_date, self.config, today=today)
                     if accepted is not None:
                         accepted.plan = calculate(
@@ -493,15 +562,22 @@ class Store:
                         "invalidated_assumptions": invalidated,
                     }
                 )
+                snapshot.rejected_proposals = [
+                    proposal
+                    for proposal in snapshot.rejected_proposals
+                    if all(
+                        item.event_id in events
+                        and item.record_id in records
+                        and dependency_key(records[item.record_id], events[item.event_id])
+                        == item.dependency_key
+                        for item in proposal.adjustments
+                    )
+                ]
             elif isinstance(operation, RespondToAction):
                 plan = snapshot.accepted.plan if snapshot.accepted else snapshot.plan
                 assessment = plan.decision_assessment
                 action = next(
-                    (
-                        item
-                        for item in assessment.actions
-                        if item.id == operation.action_id and item.id == assessment.next_action_id
-                    ),
+                    (item for item in snapshot.workspace.actions if item.id == operation.action_id),
                     None,
                 )
                 choice = next(
@@ -530,7 +606,7 @@ class Store:
                     raise Problem(
                         422,
                         "invalidActionResponse",
-                        "Response must address the currently selected supported action.",
+                        "Response must address a current supported workspace action.",
                         snapshot,
                     )
                 if (
@@ -630,7 +706,7 @@ class Store:
                     if snapshot.accepted
                     else [],
                 )
-            elif isinstance(operation, AcceptPreview | DiscardPreview):
+            elif isinstance(operation, AcceptPreview | DiscardPreview | RejectPreview):
                 preview = snapshot.preview
                 if preview is None or preview.id != operation.preview_id:
                     raise Problem(
@@ -674,6 +750,57 @@ class Store:
                         }
                     )
                     snapshot.invalidated_assumptions = []
+                elif isinstance(operation, RejectPreview):
+                    if len(snapshot.rejected_proposals) >= self.config.max_commands:
+                        raise Problem(
+                            422, "decisionLimit", "Rejected proposal limit reached", snapshot
+                        )
+                    snapshot.rejected_proposals.append(
+                        RejectedProposal(id=preview.id, adjustments=preview.adjustments)
+                    )
+                    active = snapshot.accepted.plan if snapshot.accepted else snapshot.plan
+                    amounts = {item.event_id: item.amount_paise for item in preview.adjustments}
+                    for action in active.decision_assessment.actions:
+                        choice = next(
+                            (
+                                item
+                                for item in active.decision_assessment.choices
+                                if item.id == action.choice_id
+                            ),
+                            None,
+                        )
+                        response_key = action_dependency_key(snapshot.facts, active, action.id)
+                        if (
+                            choice
+                            and response_key
+                            and {
+                                item.event_id: item.amount_paise
+                                for item in choice.adjustment_amounts
+                            }
+                            == amounts
+                        ):
+                            snapshot.facts.decision.responses = [
+                                item
+                                for item in snapshot.facts.decision.responses
+                                if item.action_id != action.id
+                            ] + [
+                                ActionResponse(
+                                    action_id=action.id,
+                                    response="declined",
+                                    dependency_key=response_key,
+                                )
+                            ]
+                    snapshot.plan = calculate(
+                        snapshot.facts, snapshot.anchor_date, self.config, today=today
+                    )
+                    if snapshot.accepted:
+                        snapshot.accepted.plan = calculate(
+                            snapshot.facts,
+                            snapshot.anchor_date,
+                            self.config,
+                            adjustments=snapshot.accepted.adjustments,
+                            today=today,
+                        )
                 snapshot.preview = None
             elif isinstance(operation, ClearAccepted):
                 if snapshot.accepted is None:
@@ -687,6 +814,11 @@ class Store:
                     "sequence": snapshot.sequence + 1,
                 }
             )
+            snapshot.workspace = project(snapshot, self.config)
+            snapshot.latest_change = change_set(
+                before, snapshot, command.command_id, operation.type, changes
+            )
+            snapshot.workspace.change = snapshot.latest_change
             result = snapshot.model_dump_json(by_alias=True)
             async with self.transaction():
                 await self.owner_key(access)
@@ -716,6 +848,18 @@ class Store:
             snapshot.anchor_date,
         )
         resolved = resolve_adjustments(inputs, options, self.config)
+        if any(
+            {(item.event_id, item.amount_paise, item.dependency_key) for item in resolved}
+            == {
+                (item.event_id, item.amount_paise, item.dependency_key)
+                for item in proposal.adjustments
+            }
+            for proposal in snapshot.rejected_proposals
+        ):
+            raise ValueError(
+                "This proposal was explicitly rejected; "
+                "do not suggest it again without changed facts"
+            )
         for item in resolved:
             prior = retained.get(item.event_id)
             unchanged = (

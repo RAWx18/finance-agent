@@ -51,6 +51,8 @@ def normalize(source: FactsInput, config: Config) -> Facts:
         raise ValueError("Record IDs must be unique")
     if not set(source.decision.focus_record_ids) <= {record.id for record in source.records}:
         raise ValueError("Decision focus must reference existing records")
+    if not set(source.decision.ambiguous_record_ids) <= {record.id for record in source.records}:
+        raise ValueError("Ambiguous correction must reference existing records")
     if len(source.provider_responses) > config.max_occurrences or len(
         {item.event_id for item in source.provider_responses}
     ) != len(source.provider_responses):
@@ -85,6 +87,7 @@ def normalize(source: FactsInput, config: Config) -> Facts:
         coverage=source.coverage,
         records=records,
         decision=source.decision,
+        conflicts=source.conflicts,
         provider_responses=[
             ProviderResponse(
                 **item.model_dump(exclude={"payment", "cost"}),
@@ -135,6 +138,8 @@ def adjustment_options(
             or event.amount_paise is None
             or event.amount_paise <= 0
             or debt_balance_conflict(record)
+            or record.schedule.certainty != "exact"
+            or any(item.record_id == record.id for item in facts.conflicts)
             or record.controllability == "committed"
         ):
             continue
@@ -195,6 +200,38 @@ def calculate(
     adjustments: list[Adjustment] | None = None,
     today: date | None = None,
 ) -> Plan:
+    records_by_id = {record.id: record for record in facts.records}
+    if len(facts.conflicts) > config.max_records * 4 + 1 or len(
+        {item.id for item in facts.conflicts}
+    ) != len(facts.conflicts):
+        raise ValueError("Field conflicts must be unique and within the record limit")
+    for conflict in facts.conflicts:
+        if conflict.id != f"conflict:{conflict.record_id or 'opening'}:{conflict.field}":
+            raise ValueError("Conflict ID must identify its exact field")
+        record = records_by_id.get(conflict.record_id or "")
+        if conflict.record_id is not None and record is None:
+            raise ValueError("Conflict references a missing record")
+        if conflict.field in {"target", "outstanding"} and (
+            record is None or record.kind != "debt"
+        ):
+            raise ValueError("Conflict field does not exist on this record")
+        if any(
+            item.amount_paise is not None and item.amount_paise > config.max_money_paise
+            for item in conflict.values
+        ):
+            raise ValueError("Competing amount exceeds the configured money limit")
+        disputed = (
+            facts.opening
+            if record is None
+            else record.schedule.date
+            if conflict.field == "schedule.date"
+            else getattr(record, conflict.field)
+        )
+        if (conflict.field == "schedule.date" and disputed is not None) or (
+            conflict.field != "schedule.date"
+            and (not isinstance(disputed, Money) or disputed.amount_paise is not None)
+        ):
+            raise ValueError("An unresolved disputed field cannot have an authoritative value")
     issues: list[Issue] = []
     events: list[Event] = []
     partial = facts.opening.amount_paise is None
@@ -218,8 +255,10 @@ def calculate(
             )
     for record in facts.records:
         selected = record.target if record.target is not None else record.amount
-        if record.schedule.date is not None and record.schedule.date >= (
-            anchor + timedelta(days=config.horizon_days)
+        if (
+            record.schedule.certainty == "exact"
+            and record.schedule.date is not None
+            and record.schedule.date >= anchor + timedelta(days=config.horizon_days)
         ):
             continue
         if (
@@ -234,6 +273,14 @@ def calculate(
         if selected.status == "estimate" or record.amount.status == "estimate":
             issue(
                 "estimate", "This value is a reported estimate, not independently verified.", record
+            )
+        if record.schedule.certainty == "estimate":
+            partial = True
+            issue(
+                "uncertainDate",
+                "The reported date is approximate; earlier obligations remain possible "
+                "and receipts are not assured.",
+                record,
             )
         if record.reliability in {"uncertain", "unknown"}:
             issue(
@@ -339,7 +386,11 @@ def calculate(
                     included=selected.amount_paise is not None
                     and (
                         record.kind != "income"
-                        or (record.reliability == "reliable" and selected.status == "exact")
+                        or (
+                            record.reliability == "reliable"
+                            and selected.status == "exact"
+                            and record.schedule.certainty == "exact"
+                        )
                     ),
                     overdue=original < anchor,
                     auto_debit=record.auto_debit,
@@ -416,7 +467,7 @@ def calculate(
             dated_projection_complete=not unresolved
             and facts.opening.amount_paise is not None
             and not any(
-                item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome"}
+                item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome", "uncertainDate"}
                 for item in issues
             ),
             unresolved_amounts=unresolved,

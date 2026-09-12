@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
+from app.facts import facts_input
 from app.finance import calculate, export_text, resolve_adjustments
 from app.models import AdjustmentInput, Command
-from app.voice_facts import facts_input
 from app.voice_tools import VoiceTools, canonical
 
 from .conftest import facts, money, parsed_command, record

@@ -47,7 +47,20 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
     records = {record.id: record for record in facts.records}
     if prefix == "clarify" and identity == "opening":
         values["opening"] = facts.opening.model_dump(mode="json")
+    elif prefix == "clarify" and identity.startswith("conflict:"):
+        conflict = next((item for item in facts.conflicts if item.id == identity), None)
+        if conflict is None:
+            return None
+        values["conflict"] = conflict.model_dump(mode="json")
+    elif prefix == "clarify" and identity == "recordIdentity":
+        if not facts.decision.ambiguous_record_ids:
+            return None
+        values["candidates"] = [
+            records[item].model_dump(mode="json", exclude={"label"})
+            for item in sorted(facts.decision.ambiguous_record_ids)
+        ]
     elif prefix == "clarify" and identity == "coverage":
+        values["intent"] = facts.decision.intent
         values["coverage"] = {
             kind: {
                 "status": status,
@@ -55,6 +68,7 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
             }
             for kind, status in facts.coverage.model_dump().items()
             if status not in {"reviewed", "none"}
+            and (facts.decision.intent == "plan30Days" or kind != "income")
         }
     elif prefix in {"preview", "contact", "response"}:
         event = next((item for item in plan.events if item.id == identity), None)
@@ -73,6 +87,9 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
             issue.code == "debtBalanceConflict" and issue.record_id == record.id
             for issue in plan.issues
         )
+        if prefix == "preview":
+            values["record"] = record.model_dump(mode="json", exclude={"label", "outstanding"})
+            values["occurrence"] = event.id
         if prefix in {"contact", "response"}:
             values["providerResponse"] = [
                 item.model_dump(mode="json", exclude={"dependency_key"})
@@ -149,6 +166,7 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
             "debtBalanceConflict": {"amount", "target", "outstanding", "schedule", "debt_type"},
             "overdueRecurrence": {"amount", "schedule"},
             "missingMonthDay": {"schedule"},
+            "uncertainDate": {"schedule", "reliability"},
             "pastIncome": {"amount", "schedule", "reliability"},
             "sameDayTiming": {"amount", "target", "schedule", "reliability", "auto_debit"},
         }.get(field)
@@ -214,7 +232,7 @@ def assess(
 
     def semantic(action: Action) -> tuple[date, bool, list[tuple[str, str]]]:
         return (
-            action.before_date or today,
+            action.before_date or date.max,
             not bool(focus & set(action.record_ids)),
             sorted(
                 (records[identity].kind, records[identity].label.casefold())
@@ -274,11 +292,26 @@ def assess(
                 dependencies.append(action)
         return action
 
-    if facts.opening.status != "exact":
+    for conflict in facts.conflicts:
+        question(
+            conflict.id,
+            conflict.field,
+            "Which reported value applies to this fact? Resolve the competing values explicitly.",
+            [conflict.record_id] if conflict.record_id else [],
+            "Competing reports refer to one fact; the disputed field is excluded "
+            "until explicitly resolved.",
+            kind="conflict",
+            immediate=True,
+        )
+    if facts.opening.status != "exact" and not any(
+        item.field == "opening" for item in facts.conflicts
+    ):
         question(
             "opening",
             "opening",
-            "What cash was available at the original cash basis?",
+            "How much money do you have available today, including cash and bank balances?"
+            if anchor == today
+            else f"How much money was available to use when this plan started on {anchor}?",
             [],
             "Unknown opening cash prevents a funded comparison."
             if facts.opening.amount_paise is None
@@ -286,6 +319,23 @@ def assess(
             kind="missing" if facts.opening.amount_paise is None else "uncertain",
             immediate=facts.opening.amount_paise is None,
             ask=facts.opening.amount_paise is None,
+        )
+    if facts.decision.ambiguous_record_ids:
+        question(
+            "recordIdentity",
+            "recordIdentity",
+            "Which item did you mean to correct: "
+            + "; ".join(
+                f"{records[identity].label} ({rupees(records[identity].amount.amount_paise)}, "
+                f"{'expected' if records[identity].kind == 'income' else 'due'} "
+                f"{records[identity].schedule.date or 'date unknown'})"
+                for identity in facts.decision.ambiguous_record_ids
+            )
+            + "?",
+            facts.decision.ambiguous_record_ids,
+            "The correction target is unresolved; candidate amounts and dates remain unchanged.",
+            kind="conflict",
+            immediate=True,
         )
     for unresolved in plan.budget_basis.unresolved_amounts:
         record = records[unresolved.record_id]
@@ -300,6 +350,8 @@ def assess(
             if unresolved.reason == "missingDate"
             else ("target" if unresolved.reason == "unknownTarget" else "amount")
         )
+        if any(item.record_id == record.id and item.field == field for item in facts.conflicts):
+            continue
         if field == "schedule.date" and required:
             assessment.constraints.append(
                 Constraint(
@@ -319,36 +371,56 @@ def assess(
         minimum_short = bool(
             plan.first_gap and field == "target" and record.amount.amount_paise is not None
         )
+        uncertain_receipt = record.kind == "income" and record.reliability == "uncertain"
         immediate = (
             (day is None or day <= deadline)
             and not minimum_short
+            and not uncertain_receipt
             and (required or record.kind == "income" or record.id in focus)
+            and not (
+                record.kind == "income"
+                and facts.decision.intent == "specificDecision"
+                and plan.first_gap is None
+                and not plan.reserve_shortfall_paise
+            )
         )
         action = question(
             f"{record.id}:{field}",
             field,
-            f"When is {record.label} next due or expected?"
+            (
+                f"When will {record.label} be available to use?"
+                if record.kind == "income"
+                else f"When is {record.label} due?"
+            )
             if field == "schedule.date"
-            else f"What is the {'intended payment' if field == 'target' else 'amount'} "
-            f"for {record.label}?",
+            else f"How much do you want to pay toward {record.label}, including the required "
+            f"minimum of {rupees(record.amount.amount_paise)}?"
+            if field == "target"
+            else f"What is the required payment amount for {record.label}, before any extra "
+            "you want to pay?"
+            if record.kind == "debt"
+            else f"What amount do you expect from {record.label}?"
+            if record.kind == "income"
+            else f"What is the amount for {record.label}?",
             [record.id],
             "The required minimum already has a shortfall; intended extras cannot remove it."
             if minimum_short
+            else "This receipt is explicitly uncertain and excluded from dependable funds. "
+            "An expected amount or date would not establish availability; revisit when the "
+            "user can confirm receipt."
+            if uncertain_receipt
             else "This unplaced or incomplete obligation can change the next funding decision."
             if immediate
             else "This qualifies later spending, not the earlier required deadline.",
             day=day,
             immediate=immediate,
+            ask=not uncertain_receipt,
         )
         if (
             not immediate
             and not minimum_short
-            and (
-                facts.decision.intent == "plan30Days"
-                or required
-                or record.kind == "income"
-                or record.id in focus
-            )
+            and not uncertain_receipt
+            and (facts.decision.intent == "plan30Days" or required or record.id in focus)
         ):
             deferred.append(action)
     for record in facts.records:
@@ -363,7 +435,11 @@ def assess(
         if (
             record.kind == "income"
             and selected.amount_paise
-            and (record.reliability != "reliable" or selected.status != "exact")
+            and (
+                record.reliability != "reliable"
+                or selected.status != "exact"
+                or record.schedule.certainty != "exact"
+            )
         ):
             effective = [
                 event
@@ -372,8 +448,9 @@ def assess(
                 and receipt_impacts[event.id].first_gap != plan.first_gap
                 and event.date <= deadline
             ]
-            relevant_due = next(
-                (event.date for event in dues if event.date >= max(today, events[0].date)), None
+            relevant_due = min(
+                (event.date for event in dues if event.date >= max(today, events[0].date)),
+                default=None,
             )
             unknown = record.reliability == "unknown"
             text = (
@@ -398,7 +475,11 @@ def assess(
                 immediate=bool(effective) and unknown,
                 ask=unknown,
             )
-            if not unknown and relevant_due is not None:
+            if (
+                not unknown
+                and relevant_due is not None
+                and (effective or facts.decision.intent == "plan30Days")
+            ):
                 action = Action(
                     id=f"receipt:{record.id}",
                     kind="confirmReceipt",
@@ -443,6 +524,7 @@ def assess(
             "missingMonthDay",
             "sameDayTiming",
             "pastIncome",
+            "uncertainDate",
         }:
             continue
         affected = records.get(issue.record_id or "")
@@ -800,24 +882,37 @@ def assess(
         for kind, status in facts.coverage.model_dump().items()
         if status not in {"reviewed", "none"}
     }
+    needs_scope = {kind: status for kind, status in scope.items() if kind != "income"}
     coverage = None
     if scope:
-        ask = facts.decision.intent == "plan30Days" and any(
-            status in {"notDiscussed", "reported"} for status in scope.values()
+        ask = any(
+            status in {"notDiscussed", "reported"}
+            for status in (
+                scope.values()
+                if facts.decision.intent == "plan30Days"
+                else needs_scope.values()
+                if not plan.first_gap
+                else ()
+            )
         )
         action = question(
             "coverage",
             "coverage",
-            "What payments, essential spending and expected income need to be covered over "
+            "Before deciding, are there any other essentials, required debt "
+            "payments or spending you've already committed to over the next 30 days?"
+            if facts.decision.intent == "specificDecision" and needs_scope
+            else "What payments, essential spending and expected income need to be covered over "
             "the next 30 days? Start with the next payment or receipt, its amount and date."
             if not facts.records
             else "Before closing this 30-day plan, is anything else missing: payments, income, "
-            "essential spending or planned purchases? Confirm what is complete, absent or "
-            "still unknown in the remaining scope (" + ", ".join(scope) + ").",
+            "essential spending or spending you've already planned?",
             [],
             "Unreported items are not zero. One scope check qualifies the whole-period "
             "conclusion without blocking a useful immediate decision.",
             kind="coverage",
+            immediate=facts.decision.intent == "specificDecision"
+            and bool(needs_scope)
+            and not plan.first_gap,
             ask=ask,
         )
         if ask:
@@ -847,8 +942,51 @@ def assess(
         candidates[:] = [action for action in candidates if action.id not in blocked]
         candidates.sort(key=semantic)
     changes.sort(key=lambda action: (change_order[action.id], semantic(action)))
-    if facts.opening.amount_paise is None:
-        dependencies.sort(key=lambda action: action.id != "clarify:opening")
+    dependency_order = {}
+    for action in dependencies:
+        uncertainty = next(
+            item for item in assessment.uncertainties if item.id == questions[action.id]
+        )
+        receipts = [
+            receipt_impacts[event.id]
+            for event in plan.events
+            if event.record_id in action.record_ids
+            and event.id in receipt_impacts
+            and event.date <= deadline
+            and receipt_impacts[event.id].first_gap != plan.first_gap
+        ]
+        protected = [
+            records[identity]
+            for identity in action.record_ids
+            if records[identity].kind in {"essential", "debt"}
+            or records[identity].auto_debit
+            or records[identity].controllability == "committed"
+        ]
+        dependency_order[action.id] = (
+            0
+            if uncertainty.kind == "conflict"
+            else 1
+            if action.id == "clarify:opening"
+            else 3
+            if uncertainty.kind == "coverage"
+            else 2,
+            action.before_date or (deadline if dues else date.max),
+            not bool(receipts),
+            min(
+                (
+                    impact.first_gap.amount_paise
+                    if impact.first_gap and impact.first_gap.date <= deadline
+                    else 0
+                    for impact in receipts
+                ),
+                default=0,
+            ),
+            not bool(protected),
+            -max((record.amount.amount_paise or 0 for record in protected), default=0),
+            semantic(action),
+            action.id,
+        )
+    dependencies.sort(key=lambda action: dependency_order[action.id])
     selected_action = next(
         (items[0] for items in (dependencies, changes, enquiries, followups, deferred) if items),
         coverage,
@@ -916,7 +1054,7 @@ def assess(
     assessment.uncertainties.sort(
         key=lambda item: (
             question_order.get(item.id, len(action_order)),
-            item.before_date or today,
+            item.before_date or date.max,
             sorted(
                 (records[identity].kind, records[identity].label.casefold())
                 for identity in item.record_ids
@@ -963,6 +1101,11 @@ def assess(
         )
     elif plan.closing_paise is None:
         summary = "Available opening cash is unknown, so funding cannot yet be established."
+    elif facts.decision.ambiguous_record_ids:
+        summary = (
+            "A correction could refer to more than one item. Their amounts and dates remain "
+            "unchanged; affordability cannot be confirmed until the item is identified."
+        )
     elif incomplete:
         summary = (
             "Unresolved "
@@ -974,6 +1117,12 @@ def assess(
         summary = (
             "Payments and income coverage is unconfirmed; opening cash alone does not "
             "establish what the next 30 days can cover."
+        )
+    elif needs_scope:
+        summary = (
+            f"Reported amounts give a modeled minimum balance of {rupees(plan.trough_paise)}. "
+            "Other essential costs, required payments or committed spending are not yet "
+            "confirmed, so affordability cannot be established from the reported amounts alone."
         )
     else:
         summary = (
@@ -1049,6 +1198,8 @@ def assess(
         )
     if any(item.kind == "coverage" for item in assessment.uncertainties):
         conditions += " Category coverage is incomplete."
+    if facts.decision.ambiguous_record_ids:
+        conditions += " The correction target remains unresolved; no candidate was changed."
     if any(
         item.field in {"amount", "opening"} and item.kind == "uncertain"
         for item in assessment.uncertainties

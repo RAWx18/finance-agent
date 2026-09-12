@@ -7,8 +7,8 @@ from uuid import uuid4
 
 import pytest
 
+from app.facts import facts_input
 from app.models import Command, Snapshot
-from app.voice_facts import facts_input
 from app.voice_tools import VoiceTools, canonical
 
 from .conftest import NOW, command, facts, money, parsed_command, record

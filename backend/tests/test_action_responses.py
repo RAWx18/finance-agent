@@ -11,10 +11,10 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from app.facts import facts_input
 from app.finance import calculate
 from app.models import Command, Decision
 from app.store import Problem
-from app.voice_facts import facts_input
 from app.voice_tools import VoiceTools, canonical, tool_parameters
 
 from .conftest import NOW, command, facts, money, parsed_command, record
@@ -662,16 +662,35 @@ async def test_decline_preserves_accepted_assumptions_and_unrelated_pending_prev
     [
         ("unknown", "declined"),
         ("contact:rent:2026-09-14", "declined"),
-        ("contact:rent:2026-09-14", "unavailable"),
-        ("preview:trip:2026-09-20", "declined"),
         ("preview:purchase:2026-09-12", "unavailable"),
     ],
 )
-async def test_action_response_requires_selected_typed_action(store, reduction, identity, response):
+async def test_action_response_requires_current_typed_action(store, reduction, identity, response):
     with pytest.raises(Problem) as error:
         await store.command("owner", response_command(reduction, response, identity))
     assert error.value.body.code == "invalidActionResponse"
     assert await store.get("owner") == reduction
+
+
+@pytest.mark.parametrize(
+    "identity,response",
+    [
+        ("contact:rent:2026-09-14", "unavailable"),
+        ("preview:trip:2026-09-20", "declined"),
+    ],
+)
+async def test_nonselected_displayable_action_accepts_eligible_response(
+    store, reduction, identity, response
+):
+    assert identity != reduction.plan.decision_assessment.next_action_id
+    assert identity in {item.id for item in reduction.workspace.actions}
+    saved = await store.command("owner", response_command(reduction, response, identity))
+    assert any(
+        item.action_id == identity and item.response == response
+        for item in saved.facts.decision.responses
+    )
+    assert saved.facts.records == reduction.facts.records
+    assert identity not in {item.id for item in saved.workspace.actions}
 
 
 @pytest.mark.parametrize(

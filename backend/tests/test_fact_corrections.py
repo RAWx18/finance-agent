@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from app.voice_facts import FactsPatch
+from app.models import FactsPatch
 from app.voice_tools import VoiceTools
 
 from .conftest import facts, money, parsed_command, record

@@ -14,6 +14,7 @@ from app.auth import COOKIE
 from app.config import Environment
 from app.models import Command
 from app.store import Problem, owner_hash
+from app.workspace import project
 
 from .auth_support import auth_app, sign_in
 from .conftest import NOW, ORIGIN, command, facts, money, parsed_command, record
@@ -71,9 +72,11 @@ def test_options_are_read_only_baseline_owned_and_schema_is_additive(client):
     assert schema["Command"]["properties"]["operation"]["discriminator"]["propertyName"] == "type"
     assert set(schema["Command"]["properties"]["operation"]["discriminator"]["mapping"]) == {
         "replaceFacts",
+        "updateFacts",
         "previewAdjustments",
         "acceptPreview",
         "discardPreview",
+        "rejectPreview",
         "clearAccepted",
         "respondToAction",
     }
@@ -472,6 +475,7 @@ async def test_acceptance_rejects_mismatched_source_revision(store):
             Command.model_validate(operation("acceptPreview", previewId=str(snapshot.preview.id))),
         )
     assert error.value.body.code == "stalePreview"
+    snapshot.workspace = project(snapshot, store.config)
     assert await store.get(owner) == snapshot
 
 
