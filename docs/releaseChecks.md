@@ -43,6 +43,7 @@ From the backend directory:
 ```sh
 uv run --locked python -m scripts.verify_conversation --allow-billable
 uv run --locked python -m scripts.verify_voice --allow-billable
+uv run --locked python -m scripts.verify_continuous_voice --allow-billable --phase demo
 uv run --locked python -m scripts.verify_continuous_voice --allow-billable --phase lifecycle
 uv run --locked python -m scripts.verify_continuous_voice --allow-billable --phase recovery --initial-wait
 ```
@@ -65,6 +66,9 @@ uv run --locked python -m scripts.verify_continuous_voice --allow-billable --pha
   the real command API to isolate lifecycle checks from numeric recognition; it is not spoken-fact
   acceptance. `--initial-wait` additionally exercises two real idle/Continue cycles before any speech.
   All variants use temporary SQLite/test-only Google identity and clean only their own rooms/data.
+  `demo` adds explicit date clarification and complete financial scope before the interruption and
+  correction. It requires one retained rent record, corrected cash of ₹6,500, a ready 30-day
+  outcome with ₹4,500 closing cash, synchronized cards, audible output and clean End.
 
 ## Voice timing and recovery
 
@@ -91,6 +95,17 @@ not keys, provider bodies, transcripts or financial values. Synthetic diagnostic
 in the isolated authenticated test factory, which is excluded from the production image.
 
 ## Evidence boundary
+
+The demo-focused check on 12 September passed the actual Daily/Pipecat/Azure/model path in three
+completed user turns and seven model requests, including paused intake, date clarification,
+interruption, correction and the ready outcome above. No hang or provider error occurred; media,
+room and temporary-data cleanup passed. Six focused financial-flow regressions also passed.
+
+Its initial rehearsal exposed a garbled date being marked as an unavailable answer. The voice
+instructions distinguish unclear recognition from an explicit “I don't know”; a targeted real-model
+replay preserved both clear amounts and kept the date askable. This is prompt guidance, not a
+guarantee for arbitrary model output. Recognition itself remains variable. Use a guided prototype
+demo and verify spoken amounts/dates against the cards; human-microphone acceptance remains separate.
 
 The 12 September prototype handoff ran 99 focused regressions covering opening, continuation,
 context bounds, configuration, explicit unknowns, conflict resolution and Azure adapter construction.
