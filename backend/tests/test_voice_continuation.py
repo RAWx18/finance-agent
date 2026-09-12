@@ -271,21 +271,24 @@ async def test_stt_safety_is_independent_of_continuation(config, finalized):
         assert events["stops"][0] == pytest.approx(4.4)
 
 
-async def test_late_first_final_rearms_before_upstream_can_stop(config):
+@pytest.mark.parametrize("delay", [0.6, 2.8])
+async def test_vad_final_uses_existing_continuation_deadline(config, delay):
     messages, events, _, _ = await play(
         config,
         [
             VADUserStartedSpeakingFrame(start_secs=config.voice.vad_start_seconds),
             SleepFrame(sleep=0.05),
             VADUserStoppedSpeakingFrame(stop_secs=config.voice.vad_stop_seconds),
-            SleepFrame(sleep=config.voice.speech_timeout_seconds + 0.2),
+            SleepFrame(sleep=delay),
             final("Cash is four thousand."),
             SleepFrame(sleep=config.voice.speech_timeout_seconds + 0.2),
         ],
     )
     assert messages == [{"role": "user", "content": "Cash is four thousand."}]
     assert len(events["stops"]) == 1
-    assert events["stops"][0] == pytest.approx(2 * config.voice.speech_timeout_seconds + 0.25)
+    assert events["stops"][0] == pytest.approx(
+        max(config.voice.speech_timeout_seconds, delay) + 0.05
+    )
 
 
 @pytest.mark.parametrize("recognition", [final, interim])
