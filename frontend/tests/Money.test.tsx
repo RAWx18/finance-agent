@@ -213,7 +213,7 @@ it.each([
   ['exact', '', 'unknown'], ['unknown', '2026-09-24', 'exact'],
 ] as const)('preserves date certainty from %s to %s as %s in a focused patch', async (certainty, date, status) => {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: certainty === 'unknown' ? null : '2026-09-20', recurrence: 'monthly', certainty };
+  saved.facts.records[0].schedule = { date: certainty === 'unknown' ? null : '2026-09-20', recurrence: 'monthly', certainty, basis: 'payment' };
   const original = structuredClone(saved);
   const onCommand = vi.fn();
   render(<MoneyEdit target={{ recordId: 'rent', field: 'schedule.date' }} snapshot={saved}
@@ -232,7 +232,7 @@ it.each([
 it('changes recurrence without replacing the unknown date, income reliability or reviewed coverage', async () => {
   const saved = planningSnapshot();
   saved.facts.records[0] = { ...saved.facts.records[0], kind: 'income', reliability: 'uncertain',
-    amount: { amountPaise: null, status: 'unknown' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once' } };
+    amount: { amountPaise: null, status: 'unknown' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } };
   saved.facts.coverage.income = 'reviewed';
   const original = structuredClone(saved);
   const onCommand = vi.fn();
@@ -441,7 +441,7 @@ it('propagates correction snapshots, rejects older SSE and preserves browser bac
 });
 
 it('shows unknown opening and undated items without fabricated zero balances', async () => {
-  const saved = snapshot(); saved.facts.records = [{ ...planningSnapshot().facts.records[0], amount: { amountPaise: null, status: 'unknown' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once' } }];
+  const saved = snapshot(); saved.facts.records = [{ ...planningSnapshot().facts.records[0], amount: { amountPaise: null, status: 'unknown' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } }];
   saved.plan.budgetBasis = { datedProjectionComplete: false, unresolvedAmounts: [{ recordId: 'rent', reason: 'missingDate', amount: { amountPaise: null, status: 'unknown' }, recurrence: 'once' }] };
   await open('/money', projectWorkspace(saved));
   const cash = screen.getByRole('region', { name: 'Money in this plan' });
@@ -584,8 +584,8 @@ it('separates elapsed requirements at evaluatedOn, preserving backend order and 
 it('lists only authoritative missing-date entries and exempts undated known-zero items', async () => {
   const source = planningSnapshot();
   const saved = moneyProjection({ ...source, facts: { ...source.facts, records: [
-    { ...source.facts.records[0], schedule: { date: null, certainty: 'unknown', recurrence: 'once' } },
-    { ...source.facts.records[0], id: 'zero', label: 'No payment due', amount: { status: 'exact', amountPaise: 0 }, schedule: { date: null, certainty: 'unknown', recurrence: 'once' } },
+    { ...source.facts.records[0], schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } },
+    { ...source.facts.records[0], id: 'zero', label: 'No payment due', amount: { status: 'exact', amountPaise: 0 }, schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } },
   ] }, plan: { ...source.plan, events: [], budgetBasis: { datedProjectionComplete: false, unresolvedAmounts: [
     { recordId: 'rent', reason: 'missingDate', amount: source.facts.records[0].amount, recurrence: 'once' },
   ] } } });

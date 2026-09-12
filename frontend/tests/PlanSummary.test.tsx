@@ -16,8 +16,8 @@ function partialSnapshot(): Snapshot {
   saved.facts.opening = { amountPaise: 1000000, status: 'exact' };
   saved.facts.coverage = { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' };
   saved.facts.records = [
-    { ...saved.facts.records[0], id: 'food', label: 'Food', amount: { amountPaise: 100000, status: 'exact' }, schedule: { date: '2026-09-12', recurrence: 'once', certainty: 'exact' } },
-    { ...saved.facts.records[0], label: 'Rent and utilities', amount: { amountPaise: 3300000, status: 'exact' }, schedule: { date: null, recurrence: 'once', certainty: 'unknown' } },
+    { ...saved.facts.records[0], id: 'food', label: 'Food', amount: { amountPaise: 100000, status: 'exact' }, schedule: { date: '2026-09-12', recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+    { ...saved.facts.records[0], label: 'Rent and utilities', amount: { amountPaise: 3300000, status: 'exact' }, schedule: { date: null, recurrence: 'once', certainty: 'unknown', basis: 'payment' } },
   ];
   saved.plan = { ...saved.plan, projectionPartial: true, reliableIncomePaise: 0, uncertainIncomePaise: 0,
     outflowPaise: 100000, closingPaise: 900000, troughPaise: 900000, firstGap: null, peakGapPaise: 0, peakGapDate: null,
@@ -150,9 +150,9 @@ describe('canonical plan summary', () => {
     saved.facts.records[0].schedule.date = '2026-09-15';
     saved.facts.records.push(
       { ...saved.facts.records[0], id: 'card', label: 'Card', kind: 'debt', debtType: 'card', amount: { amountPaise: 50000, status: 'exact' },
-        target: { amountPaise: null, status: 'unknown' }, schedule: { date: '2026-09-14', recurrence: 'once', certainty: 'exact' } },
+        target: { amountPaise: null, status: 'unknown' }, schedule: { date: '2026-09-14', recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { ...saved.facts.records[0], id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 200000, status: 'exact' },
-        reliability: 'reliable', schedule: { date: '2026-09-20', recurrence: 'once', certainty: 'exact' } },
+        reliability: 'reliable', schedule: { date: '2026-09-20', recurrence: 'once', certainty: 'exact', basis: 'payment' } },
     );
     saved.facts.coverage.income = 'reviewed'; saved.facts.coverage.debt = 'reviewed';
     saved.plan.events = [
@@ -297,7 +297,7 @@ describe('canonical plan summary', () => {
     saved.facts.coverage = { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' };
     saved.facts.records[0] = { ...saved.facts.records[0], id: 'food', label: 'Groceries', controllability: 'controllable' };
     saved.facts.records[0].schedule.date = '2026-09-14';
-    saved.facts.records.push({ ...saved.facts.records[0], id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 2500000, status: 'exact' }, reliability: 'reliable', schedule: { date: '2026-09-20', recurrence: 'once', certainty: 'exact' } });
+    saved.facts.records.push({ ...saved.facts.records[0], id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 2500000, status: 'exact' }, reliability: 'reliable', schedule: { date: '2026-09-20', recurrence: 'once', certainty: 'exact', basis: 'payment' } });
     saved.plan.events[0] = { ...saved.plan.events[0], id: 'food:2026-09-14', recordId: 'food', label: 'Groceries', date: '2026-09-14', originalDueDate: '2026-09-14' };
     saved.plan.events.push({ ...saved.plan.events[0], id: 'salary:2026-09-20', recordId: 'salary', label: 'Salary', kind: 'income', date: '2026-09-20', originalDueDate: '2026-09-20', amountPaise: 2500000, balancePaise: 1800000 });
     saved.plan.projectionPartial = false; saved.plan.outflowPaise = 1200000; saved.plan.reliableIncomePaise = 2500000;
@@ -328,7 +328,7 @@ describe('canonical plan summary', () => {
     const { rerender } = render(<PlanSummary snapshot={saved} />);
     expect(screen.getByText('Excludes Rent and utilities (₹33,000): date unknown.')).toBeVisible();
     const corrected = structuredClone(saved); corrected.revision++; corrected.sequence++;
-    corrected.facts.records[1].schedule = { date: '2026-09-14', recurrence: 'once', certainty: 'exact' };
+    corrected.facts.records[1].schedule = { date: '2026-09-14', recurrence: 'once', certainty: 'exact', basis: 'payment' };
     corrected.plan = { ...corrected.plan, projectionPartial: false, budgetBasis: { datedProjectionComplete: true, unresolvedAmounts: [] },
       outflowPaise: 3400000, closingPaise: -2400000, troughPaise: -2400000, peakGapPaise: 2400000, peakGapDate: '2026-09-14', firstGap: { date: '2026-09-14', amountPaise: 2400000 } };
     corrected.plan.events.push({ ...corrected.plan.events[0], id: 'rent:2026-09-14', recordId: 'rent', label: 'Rent and utilities', date: '2026-09-14', originalDueDate: '2026-09-14', amountPaise: 3300000, balancePaise: -2400000 });

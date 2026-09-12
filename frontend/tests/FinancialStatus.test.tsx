@@ -11,8 +11,8 @@ function undated() {
   const saved = planningSnapshot();
   saved.facts.opening = { amountPaise: 100000000, status: 'exact' };
   saved.facts.records = [
-    { ...saved.facts.records[0], amount: { amountPaise: 3000000, status: 'exact' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once' } },
-    { ...saved.facts.records[0], id: 'outings', label: 'Weekend outings', kind: 'optional', amount: { amountPaise: 200000, status: 'estimate' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once' } },
+    { ...saved.facts.records[0], amount: { amountPaise: 3000000, status: 'exact' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } },
+    { ...saved.facts.records[0], id: 'outings', label: 'Weekend outings', kind: 'optional', amount: { amountPaise: 200000, status: 'estimate' }, schedule: { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' } },
   ];
   saved.plan.events = []; saved.plan.firstGap = null; saved.plan.closingPaise = 100000000; saved.plan.troughPaise = 100000000;
   saved.plan.budgetBasis = { datedProjectionComplete: false, unresolvedAmounts: saved.facts.records.map(record => ({ recordId: record.id, reason: 'missingDate', amount: record.amount, recurrence: record.schedule.recurrence })) };
@@ -40,7 +40,7 @@ it('takes a corrected closing balance and remaining missing dates from the next 
   const saved = undated();
   const { rerender } = render(<FinancialStatus snapshot={saved} />);
   const next = structuredClone(saved); next.revision++;
-  next.facts.records[0].schedule = { recurrence: 'once', date: '2026-09-15', certainty: 'exact' };
+  next.facts.records[0].schedule = { recurrence: 'once', date: '2026-09-15', certainty: 'exact', basis: 'payment' };
   next.plan.events = [{ ...planningSnapshot().plan.events[0], date: '2026-09-15', amountPaise: 3000000 }];
   next.plan.budgetBasis.unresolvedAmounts = next.plan.budgetBasis.unresolvedAmounts.filter(item => item.recordId !== 'rent');
   next.plan.closingPaise = 97000000;
@@ -76,7 +76,7 @@ it('retains paise, estimates and conflicts without printing raw calculation qual
 
 it('bounds the missing-date summary but keeps every record and recurring basis in details', async () => {
   const saved = undated();
-  saved.facts.records.push({ ...saved.facts.records[1], id: 'food', label: 'Food budget', schedule: { date: null, certainty: 'unknown', recurrence: 'monthlyBudget' } });
+  saved.facts.records.push({ ...saved.facts.records[1], id: 'food', label: 'Food budget', schedule: { date: null, certainty: 'unknown', recurrence: 'monthlyBudget', basis: 'payment' } });
   saved.plan.budgetBasis.unresolvedAmounts.push({ recordId: 'food', reason: 'missingDate', amount: saved.facts.records[2].amount, recurrence: 'monthlyBudget' });
   saved.plan.budgetBasis.unresolvedAmounts.push(saved.plan.budgetBasis.unresolvedAmounts[0]);
   render(<FinancialStatus snapshot={saved} />);

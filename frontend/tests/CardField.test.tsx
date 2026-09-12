@@ -126,7 +126,7 @@ it('highlights a changed value only, not its mount or unrelated updates', () => 
 
 it.each(['replace', 'remove'] as const)('requires an explicit whole-series choice to %s a monthly pattern', async timing => {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', pattern: { kind: 'monthEnd' } };
   const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
   receipt.facts.records[0].schedule = { ...saved.facts.records[0].schedule, pattern: null,
     date: timing === 'replace' ? '2027-01-31' : null, certainty: timing === 'replace' ? 'exact' : 'unknown' };
@@ -155,7 +155,7 @@ it.each(['replace', 'remove'] as const)('requires an explicit whole-series choic
 
 it('does not accept a pattern-removal receipt that retains the calculated dates', async () => {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', pattern: { kind: 'monthEnd' } };
   const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
   onCommand.mockResolvedValue(receipt);
   render(<CardField snapshot={saved} target={{ recordId: 'rent', field: 'schedule.date' }} label="Rent series start" blocked={false} onCommand={onCommand}>Assumed 31 Jan</CardField>);

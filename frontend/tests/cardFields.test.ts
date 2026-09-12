@@ -53,7 +53,7 @@ it.each(['rate', 'fee', 'rateDate'] as const)('edits %s without reconstructing n
 });
 
 it('edits a repeating series start from the actual schedule, never from a computed event date', () => {
-  const saved = planningSnapshot(); saved.facts.records[0].schedule = { date: '2026-08-13', recurrence: 'monthly', certainty: 'exact', count: 3 };
+  const saved = planningSnapshot(); saved.facts.records[0].schedule = { date: '2026-08-13', recurrence: 'monthly', certainty: 'exact', basis: 'payment', count: 3 };
   const target = { recordId: 'rent', field: 'schedule.date' as const }; const draft = fieldDraft(saved, target);
   expect(draft.value).toBe('2026-08-13'); expect(saved.plan.events[0].date).toBe('2026-09-13');
   draft.value = '2026-08-14'; draft.status = 'estimate';
@@ -62,7 +62,7 @@ it('edits a repeating series start from the actual schedule, never from a comput
 
 it.each(['exact', 'unknown'] as const)('explicitly removes the source pattern when saving %s timing', status => {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', pattern: { kind: 'monthEnd' } };
   const target = { recordId: 'rent', field: 'schedule.date' as const };
   const draft = { ...fieldDraft(saved, target), status, value: status === 'exact' ? '2027-01-31' : '' };
   const operation = fieldOperation(saved, target, draft);

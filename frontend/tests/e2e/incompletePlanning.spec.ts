@@ -11,8 +11,8 @@ test('missing rent date still gives a quantified plan in Money and conversation 
       opening: { amount: '10000', status: 'exact' }, reserve: '0',
       coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
       records: [
-        { id: 'food', label: 'Food', kind: 'essential', autoDebit: false, amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } },
-        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '30000', status: 'exact' }, schedule: { date: null, recurrence: 'monthly', certainty: 'unknown' } },
+        { id: 'food', label: 'Food', kind: 'essential', autoDebit: false, amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '30000', status: 'exact' }, schedule: { date: null, recurrence: 'monthly', certainty: 'unknown', basis: 'payment' } },
       ],
     } });
     await page.goto('/money');
@@ -78,8 +78,8 @@ test('month-end salary stays conditional while its useful comparison is visible'
       opening: { amount: '1000', status: 'exact' }, reserve: '0',
       coverage: { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' },
       records: [
-        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '30000', status: 'exact' }, schedule: { date: null, recurrence: 'monthly', certainty: 'unknown', pattern: { kind: 'monthEnd' } } },
-        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '20000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 20), recurrence: 'once', certainty: 'exact' } },
+        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '30000', status: 'exact' }, schedule: { date: null, recurrence: 'monthly', certainty: 'unknown', basis: 'payment', pattern: { kind: 'monthEnd' } } },
+        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '20000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 20), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       ],
     } });
     await page.goto('/money');

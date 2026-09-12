@@ -11,11 +11,11 @@ test('later relief and timing labels stay consistent through a real correction a
       opening: { amount: '0', status: 'exact' }, reserve: '0',
       coverage: { income: 'reviewed', essential: 'reviewed', optional: 'reviewed', debt: 'none' },
       records: [
-        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, controllability: 'committed', amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' } },
-        { id: 'wages', label: 'Wages', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact' } },
-        { id: 'purchase', label: 'Purchase', kind: 'optional', autoDebit: false, controllability: 'controllable', amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 4), recurrence: 'once', certainty: 'exact' } },
-        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '10000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 4), recurrence: 'once', certainty: 'exact' } },
-        { id: 'food', label: 'Food', kind: 'essential', autoDebit: false, amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 6), recurrence: 'once', certainty: 'exact' } },
+        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, controllability: 'committed', amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'wages', label: 'Wages', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'purchase', label: 'Purchase', kind: 'optional', autoDebit: false, controllability: 'controllable', amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 4), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '10000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 4), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'food', label: 'Food', kind: 'essential', autoDebit: false, amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 6), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       ],
     } });
     await page.goto('/app');

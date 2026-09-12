@@ -13,7 +13,7 @@ import { projectWorkspace } from './workspace';
 const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>(), stale: false };
 beforeEach(() => { controls.onCommand.mockReset().mockResolvedValue(undefined); });
 /** Creates a reliable monthly salary record for companion presentation fixtures. */
-const salary = (): Snapshot['facts']['records'][number] => ({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 2500000 }, schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact' }, reliability: 'reliable', autoDebit: false });
+const salary = (): Snapshot['facts']['records'][number] => ({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 2500000 }, schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact', basis: 'payment' }, reliability: 'reliable', autoDebit: false });
 
 // Membership is supplied explicitly; financial calculations and ranking belong to the server.
 /** Assigns test-selected companion cards to a snapshot without calculating financial metrics. */
@@ -137,7 +137,7 @@ describe('financial companion', () => {
   it('keeps a calculated pattern date separate from source edits and amount certainty', async () => {
     const saved = picture();
     saved.facts.records[0].amount.status = 'estimate';
-    saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'dayOfMonth', day: 13 } };
+    saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', pattern: { kind: 'dayOfMonth', day: 13 } };
     saved.plan.events[0].dateAssumption = 'Calculated from monthly day 13 pattern';
     saved.plan.events[0].amountStatus = 'estimate';
     const original = structuredClone(saved);
@@ -376,7 +376,7 @@ describe('financial companion', () => {
     saved.facts.opening = { amountPaise: 0, status: 'exact' };
     saved.facts.coverage = { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' };
     saved.facts.records = events.map(({ id, label, kind, date, amountPaise }) => ({ id, label, kind,
-      amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact' }, autoDebit: false,
+      amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false,
       ...(kind === 'income' ? { reliability: 'reliable' as const } : { controllability: 'committed' as const }),
     }));
     saved.plan = { ...saved.plan, projectionPartial: false, reliableIncomePaise: 500000, outflowPaise: 600000,

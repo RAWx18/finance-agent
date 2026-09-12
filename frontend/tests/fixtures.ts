@@ -92,7 +92,7 @@ export function planningSnapshot(): Snapshot {
         riskIds: ['cash:2026-09-13'], choiceIds: [], nextActionId: 'contact:rent:2026-09-13', uncertain: ['provider:rent:2026-09-13'],
         revisit: 'Recalculate after a receipt correction, changed obligation or provider response; accepted assumptions are not completed actions.' },
     } };
-  saved.facts.records = [{ id: 'rent', label: 'Rent', kind: 'essential', amount: { status: 'exact', amountPaise: 1200000 }, schedule: { date: '2026-09-13', recurrence: 'once', certainty: 'exact' }, autoDebit: false, controllability: 'committed' }];
+  saved.facts.records = [{ id: 'rent', label: 'Rent', kind: 'essential', amount: { status: 'exact', amountPaise: 1200000 }, schedule: { date: '2026-09-13', recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false, controllability: 'committed' }];
   saved.plan.events = [{ id: 'rent:2026-09-13', recordId: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-13', originalDueDate: '2026-09-13', amountPaise: 1200000, amountBasis: 'reported', amountStatus: 'exact', requiredPaise: null, requiredStatus: 'unknown', source: null, scheduleIndex: 0, included: true, overdue: false, autoDebit: false, balancePaise: -700000 }];
   return projectWorkspace(saved);
 }
@@ -135,7 +135,7 @@ export function choiceSnapshot(kind: 'reduceOptional' | 'cardMinimum' = 'reduceO
   saved.facts.records.push({ id: option.recordId, label: option.label, kind: kind === 'reduceOptional' ? 'optional' : 'debt',
     amount: { status: 'exact', amountPaise: kind === 'reduceOptional' ? option.originalPaise : option.minimumPaise },
     target: kind === 'cardMinimum' ? { status: 'exact', amountPaise: option.originalPaise } : null,
-    debtType: kind === 'cardMinimum' ? 'card' : null, schedule: { date: option.date, recurrence: 'once', certainty: 'exact' },
+    debtType: kind === 'cardMinimum' ? 'card' : null, schedule: { date: option.date, recurrence: 'once', certainty: 'exact', basis: 'payment' },
     autoDebit: false, controllability: 'controllable' });
   saved.plan.events.push({ id: option.eventId, recordId: option.recordId, label: option.label,
     kind: kind === 'reduceOptional' ? 'optional' : 'debt', date: option.date, originalDueDate: option.date,

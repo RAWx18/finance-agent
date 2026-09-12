@@ -1837,7 +1837,7 @@ export interface components {
         };
         /**
          * Schedule
-         * @description Payment timing, recurrence, certainty, and optional occurrence amounts.
+         * @description Payment or spending-forecast timing, certainty, and optional occurrence amounts.
          */
         Schedule: {
             /** Enddate */
@@ -1850,6 +1850,13 @@ export interface components {
              * @enum {string}
              */
             recurrence: "once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget";
+            /**
+             * Basis
+             * @description Use allowance only for reported recurring, uncommitted living spending, not bills or debt. An ongoing scalar allowance may use the snapshot anchor for forecast timing while retaining date=null. Finite or varying schedules need an origin.
+             * @default payment
+             * @enum {string}
+             */
+            basis: "payment" | "allowance";
             /**
              * Certainty
              * @default exact
@@ -1864,7 +1871,7 @@ export interface components {
         };
         /**
          * SchedulePatch
-         * @description Partial changes to payment timing, recurrence, and occurrence amounts.
+         * @description Partial changes to schedule basis, timing, recurrence, and occurrence amounts.
          */
         SchedulePatch: {
             /** Enddate */
@@ -1873,6 +1880,8 @@ export interface components {
             date?: string | null;
             /** Recurrence */
             recurrence?: ("once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget") | null;
+            /** Basis */
+            basis?: ("payment" | "allowance") | null;
             /** Certainty */
             certainty?: ("exact" | "estimate" | "unknown") | null;
             pattern?: components["schemas"]["MonthlyPattern"] | null;

@@ -34,7 +34,7 @@ describe('exact money boundaries', () => {
     facts.conflicts![0].values[0].amountPaise = 1;
     facts.records[0].schedule.certainty = 'exact';
     expect(saved).toEqual(original);
-    saved.facts.records[0].schedule = { date: null, recurrence: 'once', certainty: 'unknown' };
+    saved.facts.records[0].schedule = { date: null, recurrence: 'once', certainty: 'unknown', basis: 'payment' };
     expect(draftFacts(saved).records[0].schedule).toEqual(saved.facts.records[0].schedule);
   });
   it('isolates ambiguous record IDs and nested decision evidence from the canonical picture and other drafts', () => {

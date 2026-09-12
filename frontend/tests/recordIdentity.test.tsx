@@ -68,7 +68,7 @@ it('keeps an SSE identity conflict through an unrelated manual save and clears i
   vi.stubGlobal('EventSource', Stream);
   const saved = planningSnapshot();
   saved.facts.records.push({ ...structuredClone(saved.facts.records[0]), id: 'officeRent', label: 'Office rent',
-    amount: { status: 'exact', amountPaise: 800000 }, schedule: { date: '2026-09-18', recurrence: 'monthly', certainty: 'exact' } });
+    amount: { status: 'exact', amountPaise: 800000 }, schedule: { date: '2026-09-18', recurrence: 'monthly', certainty: 'exact', basis: 'payment' } });
   const conflict = structuredClone(saved);
   conflict.sequence = 1; conflict.revision = 1;
   conflict.facts.decision!.ambiguousRecordIds = ['rent', 'officeRent'];

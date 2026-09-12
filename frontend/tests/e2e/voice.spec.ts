@@ -165,7 +165,7 @@ test('provider double: focused Conversation stays in session through End and rec
     opening: { amount: '5000', status: 'exact' },
     coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
     records: [{ id: 'rent', kind: 'essential', label: 'Rent', autoDebit: false, amount: { amount: '1200', status: 'exact' },
-      schedule: { date: dateAt(initial.anchorDate, 2), certainty: 'exact', recurrence: 'once' } }],
+      schedule: { date: dateAt(initial.anchorDate, 2), certainty: 'exact', recurrence: 'once', basis: 'payment' } }],
   } });
   const transitions: { method: string; callId: string; conversationSlug?: string }[] = [];
   page.on('request', request => {
@@ -1608,12 +1608,12 @@ test('provider double: live picture → salary-date correction over SSE → End 
     opening: { amount: '5000', status: 'exact' }, reserve: '0',
     coverage: { income: 'reviewed', essential: 'reviewed', debt: 'reviewed', optional: 'reviewed' },
     records: [
-      { id: 'salary', kind: 'income', label: 'Salary', amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 10), recurrence: 'once', certainty: 'exact' }, reliability: 'reliable', autoDebit: false },
-      { id: 'rent', kind: 'essential', label: 'Rent', amount: { amount: '12000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' }, autoDebit: false },
-      { id: 'loan', kind: 'debt', label: 'Loan', amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 5), recurrence: 'once', certainty: 'exact' }, debtType: 'loan', autoDebit: false },
-      { id: 'food', kind: 'essential', label: 'Food', amount: { amount: '3000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 7), recurrence: 'once', certainty: 'exact' }, autoDebit: false },
-      { id: 'card', kind: 'debt', label: 'Card', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 15), recurrence: 'once', certainty: 'exact' }, debtType: 'card', autoDebit: false },
-      { id: 'optional', kind: 'optional', label: 'Optional purchase', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact' }, autoDebit: false },
+      { id: 'salary', kind: 'income', label: 'Salary', amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 10), recurrence: 'once', certainty: 'exact', basis: 'payment' }, reliability: 'reliable', autoDebit: false },
+      { id: 'rent', kind: 'essential', label: 'Rent', amount: { amount: '12000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false },
+      { id: 'loan', kind: 'debt', label: 'Loan', amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 5), recurrence: 'once', certainty: 'exact', basis: 'payment' }, debtType: 'loan', autoDebit: false },
+      { id: 'food', kind: 'essential', label: 'Food', amount: { amount: '3000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 7), recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false },
+      { id: 'card', kind: 'debt', label: 'Card', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 15), recurrence: 'once', certainty: 'exact', basis: 'payment' }, debtType: 'card', autoDebit: false },
+      { id: 'optional', kind: 'optional', label: 'Optional purchase', amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false },
     ],
   };
   const saved = await submit(page, initial, { type: 'replaceFacts', facts });
@@ -1795,9 +1795,9 @@ test('provider double: semantic card corrections animate once without replacing 
     opening: { amount: '5000', status: 'exact' }, reserve: '0',
     coverage: { income: 'reviewed', essential: 'none', debt: 'none', optional: 'reviewed' }, records: [
       { id: 'optional', label: 'Optional purchase', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable',
-        amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
     ],
   } });
   const records = page.locator('.financial-context .fact-row');
@@ -1884,14 +1884,14 @@ test('provider double: accept an exact whole proposal, replace consent and resto
   const facts: FactsInput = { opening: { amount: '5000', status: 'exact' }, reserve: '0',
     coverage: { income: 'reviewed', essential: 'reviewed', debt: 'reviewed', optional: 'reviewed' }, records: [
       { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable',
-        amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 10), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '30000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 10), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false,
-        amount: { amount: '12000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '12000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'card', label: 'Card', kind: 'debt', debtType: 'card', autoDebit: false, controllability: 'controllable',
         amount: { amount: '2000', status: 'exact' }, target: { amount: '4000', status: 'exact' }, outstanding: { amount: '90000', status: 'exact' },
-        schedule: { date: dateAt(initial.anchorDate, 15), recurrence: 'once', certainty: 'exact' } },
+        schedule: { date: dateAt(initial.anchorDate, 15), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'optional', label: 'Optional purchase', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '2000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 16), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
     ] };
   const baseline = await submit(page, initial, { type: 'replaceFacts', facts });
   expect(baseline.plan.firstGap).toEqual({ date: dateAt(initial.anchorDate, 2), amountPaise: 700000 });
@@ -2023,11 +2023,11 @@ test('provider double: close a preview without declining its cut, then explicitl
     opening: { amount: '1000', status: 'exact' }, reserve: '0',
     coverage: { income: 'none', essential: 'reviewed', debt: 'none', optional: 'reviewed' }, records: [
       { id: 'purchase', label: 'Purchase', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '800', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '800', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false,
-        amount: { amount: '500', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '500', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'trip', label: 'Trip', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '100', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 9), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '100', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 9), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
     ],
   } });
   const assessment = baseline.plan.decisionAssessment!;
@@ -2097,11 +2097,11 @@ test('provider-double: overlapping purchase refusal shows visible guidance witho
     opening: { amount: '1000', status: 'exact' }, reserve: '0',
     coverage: { income: 'none', essential: 'reviewed', debt: 'none', optional: 'reviewed' }, records: [
       { id: 'purchase', label: 'Purchase', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '800', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '800', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false,
-        amount: { amount: '500', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '500', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 3), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       { id: 'trip', label: 'Trip', kind: 'optional', autoDebit: false, controllability: 'controllable',
-        amount: { amount: '100', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 9), recurrence: 'once', certainty: 'exact' } },
+        amount: { amount: '100', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 9), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
     ],
   } });
   const assessment = baseline.plan.decisionAssessment!;

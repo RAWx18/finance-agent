@@ -303,7 +303,7 @@ it.each(['0', '-1', '1.123456789', '1e2'])('rejects invalid supplied exchange ra
 });
 
 it('represents cleared finite bounds explicitly and labels calendar cadence without financial arithmetic', () => {
-  const schedule = { date: '2026-09-13', certainty: 'exact' as const, recurrence: 'daily' as const, endDate: '2026-09-20', count: 4 };
+  const schedule = { date: '2026-09-13', certainty: 'exact' as const, recurrence: 'daily' as const, basis: 'payment' as const, endDate: '2026-09-20', count: 4 };
   expect(schedulePatch({ ...scheduleDraft(schedule), endDate: '', count: '' }, schedule)).toEqual({ endDate: null, count: null });
   expect(scheduleLabel(schedule)).toContain('4 occurrences');
 });
@@ -351,7 +351,7 @@ it('serializes every INR occurrence explicitly so removing a foreign row cannot 
 });
 
 it.each([null, undefined, 2])('preserves the effective finite count when clearing a sequence with persisted count %s', count => {
-  const schedule = { date: '2026-09-13', certainty: 'exact' as const, recurrence: 'weekly' as const, count, amounts: [source(), source()] };
+  const schedule = { date: '2026-09-13', certainty: 'exact' as const, recurrence: 'weekly' as const, basis: 'payment' as const, count, amounts: [source(), source()] };
   const draft = scheduleDraft(schedule);
   expect(draft.count).toBe('2');
   expect(schedulePatch(draft, schedule)).toEqual({});
@@ -365,7 +365,7 @@ it.each(['exact', 'estimate', 'unknown'] as const)('saves only the selected inli
   if (status === 'estimate') { value.status = 'estimate'; value.conversion!.rateStatus = 'estimate'; value.conversion!.feeStatus = 'estimate'; }
   if (status === 'unknown') { value.conversion!.rate = null; value.conversion!.rateStatus = 'unknown'; value.conversion!.fee = null; value.conversion!.feeStatus = 'unknown'; }
   saved.facts.records[0].amount = { amountPaise: null, status: 'unknown' };
-  saved.facts.records[0].schedule = { date: '2026-09-06', certainty: 'exact', recurrence: 'weekly', count: null, endDate: '2026-09-30',
+  saved.facts.records[0].schedule = { date: '2026-09-06', certainty: 'exact', recurrence: 'weekly', basis: 'payment', count: null, endDate: '2026-09-30',
     amounts: [{ amount: '300', status: 'exact', conversion: null }, value, { amount: null, status: 'unknown', conversion: null }] };
   saved.plan.events[0] = { ...saved.plan.events[0], scheduleIndex: 1, source: value, amountStatus: status, amountPaise: status === 'unknown' ? null : 1043200 };
   projectWorkspace(saved);

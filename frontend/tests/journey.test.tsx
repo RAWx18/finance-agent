@@ -497,7 +497,7 @@ describe('App voice and financial journey', () => {
     saved.facts.records.push(...Array.from({ length: 4 }, (_, index) => ({
       id: `bill-${index}`, label: `Bill ${index + 1}`, kind: 'essential' as const,
       amount: { status: 'unknown' as const, amountPaise: null },
-      schedule: { date: null, recurrence: 'once' as const, certainty: 'unknown' as const }, autoDebit: false,
+      schedule: { date: null, recurrence: 'once' as const, certainty: 'unknown' as const, basis: 'payment' as const }, autoDebit: false,
     })));
     act(() => stream.emit('snapshot', saved));
     const picture = screen.getByRole('region', { name: 'Your financial picture' });
@@ -582,7 +582,7 @@ describe('App voice and financial journey', () => {
     const call = screen.getByRole('region', { name: 'Your conversation' });
     const saved = planningSnapshot(); saved.revision = 1; saved.sequence = 1;
     saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 3000000 },
-      schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact' }, reliability: 'reliable', autoDebit: false });
+      schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact', basis: 'payment' }, reliability: 'reliable', autoDebit: false });
     act(() => stream.emit('snapshot', saved));
     expect(screen.getByRole('main')).toHaveAttribute('data-stage', 'taking-shape');
     expect(screen.getByRole('heading', { name: 'Your financial picture' })).toBeVisible();

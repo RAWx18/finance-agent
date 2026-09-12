@@ -61,7 +61,7 @@ it.each([
   saved.facts.opening = { amountPaise: 0, status: 'exact' };
   saved.facts.coverage = { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' };
   saved.facts.records = events.map(({ id, label, kind, date, amountPaise }) => ({ id, label, kind,
-    amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact' }, autoDebit: false,
+    amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact', basis: 'payment' }, autoDebit: false,
     ...(kind === 'income' ? { reliability: 'reliable' as const } : { controllability: 'committed' as const }),
   }));
   saved.plan = { ...saved.plan, projectionPartial: false, reliableIncomePaise: 500000, outflowPaise: 600000,
@@ -197,7 +197,7 @@ it('groups repeated budget occurrences without combining different records or re
   const saved = planningSnapshot();
   saved.plan.events = Array.from({ length: 30 }, (_, index) => ({ ...saved.plan.events[0], id: `budget:${index}`, recordId: 'budget', label: 'Living budget', amountBasis: 'budget' as const, amountPaise: 10000 }));
   saved.plan.events.splice(2, 0, { ...saved.plan.events[0], id: 'other', recordId: 'other', label: 'Living budget', amountPaise: 12345 });
-  saved.facts.records = [{ ...saved.facts.records[0], id: 'budget', label: 'Living budget', schedule: { date: '2026-09-13', recurrence: 'monthlyBudget', certainty: 'exact' } },
+  saved.facts.records = [{ ...saved.facts.records[0], id: 'budget', label: 'Living budget', schedule: { date: '2026-09-13', recurrence: 'monthlyBudget', certainty: 'exact', basis: 'payment' } },
     { ...saved.facts.records[0], id: 'other', label: 'Living budget' }];
   render(<MemoryRouter><MoneyOverview {...controls} snapshot={saved} /></MemoryRouter>);
   const rows = within(screen.getByRole('region', { name: 'Next money and payments' })).getAllByRole('listitem');

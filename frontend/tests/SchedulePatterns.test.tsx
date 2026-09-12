@@ -26,14 +26,14 @@ function editor(saved: Snapshot, field: EditTarget['field'] = 'recurrence') {
 /** Creates an undated monthly schedule fixture using day 31 or a month-end pattern. */
 function patterned(kind: 'dayOfMonth' | 'monthEnd' = 'dayOfMonth'): Snapshot {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', count: null, amounts: [],
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', count: null, amounts: [],
     pattern: kind === 'dayOfMonth' ? { kind, day: 31 } : { kind, day: null } };
   return saved;
 }
 
 it.each([undefined, null])('keeps a monthly schedule with pattern %s undated when opening and saving', async pattern => {
   const saved = planningSnapshot();
-  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern };
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', basis: 'payment', pattern };
   const original = structuredClone(saved);
   const { onCommand } = editor(saved);
   expect(screen.getByLabelText('Timing basis')).toHaveValue('date');
@@ -185,7 +185,7 @@ it('preserves finite variable FX source inputs and blocks conflicting timing opt
   const source: MoneyInput = { amount: '125.50', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact' } };
   const saved = planningSnapshot(); saved.facts.records[0].kind = 'income';
   saved.facts.records[0].amount = { amountPaise: null, status: 'unknown' };
-  saved.facts.records[0].schedule = { date: '2026-08-31', certainty: 'estimate', recurrence: 'monthly', count: null, amounts: [source, { amount: '500', status: 'exact', conversion: null }] };
+  saved.facts.records[0].schedule = { date: '2026-08-31', certainty: 'estimate', recurrence: 'monthly', basis: 'payment', count: null, amounts: [source, { amount: '500', status: 'exact', conversion: null }] };
   const original = structuredClone(saved); const { onCommand } = editor(saved);
   expect(screen.queryByRole('option', { name: 'Monthly day' })).not.toBeInTheDocument();
   expect(screen.queryByRole('option', { name: 'Month-end pattern' })).not.toBeInTheDocument();
@@ -230,13 +230,13 @@ it('edits the absent source date rather than a generated occurrence and sends an
   const target = { recordId: 'rent', field: 'schedule.date' as const }; const draft = fieldDraft(saved, target);
   expect(draft.value).toBe(''); expect(draft.status).toBe('unknown');
   expect(fieldOperation(saved, target, { ...draft, value: '2026-09-30', status: 'exact' }).changes.records).toEqual([
-    { id: 'rent', delete: false, distinct: false, schedule: { date: '2026-09-30', certainty: 'exact' } },
+    { id: 'rent', delete: false, distinct: false, schedule: { date: '2026-09-30', certainty: 'exact', pattern: null } },
   ]);
   expect(saved).toEqual(original);
 });
 
 it('keeps labels unchanged for dated finite and variable schedules without a pattern', () => {
-  const schedule: Schedule = { date: '2026-09-13', certainty: 'exact', recurrence: 'monthly', endDate: '2026-10-31', count: 2,
+  const schedule: Schedule = { date: '2026-09-13', certainty: 'exact', recurrence: 'monthly', basis: 'payment', endDate: '2026-10-31', count: 2,
     amounts: [{ amount: '500', status: 'exact' }, { amount: '600', status: 'estimate' }] };
   expect(scheduleLabel(schedule)).toBe('Monthly · Through 31 Oct 2026 (inclusive) · 2 occurrences · 2 ordered amounts · varies by occurrence');
   expect(schedulePatch(scheduleDraft(schedule), schedule)).toEqual({});

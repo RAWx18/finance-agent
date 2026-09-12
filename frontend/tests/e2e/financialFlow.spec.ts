@@ -12,8 +12,8 @@ test('qualified cash becomes an actionable gap after a correction and survives r
       opening: { amount: '10000', status: 'exact' }, reserve: '0',
       coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
       records: [
-        { id: 'food', label: 'Groceries', kind: 'essential', autoDebit: false, amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } },
-        { id: 'rent', label: 'Rent and utilities', kind: 'essential', autoDebit: false, amount: { amount: '33000', status: 'exact' }, schedule: { date: null, recurrence: 'once', certainty: 'unknown' } },
+        { id: 'food', label: 'Groceries', kind: 'essential', autoDebit: false, amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'rent', label: 'Rent and utilities', kind: 'essential', autoDebit: false, amount: { amount: '33000', status: 'exact' }, schedule: { date: null, recurrence: 'once', certainty: 'unknown', basis: 'payment' } },
       ],
     } });
     await page.goto('/money');
@@ -58,8 +58,8 @@ test('same-day timing remains advisory and grocery support does not invent a cre
       opening: { amount: '0', status: 'exact' }, reserve: '0',
       coverage: { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' },
       records: [
-        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '10000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' } },
-        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' } },
+        { id: 'salary', label: 'Salary', kind: 'income', autoDebit: false, reliability: 'reliable', amount: { amount: '10000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
+        { id: 'rent', label: 'Rent', kind: 'essential', autoDebit: false, amount: { amount: '6000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact', basis: 'payment' } },
       ],
     } });
     await page.goto('/money');
@@ -80,7 +80,7 @@ test('same-day timing remains advisory and grocery support does not invent a cre
     saved = await command(page, { type: 'replaceFacts', facts: {
       opening: { amount: '100', status: 'exact' }, reserve: '0',
       coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
-      records: [{ id: 'food', label: 'Groceries', kind: 'essential', autoDebit: false, controllability: 'controllable', amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact' } }],
+      records: [{ id: 'food', label: 'Groceries', kind: 'essential', autoDebit: false, controllability: 'controllable', amount: { amount: '1000', status: 'exact' }, schedule: { date: dateAt(initial.anchorDate, 1), recurrence: 'once', certainty: 'exact', basis: 'payment' } }],
     } });
     await expect(attention).toContainText(financialText(saved.plan.decisionAssessment!.outcome!.nextStep));
     await page.getByRole('button', { name: 'Explore support options', exact: true }).click();

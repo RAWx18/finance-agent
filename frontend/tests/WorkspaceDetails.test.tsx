@@ -26,7 +26,7 @@ it('projects four canonical patterns with active event priority, hidden uncertai
   const saved = planningSnapshot();
   saved.facts.records.push(...['z', 'y', 'x', 'b', 'a', 'budget', 'salary'].map(id => ({ ...saved.facts.records[0], id, label: id,
     kind: id === 'salary' ? 'income' as const : 'essential' as const,
-    schedule: { date: null, certainty: 'unknown' as const, recurrence: id === 'budget' ? 'monthlyBudget' as const : 'once' as const } })));
+    schedule: { date: null, certainty: 'unknown' as const, recurrence: id === 'budget' ? 'monthlyBudget' as const : 'once' as const, basis: 'payment' as const } })));
   saved.accepted = scenario('accepted'); saved.preview = scenario();
   saved.invalidatedAssumptions = [{ eventId: 'rent:2026-09-13', reason: 'Amount changed.' }];
   const plan = saved.accepted.plan;
@@ -54,7 +54,7 @@ it('projects four canonical patterns with active event priority, hidden uncertai
 it('explains same-day income after the gap witness without claiming it covered that gap', async () => {
   const saved = planningSnapshot();
   saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 1000000, status: 'exact' },
-    schedule: { date: '2026-09-13', certainty: 'exact', recurrence: 'once' }, reliability: 'reliable', autoDebit: false });
+    schedule: { date: '2026-09-13', certainty: 'exact', recurrence: 'once', basis: 'payment' }, reliability: 'reliable', autoDebit: false });
   projectWorkspace(saved);
   saved.workspace!.contributions!.push({ id: 'salary-event', recordId: 'salary', eventId: 'receipt', date: '2026-09-13',
     amountPaise: 1000000, included: true, reason: 'reported', references: [] });
@@ -88,7 +88,7 @@ it.each([
 it.each(['pastReceipt', 'outsideHorizon'] as const)('keeps the server %s exclusion in result evidence for a reliable exact receipt', async reason => {
   const saved = planningSnapshot();
   saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 1000000, status: 'exact' },
-    schedule: { date: '2026-09-01', certainty: 'exact', recurrence: 'once' }, reliability: 'reliable', autoDebit: false });
+    schedule: { date: '2026-09-01', certainty: 'exact', recurrence: 'once', basis: 'payment' }, reliability: 'reliable', autoDebit: false });
   projectWorkspace(saved);
   saved.workspace!.contributions!.push({ id: 'salary-record', recordId: 'salary', eventId: null, date: '2026-09-01',
     amountPaise: 1000000, included: false, reason, references: [] });
@@ -105,7 +105,7 @@ it.each(['pastReceipt', 'outsideHorizon'] as const)('keeps the server %s exclusi
 it('uses only active result evidence rather than duplicating conditional and proposed receipts', async () => {
   const saved = planningSnapshot();
   saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 1000000, status: 'exact' },
-    schedule: { date: '2026-09-13', certainty: 'exact', recurrence: 'once' }, reliability: 'reliable', autoDebit: false });
+    schedule: { date: '2026-09-13', certainty: 'exact', recurrence: 'once', basis: 'payment' }, reliability: 'reliable', autoDebit: false });
   projectWorkspace(saved);
   const receipt = { recordId: 'salary', eventId: 'receipt', date: '2026-09-13', amountPaise: 1000000, included: true, reason: 'reported', references: [] };
   saved.workspace!.contributions!.push({ id: 'event:receipt', ...receipt }, { id: 'income:reportedDate:event:receipt', ...receipt },
@@ -123,7 +123,7 @@ it('uses only active result evidence rather than duplicating conditional and pro
 it.each(['reliable', 'uncertain'] as const)('shows excluded receipts as compact status instead of a report (reliability: %s)', reliability => {
   const saved = planningSnapshot();
   saved.facts.records.push({ id: 'salary', label: 'Salary', kind: 'income', amount: { amountPaise: 1000000, status: 'estimate' },
-    schedule: { date: '2026-09-14', certainty: 'exact', recurrence: 'once' }, reliability, autoDebit: false });
+    schedule: { date: '2026-09-14', certainty: 'exact', recurrence: 'once', basis: 'payment' }, reliability, autoDebit: false });
   saved.plan.events.push({ ...saved.plan.events[0], id: 'salary:2026-09-14', recordId: 'salary', label: 'Salary', kind: 'income',
     date: '2026-09-14', originalDueDate: '2026-09-14', amountPaise: 1000000, amountStatus: 'estimate', included: false });
   render(<FinancialContext {...controls} snapshot={projectWorkspace(saved)} />);

@@ -38,7 +38,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
   }
   const [initialAmount, setInitialAmount] = useState(() => readAmount(target.field));
   const [amount, setAmount] = useState(initialAmount);
-  const [initialSchedule, setInitialSchedule] = useState(() => scheduleDraft(record?.schedule ?? { date: null, certainty: 'unknown', recurrence: 'once' }));
+  const [initialSchedule, setInitialSchedule] = useState(() => scheduleDraft(record?.schedule ?? { date: null, certainty: 'unknown', recurrence: 'once', basis: 'payment' }));
   const [schedule, setSchedule] = useState(initialSchedule);
   const [clearTarget, setClearTarget] = useState(false);
   const [kind, setKind] = useState(target.kind ?? 'essential');
