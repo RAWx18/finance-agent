@@ -442,6 +442,7 @@ class Error(Model):
 
 
 class Settings(Model):
+    assistant_name: str
     currency: Literal["INR"]
     timezone: Literal["Asia/Kolkata"]
     today: date
@@ -451,9 +452,15 @@ class Settings(Model):
     max_money_paise: int
     max_request_bytes: int
     recurrence: list[str]
+    voice_startup_seconds: float
+    voice_shutdown_seconds: float
     voice_available: bool = False
     voice_unavailable_reason: str | None = None
     opening_basis: str = "Enter available cash and only unpaid or future items."
+
+
+class CallRequest(Model):
+    call_id: UUID
 
 
 class CallJoin(Model):

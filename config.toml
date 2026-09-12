@@ -16,6 +16,14 @@ max_sessions = 100
 max_commands = 100
 max_event_streams = 200
 max_streams_per_session = 4
+workspace_max_questions = 3
+workspace_max_actions = 6
+
+[history]
+max_conversations = 200
+max_messages = 2000
+max_caption_chars = 16000
+max_search_chars = 200
 
 [auth]
 session_hours = 168
@@ -42,14 +50,41 @@ voice_limit = 5
 max_rate_keys = 2000
 
 [voice]
+assistant_name = "Isha"
+# Opening guidance for the model, not a scripted spoken reply.
+introduction = "Introduce yourself as {assistant_name}, an AI financial assistant. Briefly explain that you can help plan the next {horizon_days} days, then invite the user's main money concern. Use natural wording; do not request a specific amount or read existing figures."
+language = "English"
+tone = "Warm, calm and practical. Speak to an adult as a capable financial assistant, not a form or a lecturer."
+# Use an exact verified Azure deployment name for an approved model.
+model = "gpt-5.6-terra"
 reasoning_effort = "none"
+model_timeout_seconds = 35
+max_completion_tokens = 1600
+max_tool_rounds = 6
+history_turns = 40
+response_max_sentences = 3
+outcome_max_sentences = 5
+max_questions = 1
 stt_locale = "en-IN"
 stt_segmentation_ms = 500
 stt_phrases = ["rupees", "paise", "lakh", "lakhs", "crore", "crores", "EMI", "equated monthly instalment", "minimum due"]
 tts_voice = "en-IN-Aarti:DragonHDLatestNeural"
 tts_locale = "en-IN"
+tts_gender = "Female"
+# Bound initial audio, stalled streaming, and each complete synthesis request separately.
+tts_first_audio_seconds = 10
+tts_progress_seconds = 5
+tts_total_seconds = 45
+# VAD detects speech; the turn timeout separately gives the user time to continue.
+vad_confidence = 0.5
+# Brief onsets and a moderate volume gate retain short corrections and hesitations.
+vad_start_seconds = 0.1
+vad_stop_seconds = 0.2
+vad_min_volume = 0.5
 call_seconds = 1800
 startup_seconds = 45
 shutdown_seconds = 10
 tool_timeout_seconds = 30
-speech_timeout_seconds = 0.6
+# Preserve thinking pauses; STT finalization does not itself finish the user turn.
+speech_timeout_seconds = 2.6
+inactive_seconds = 60

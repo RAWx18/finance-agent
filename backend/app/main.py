@@ -360,6 +360,7 @@ def create_app(
     async def settings() -> Settings:
         reason = unavailable_reason(config, environment)
         return Settings(
+            assistant_name=config.voice.assistant_name,
             currency=config.currency,
             timezone=config.timezone,
             today=clock().astimezone(ZoneInfo(config.timezone)).date(),
@@ -369,6 +370,8 @@ def create_app(
             max_money_paise=config.max_money_paise,
             max_request_bytes=config.max_request_bytes,
             recurrence=["once", "weekly", "fortnightly", "monthly"],
+            voice_startup_seconds=config.voice.startup_seconds,
+            voice_shutdown_seconds=config.voice.shutdown_seconds,
             voice_available=reason is None,
             voice_unavailable_reason=VOICE_UNAVAILABLE if reason is not None else None,
         )

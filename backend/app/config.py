@@ -5,6 +5,7 @@ import os
 import re
 import tomllib
 from pathlib import Path
+from string import Formatter
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -50,17 +51,64 @@ class AuthConfig(BaseModel):
 class VoiceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    assistant_name: str = Field(min_length=1, max_length=60)
+    introduction: str = Field(min_length=1, max_length=350)
+    language: str = Field(min_length=1, max_length=60)
+    tone: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
     reasoning_effort: Literal["none"]
-    stt_locale: Literal["en-IN"]
+    model_timeout_seconds: float = Field(ge=1, le=120)
+    max_completion_tokens: int = Field(ge=128, le=8192)
+    max_tool_rounds: int = Field(ge=1, le=12)
+    history_turns: int = Field(default=40, ge=1, le=200, strict=True)
+    response_max_sentences: int = Field(ge=1, le=6)
+    outcome_max_sentences: int = Field(ge=1, le=10)
+    max_questions: int = Field(ge=1, le=2)
+    stt_locale: str = Field(pattern=r"^[a-z]{2,3}(?:-[A-Z][A-Za-z0-9]{1,7})?$", max_length=20)
     stt_segmentation_ms: int = Field(ge=100, le=5000)
     stt_phrases: list[str] = Field(min_length=1)
     tts_voice: str = Field(min_length=1)
-    tts_locale: Literal["en-IN"]
+    tts_locale: str = Field(pattern=r"^[a-z]{2,3}(?:-[A-Z][A-Za-z0-9]{1,7})?$", max_length=20)
+    tts_gender: Literal["Female", "Male"]
+    tts_first_audio_seconds: float = Field(ge=1, le=60)
+    tts_progress_seconds: float = Field(ge=1, le=60)
+    tts_total_seconds: float = Field(ge=1, le=180)
+    vad_confidence: float = Field(ge=0, le=1)
+    vad_start_seconds: float = Field(ge=0.1, le=1)
+    vad_stop_seconds: float = Field(ge=0.1, le=1)
+    vad_min_volume: float = Field(ge=0, le=1)
     call_seconds: int = Field(ge=60, le=3600)
     startup_seconds: int = Field(ge=5, le=120)
     shutdown_seconds: int = Field(ge=1, le=30)
     tool_timeout_seconds: int = Field(ge=1, le=120)
     speech_timeout_seconds: float = Field(ge=0.3, le=3)
+    inactive_seconds: float = Field(ge=15, le=300)
+
+    @field_validator("assistant_name", "introduction", "language", "tone")
+    @classmethod
+    def validate_words(cls, value: str) -> str:
+        if not value.strip() or re.search(r"[\x00-\x1f\x7f]", value):
+            raise ValueError("Conversation text must be nonempty and contain no control characters")
+        return value.strip()
+
+    @field_validator("introduction")
+    @classmethod
+    def validate_introduction(cls, value: str) -> str:
+        for _, field, spec, conversion in Formatter().parse(value):
+            if field is not None and (
+                field not in {"assistant_name", "horizon_days"} or spec or conversion
+            ):
+                raise ValueError("Introduction supports only {assistant_name} and {horizon_days}")
+        return value
+
+
+class HistoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_conversations: int = Field(default=200, ge=1, le=1000)
+    max_messages: int = Field(default=2000, ge=1, le=10000)
+    max_caption_chars: int = Field(default=16000, ge=1, le=100000)
+    max_search_chars: int = Field(default=200, ge=1, le=1000)
 
 
 class Config(BaseModel):
@@ -81,6 +129,9 @@ class Config(BaseModel):
     max_commands: int = Field(ge=1, le=10000)
     max_event_streams: int = Field(ge=1, le=10000)
     max_streams_per_session: int = Field(ge=1, le=100)
+    workspace_max_questions: int = Field(default=3, ge=1, le=10)
+    workspace_max_actions: int = Field(default=6, ge=1, le=20)
+    history: HistoryConfig = Field(default_factory=HistoryConfig)
     auth: AuthConfig
     voice: VoiceConfig
 
