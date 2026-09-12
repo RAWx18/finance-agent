@@ -10,10 +10,12 @@ from pipecat.frames.frames import TTSAudioRawFrame
 from pydantic import ValidationError
 
 from app.config import VoiceConfig
+from app.models import Command
 from app.voice_tools import canonical, conversation_messages
 
 from .conftest import parsed_command
 from .test_finance import scenario_two
+from .test_scenarios import operation
 from .test_voice_errors import text_reply
 from .test_voice_opening import render
 from .test_voice_opening import synthesis as synthesis
@@ -24,6 +26,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 @pytest.fixture
 def messages():
+    """Supply canonical state and 45 scripted dialogue turns with tool chains."""
     state = {
         "facts": {"opening": "4200.00", "records": [{"label": "Rent", "amount": None}]},
         "conflicts": [{"values": ["5000.00", "6000.00"]}],
@@ -67,6 +70,7 @@ def messages():
 
 
 def test_context_keeps_canonical_recent_dialogue_and_exact_current_chain(messages):
+    """Verify compact context retains canonical state, recent dialogue, and current tool calls."""
     original = deepcopy(messages)
     request = conversation_messages(messages, 40)
     assert request[0] == messages[0]
@@ -97,6 +101,7 @@ def test_context_keeps_canonical_recent_dialogue_and_exact_current_chain(message
 
 
 def test_fixed_state_request_size_stops_growing_with_successive_turns(messages):
+    """Verify bounded context size stays constant as fixed-size dialogue turns accumulate."""
     sizes = []
     turn = deepcopy(messages[-9:])
     for _ in range(60):
@@ -109,6 +114,7 @@ def test_fixed_state_request_size_stops_growing_with_successive_turns(messages):
 
 
 def test_context_never_reuses_another_conversations_state_or_dialogue(messages):
+    """Verify context compaction never reuses state or dialogue from another conversation."""
     conversation_messages(messages, 40)
     separate = [
         {"role": "developer", "content": '{"facts":{"opening":"123.45"}}'},
@@ -118,9 +124,31 @@ def test_context_never_reuses_another_conversations_state_or_dialogue(messages):
     assert conversation_messages([], 40) == []
 
 
-async def test_request_keeps_one_workspace_and_compact_tool_receipts_without_losing_state(store):
+@pytest.mark.parametrize("phase", ["baseline", "preview", "accepted"])
+async def test_request_keeps_one_workspace_and_compact_tool_receipts_without_losing_state(
+    store, phase
+):
+    """Verify compact requests retain financial state and one workspace across plan phases."""
     await store.create("owner")
     snapshot = await store.command("owner", parsed_command(scenario_two()))
+    if phase != "baseline":
+        snapshot = await store.command(
+            "owner",
+            Command.model_validate(
+                operation(
+                    "previewAdjustments",
+                    snapshot.revision,
+                    adjustments=[{"eventId": "optional:2026-09-27", "amount": "1000"}],
+                )
+            ),
+        )
+    if phase == "accepted":
+        snapshot = await store.command(
+            "owner",
+            Command.model_validate(
+                operation("acceptPreview", snapshot.revision, previewId=str(snapshot.preview.id))
+            ),
+        )
     state = canonical(snapshot)
     messages = [
         {
@@ -148,13 +176,63 @@ async def test_request_keeps_one_workspace_and_compact_tool_receipts_without_los
     original = deepcopy(messages)
     request = conversation_messages(messages, 40)
     sent = json.loads(request[0]["content"].split("\n", 1)[1])
-    assert sent["snapshot"] == snapshot.model_dump(
-        mode="json", by_alias=True, exclude={"workspace", "latest_change"}
-    )
+    expected_snapshot = snapshot.model_dump(mode="json", by_alias=True)
+    expected_snapshot.pop("workspace")
+    expected_snapshot.pop("latestChange")
+    expected_plan = deepcopy(state["activePlan"])
+    for field, source in (
+        ("actions", "actions"),
+        ("choices", "choices"),
+        ("uncertainties", "issues"),
+    ):
+        if expected_plan["decisionAssessment"].get(field) == state["workspace"].get(source):
+            expected_plan["decisionAssessment"].pop(field)
+    expected_plan["decisionAssessment"].pop("outcome")
+    if phase == "accepted":
+        expected_snapshot["accepted"].pop("plan")
+    else:
+        expected_snapshot.pop("plan")
+    assert sent["activePlan"] == expected_plan
+    assert sent["snapshot"] == expected_snapshot
+    workspace = deepcopy(state["workspace"])
+    workspace.pop("change")
+    for card in workspace["cards"]:
+        card.pop("dependencies", None)
+        card.pop("rows", None)
+    for value in workspace["results"]:
+        value.pop("dependencies", None)
+    for value in workspace["contributions"]:
+        value.pop("references", None)
     assert {key: value for key, value in sent.items() if key != "snapshot"} == {
-        key: value for key, value in state.items() if key != "snapshot"
+        **{
+            key: value
+            for key, value in state.items()
+            if key
+            not in {
+                "snapshot",
+                "activeAssessment",
+                "spokenBrief",
+                "workspace",
+                "change",
+                "activePlan",
+            }
+        },
+        "activePlan": expected_plan,
+        "workspace": workspace,
+        "change": sent["change"],
     }
-    assert sent["workspace"]["change"] == state["snapshot"]["latestChange"]
+    assert {key: value for key, value in sent["change"].items() if key != "items"} == {
+        key: value for key, value in state["change"].items() if key != "items"
+    }
+    for item, original_item in zip(sent["change"]["items"], state["change"]["items"], strict=True):
+        assert {key: value for key, value in item.items() if key != "fields"} == {
+            key: value for key, value in original_item.items() if key != "fields"
+        }
+        for field in original_item["fields"]:
+            if not field["reference"].startswith("workspace.results.") or (
+                field["reference"].rsplit(".", 1)[-1] in {"amountPaise", "date", "state"}
+            ):
+                assert field in item["fields"]
     assert request[1:3] == messages[1:3]
     assert request[3]["tool_call_id"] == "current-read"
     assert json.loads(request[3]["content"]) == {
@@ -170,6 +248,7 @@ async def test_request_keeps_one_workspace_and_compact_tool_receipts_without_los
 
 @pytest.mark.parametrize("limit", [1, 40, 200])
 def test_context_cap_includes_latest_finalized_user_turn(messages, limit):
+    """Verify the context turn limit always includes the latest complete user-turn chain."""
     request = conversation_messages(messages, limit)
     assert sum(message["role"] == "user" for message in request) == min(limit, 45)
     assert request[-9:] == messages[-9:]
@@ -177,6 +256,7 @@ def test_context_cap_includes_latest_finalized_user_turn(messages, limit):
 
 @pytest.mark.parametrize("user", [False, True])
 def test_opening_context_is_copied_without_changing_guidance(user):
+    """Verify opening context is copied independently without changing its guidance."""
     messages = [
         {"role": "developer", "content": "Current canonical state"},
         {"role": "developer", "content": "Opening guidance"},
@@ -196,12 +276,14 @@ def test_opening_context_is_copied_without_changing_guidance(user):
 
 @pytest.mark.parametrize("limit", [0, 201, -1, True, 1.5, "40"])
 def test_history_turns_rejects_invalid_configuration(config, limit):
+    """Verify history limits reject invalid types and out-of-range values."""
     with pytest.raises(ValidationError):
         VoiceConfig.model_validate({**config.voice.model_dump(), "history_turns": limit})
 
 
 @pytest.mark.parametrize("limit", [1, 40, 200])
 def test_history_turns_accepts_configured_bounds(config, limit):
+    """Verify history limits accept supported configured values."""
     assert (
         VoiceConfig.model_validate(
             {**config.voice.model_dump(), "history_turns": limit}
@@ -211,6 +293,7 @@ def test_history_turns_accepts_configured_bounds(config, limit):
 
 
 def test_history_turns_defaults_to_primary_config(config):
+    """Verify the history limit default matches the primary configuration."""
     values = config.voice.model_dump()
     values.pop("history_turns")
     assert VoiceConfig.model_validate(values).history_turns == config.voice.history_turns == 40
@@ -220,6 +303,7 @@ def test_history_turns_defaults_to_primary_config(config):
 async def test_runtime_prunes_before_guidance_without_resetting_turn_budgets(
     voice, synthesis, store, messages
 ):
+    """Verify runtime requests prune history without mutating context or resetting turn budgets."""
     voice.pipeline.client_ready.set()
     voice.pipeline.context.get_messages().extend(deepcopy(messages[1:]))
     original = deepcopy(voice.pipeline.context.get_messages())
@@ -239,7 +323,16 @@ async def test_runtime_prunes_before_guidance_without_resetting_turn_budgets(
             expected = canonical(await store.get("owner"))
             expected["snapshot"].pop("workspace")
             expected["snapshot"].pop("latestChange")
-            assert json.loads(state.split("\n", 1)[1]) == expected
+            expected["snapshot"].pop("plan")
+            expected.pop("activeAssessment")
+            expected.pop("spokenBrief")
+            expected["workspace"].pop("change")
+            assert expected["change"] is None
+            sent = json.loads(state.split("\n", 1)[1])
+            assert sent["snapshot"] == expected["snapshot"]
+            assert sent["outcome"] == expected["outcome"]
+            assert sent["activePlan"]["events"] == expected["activePlan"]["events"]
+            assert sent["workspace"]["actions"] == expected["workspace"]["actions"]
         assert not any(message["role"] == "tool" for message in requests[0]["messages"])
         assert [
             message["tool_call_id"]

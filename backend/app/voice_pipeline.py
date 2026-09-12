@@ -18,6 +18,7 @@ from .history import CaptionHistory
 from .models import Snapshot
 from .store import Problem, Store
 from .voice_tools import (
+    AFTER_TOOLS,
     TOOL_DEFINITIONS,
     VoiceTools,
     canonical,
@@ -46,6 +47,7 @@ RESUME = (
 
 
 def prepare_runtime() -> None:
+    """Verify local tokenizer data and warm voice SDK imports without downloads."""
     import importlib
 
     import nltk  # type: ignore[import-untyped]
@@ -78,7 +80,10 @@ def prepare_runtime() -> None:
 
 
 class VoicePipeline:
+    """Supervised voice pipeline with generation guards and resumable conversation state."""
+
     def __init__(self) -> None:
+        """Initialize pipeline resources, turn state, readiness events, and metrics."""
         self.worker: Any = None
         self.runner: Any = None
         self.context: Any = None
@@ -119,9 +124,11 @@ class VoicePipeline:
         self.created_at = time.monotonic()
 
     def mark(self, stage: str) -> None:
+        """Record the first elapsed time for a pipeline lifecycle stage."""
         self.timings.setdefault(stage, round(time.monotonic() - self.created_at, 6))
 
     def refresh(self, snapshot: Snapshot) -> None:
+        """Refresh canonical context and invalidate output from superseded state."""
         if self.revoked or snapshot.sequence < self.sequence:
             return
         if snapshot.sequence > self.sequence:
@@ -141,6 +148,7 @@ class VoicePipeline:
         }
 
     def invalidate(self) -> None:
+        """Revoke the pipeline, clear retained context, and flush queued speech."""
         if self.revoked:
             return
         self.revoked = True
@@ -169,6 +177,7 @@ class VoicePipeline:
         fail: Callable[[], None],
         end: Callable[[], None],
     ) -> None:
+        """Construct and launch the guarded Daily, speech, model, and tool pipeline."""
         if missing := environment.missing_azure_openai():
             raise Problem(503, "voiceUnavailable", "Missing setup: " + ", ".join(missing) + ".")
         # SDK debug messages can contain transcripts, tokens, and provider error bodies.
@@ -233,7 +242,10 @@ class VoicePipeline:
         generation: ContextVar[int] = ContextVar("voice_generation", default=-1)
 
         class SetupObserver(BaseObserver):
+            """Startup timing observer for voice processors and framework warmup."""
+
             async def on_processor_setup(self, data: ProcessorSetUp) -> None:
+                """Record selected voice processor setup durations and readiness."""
                 name = type(data.processor).__name__
                 if name in {
                     "DailyInputTransport",
@@ -248,6 +260,7 @@ class VoicePipeline:
                     pipeline.mark(name + "Ready")
 
             async def on_startup_warmup(self, data: StartupWarmup) -> None:
+                """Record framework warmup duration and completion time."""
                 pipeline.timings["frameworkWarmupSeconds"] = round(
                     (data.finished_at_ns - data.started_at_ns) / 1_000_000_000, 6
                 )
@@ -255,6 +268,8 @@ class VoicePipeline:
 
         @dataclass
         class Completion:
+            """Generation-bound response text, tool progress, and deadline state."""
+
             generation: int
             required: bool
             allow_tools: bool = True
@@ -282,6 +297,7 @@ class VoicePipeline:
         )
 
         def current(frame: Frame) -> bool:
+            """Check whether a frame belongs to the active, unpaused generation."""
             return (
                 not pipeline.revoked
                 and not pipeline.waiting
@@ -289,9 +305,11 @@ class VoicePipeline:
             )
 
         def count(name: str) -> None:
+            """Increment a named pipeline metric."""
             pipeline.metrics[name] = pipeline.metrics.get(name, 0) + 1
 
         def failed() -> None:
+            """Revoke the pipeline and notify its owner of failure once."""
             if pipeline.revoked:
                 return
             pipeline.invalidate()
@@ -301,6 +319,7 @@ class VoicePipeline:
         recovery_frame: Frame | None = None
 
         async def pause_response() -> None:
+            """Flush failed output, discard its response chain, and publish paused state."""
             nonlocal recovery_frame
             async with pipeline.state_lock:
                 try:
@@ -330,6 +349,7 @@ class VoicePipeline:
                     failed()
 
         def response_error(frame: ErrorFrame) -> bool:
+            """Pause recoverable provider failures for explicit user continuation."""
             if frame.metadata.get("voice_recovered"):
                 return True
             source = frame.processor
@@ -371,13 +391,18 @@ class VoicePipeline:
             return True
 
         class SupervisedTasks(TaskManager):
+            """Task manager that reports unexpected worker failures."""
+
             def create_task(
                 self,
                 coroutine: Coroutine[Any, Any, Any],
                 name: str,
                 context: Context | None = None,
             ) -> asyncio.Task[Any]:
+                """Supervise a coroutine and close it if canceled before execution."""
+
                 async def observed() -> Any:
+                    """Report worker crashes and propagate task failures."""
                     try:
                         return await coroutine
                     except SystemExit:
@@ -392,6 +417,7 @@ class VoicePipeline:
                 task = super().create_task(observed(), name, context)
 
                 def settled(task: asyncio.Task[Any]) -> None:
+                    """Close a coroutine that never began execution."""
                     if inspect.getcoroutinestate(coroutine) == inspect.CORO_CREATED:
                         coroutine.close()
 
@@ -399,7 +425,10 @@ class VoicePipeline:
                 return task
 
         class SupervisedWorker(PipelineWorker):
+            """Pipeline worker that treats unexpected termination as failure."""
+
             async def run(self, params: Any) -> None:
+                """Run the worker and report cancellation or exit outside shutdown."""
                 try:
                     await super().run(params)
                 except asyncio.CancelledError:
@@ -411,7 +440,10 @@ class VoicePipeline:
                         failed()
 
         class PublicRTVI(RTVIProcessor):
+            """Client protocol processor with caption persistence and sanitized errors."""
+
             async def set_bot_ready(self, about: Any = None) -> None:
+                """Send bot readiness only after pipeline startup completes."""
                 # The handshake can arrive while StartFrame is still crossing the processors.
                 await pipeline.started.wait()
                 if not pipeline.revoked:
@@ -421,6 +453,7 @@ class VoicePipeline:
             async def push_transport_message(
                 self, model: BaseModel, exclude_none: bool = True
             ) -> None:
+                """Capture caption history before forwarding a transport message."""
                 if pipeline.history is not None and not pipeline.revoked:
                     try:
                         await pipeline.history.capture(model.model_dump(exclude_none=True))
@@ -431,6 +464,7 @@ class VoicePipeline:
                 await super().push_transport_message(model, exclude_none)
 
             async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                """Recover transient errors or sanitize failures before forwarding."""
                 if isinstance(frame, ErrorFrame):
                     if response_error(frame):
                         return
@@ -449,7 +483,10 @@ class VoicePipeline:
                 await super().process_frame(frame, direction)
 
         class GuardedLLM(AzureLLMService):
+            """Azure model service with generation, tool-budget, and response guards."""
+
             async def get_chat_completions(self, context: LLMContext) -> Any:
+                """Request compact conversation context and supervise streamed output."""
                 response = completion.get()
                 assert response is not None
                 messages = conversation_messages(context.get_messages(), voice.history_turns)
@@ -467,17 +504,13 @@ class VoicePipeline:
                     tools=context.tools,
                     tool_choice=context.tool_choice,
                 )
-                if not response.required and response.allow_tools:
+                if pipeline.tool_rounds > 0 and response.allow_tools:
                     context = LLMContext(
                         [
                             *context.get_messages(),
                             {
                                 "role": "developer",
-                                "content": "Address the entire completed user turn using current "
-                                "tool results. An initial no or stop followed by a correction "
-                                "interrupts playback, not the conversation. Acknowledge the "
-                                "processed correction or answer naturally. Use another tool only "
-                                "if a requested action remains; do not repeat committed writes.",
+                                "content": AFTER_TOOLS,
                             },
                         ],
                         tools=context.tools,
@@ -487,6 +520,7 @@ class VoicePipeline:
                 pipeline.mark("firstModelResponse")
 
                 async def observed() -> Any:
+                    """Track stream progress and reject refusals or unsafe completion."""
                     async with stream:
                         async for chunk in stream:
                             for choice in chunk.choices or []:
@@ -533,6 +567,7 @@ class VoicePipeline:
                 return observed()
 
             async def _run_function_call(self, runner_item: Any) -> None:
+                """Execute a tool callback only in its current response generation."""
                 response = calls.get(runner_item.tool_call_id)
                 if (
                     response is None
@@ -547,6 +582,7 @@ class VoicePipeline:
                     generation.reset(token)
 
             async def _process_context(self, context: LLMContext) -> None:
+                """Bound model progress and record response completion or failure."""
                 response = completion.get()
                 assert response is not None
                 try:
@@ -568,6 +604,7 @@ class VoicePipeline:
             async def run_function_calls(
                 self, function_calls: Sequence[FunctionCallFromLLM]
             ) -> None:
+                """Validate the tool batch and reserve its response budget before dispatch."""
                 response = completion.get()
                 if response is None or pipeline.revoked or generation.get() != pipeline.generation:
                     return
@@ -588,6 +625,7 @@ class VoicePipeline:
                 await super().run_function_calls(function_calls)
 
             async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                """Track turns and interruptions, then admit generation-bound model requests."""
                 if isinstance(frame, (InterruptionFrame, UserStartedSpeakingFrame)):
                     if pipeline.tools is not None:
                         pipeline.tools.user_turn = ""
@@ -704,6 +742,7 @@ class VoicePipeline:
             async def push_frame(
                 self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
             ) -> None:
+                """Publish only completed, current model text and handle response failures."""
                 response = completion.get()
                 if isinstance(frame, ErrorFrame):
                     if response is not None and generation.get() != pipeline.generation:
@@ -753,7 +792,10 @@ class VoicePipeline:
                 await super().push_frame(frame, direction)
 
         class GuardedSpeech(SpeechSynthesis):
+            """Speech synthesis guard for response generations and recoverable errors."""
+
             def __init__(self, **kwargs: Any) -> None:
+                """Initialize synthesis generation maps and deferred start frames."""
                 super().__init__(**kwargs)
                 self.generations: dict[str, int] = {}
                 self.starts: dict[str, TTSStartedFrame] = {}
@@ -761,6 +803,7 @@ class VoicePipeline:
             async def push_error_frame(
                 self, error: ErrorFrame, force_treat_as_permanent: bool = False
             ) -> None:
+                """Recover eligible synthesis errors before forwarding permanent failures."""
                 error.processor = self
                 if not force_treat_as_permanent and response_error(error):
                     return
@@ -769,6 +812,7 @@ class VoicePipeline:
             async def _handle_interruption(
                 self, frame: InterruptionFrame, direction: FrameDirection
             ) -> None:
+                """Bound synthesis interruption and fail the pipeline if cleanup fails."""
                 try:
                     async with asyncio.timeout(store.config.voice.shutdown_seconds):
                         await super()._handle_interruption(frame, direction)
@@ -776,6 +820,7 @@ class VoicePipeline:
                     failed()
 
             async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                """Drop stale speech input and bind synthesis work to its generation."""
                 if isinstance(frame, spoken_frames) and not current(frame):
                     return
                 if isinstance(frame, InterruptionFrame):
@@ -788,10 +833,12 @@ class VoicePipeline:
                     generation.reset(token)
 
             async def on_turn_context_created(self, context_id: str) -> None:
+                """Associate a synthesis context with the active response generation."""
                 self.generations[context_id] = generation.get()
                 count("synthesis_contexts")
 
             async def on_turn_context_completed(self) -> None:
+                """Retire generation tracking after the synthesis context is released."""
                 context_id = self._turn_context_id
                 await super().on_turn_context_completed()  # type: ignore[no-untyped-call]
                 if context_id and context_id not in self._tts_contexts:
@@ -800,6 +847,7 @@ class VoicePipeline:
             async def push_frame(
                 self, frame: Frame, direction: FrameDirection = FrameDirection.DOWNSTREAM
             ) -> None:
+                """Filter stale synthesis output and emit start frames with the first audio."""
                 if isinstance(frame, spoken_frames):
                     context_id = getattr(frame, "context_id", None)
                     if context_id:
@@ -822,7 +870,10 @@ class VoicePipeline:
                 await super().push_frame(frame, direction)
 
         class OutputGuard(FrameProcessor):
+            """Final generation filter and publication metrics for voice output."""
+
             async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                """Drop stale output and record audio that reaches the transport."""
                 await super().process_frame(frame, direction)
                 if isinstance(frame, spoken_frames) and not current(frame):
                     count("stale_output_frames")
@@ -835,7 +886,10 @@ class VoicePipeline:
                 await self.push_frame(frame, direction)
 
         class InputGate(FrameProcessor):
+            """Input filter for paused or revoked conversations."""
+
             async def process_frame(self, frame: Frame, direction: FrameDirection) -> None:
+                """Block audio and transcripts while the conversation is paused or revoked."""
                 await super().process_frame(frame, direction)
                 if (pipeline.waiting or pipeline.revoked) and isinstance(
                     frame, (InputAudioRawFrame, TranscriptionFrame, InterimTranscriptionFrame)
@@ -891,6 +945,7 @@ class VoicePipeline:
             )
 
         async def handle(params: FunctionCallParams) -> None:
+            """Invoke a current tool call and publish its result only if still authorized."""
             response = calls.pop(params.tool_call_id, None)
             if (
                 self.revoked
@@ -936,7 +991,7 @@ class VoicePipeline:
                 ):
                     response.generation = self.generation
                     response.remaining -= 1
-                    self.needs_tools = False
+                    self.needs_tools = result.get("code") == "invalidFacts"
                     token = generation.set(self.generation)
                     try:
                         await params.result_callback(
@@ -1041,14 +1096,17 @@ class VoicePipeline:
         )
 
         async def started(worker: Any, frame: Any) -> None:
+            """Record pipeline startup and release the startup readiness event."""
             self.mark("pipelineStarted")
             self.started.set()
 
         async def joined(transport: Any, data: Any) -> None:
+            """Record the Daily join and release the transport readiness event."""
             self.mark("dailyJoined")
             self.joined.set()
 
         async def client_ready(rtvi: Any) -> None:
+            """Publish initial state and queue an opening only if the user has not spoken."""
             if not self.revoked and not self.client_ready.is_set():
                 self.mark("clientReady")
                 self.client_ready.set()
@@ -1066,9 +1124,11 @@ class VoicePipeline:
                     await self.worker.queue_frame(LLMRunFrame())
 
         async def user_started(aggregator: Any, strategy: Any) -> None:
+            """Count detected user turn starts."""
             count("user_starts")
 
         async def user_stopped(aggregator: Any, strategy: Any, message: Any) -> None:
+            """Count completed user turns."""
             count("user_turns")
 
         async def user_idle(
@@ -1076,6 +1136,7 @@ class VoicePipeline:
             expected_generation: int | None = None,
             expected_response: Completion | None = None,
         ) -> None:
+            """Pause an idle or empty response after checking its generation and readiness."""
             async with self.state_lock:
                 if (
                     self.revoked
@@ -1101,6 +1162,7 @@ class VoicePipeline:
                 await self.send_state()
 
         async def client_message(rtvi: Any, message: Any) -> None:
+            """Resume a paused conversation only for a matching client state sequence."""
             if message.type != "continue-conversation":
                 return
             async with self.state_lock:
@@ -1131,8 +1193,10 @@ class VoicePipeline:
                             "restart intake, or skip ahead to a different question."
                             if self.wait_reason == "response"
                             else "The user chose Continue after a quiet pause. "
-                            "Keep the existing facts, briefly welcome them back, "
-                            "and ask the current useful question. "
+                            "Keep the existing facts and briefly welcome them back. "
+                            "Use the retained dialogue: ask only a useful unanswered question, "
+                            "otherwise give the next step or finish a pending explanation. "
+                            "Do not repeat a question or understanding check already answered. "
                             "Do not restart intake or claim any payments happened.",
                         }
                     )
@@ -1143,32 +1207,39 @@ class VoicePipeline:
                     await self.send_state()
 
         async def participant_left(transport: Any, participant: Any, reason: Any) -> None:
+            """Request normal call shutdown when a participant leaves."""
             self.stopping = True
             end()
 
         async def left(transport: Any) -> None:
+            """Distinguish expected transport departure from an unexpected disconnect."""
             if self.stopping or self.revoked:
                 end()
             else:
                 failed()
 
         async def transport_error(transport: Any, error: Any) -> None:
+            """Fail the call on a transport error."""
             failed()
 
         async def pipeline_error(worker: Any, frame: Any) -> None:
+            """Fail the call unless the pipeline error supports explicit continuation."""
             if not response_error(frame):
                 failed()
 
         async def finished(worker: Any, frame: Any) -> None:
+            """Report worker completion as normal only during shutdown."""
             if self.stopping:
                 end()
             else:
                 failed()
 
         async def pipeline_timeout(worker: Any, frame: Any) -> None:
+            """Fail the call when the pipeline exceeds a lifecycle deadline."""
             failed()
 
         async def interruption_processed(processor: Any, frame: Frame) -> None:
+            """Signal when the recovery interruption reaches the assistant aggregator."""
             if frame is recovery_frame:
                 interrupted.set()
 
@@ -1192,6 +1263,7 @@ class VoicePipeline:
         self.task = asyncio.create_task(self.runner.run())
 
         def completed(task: asyncio.Task[None]) -> None:
+            """Consume runner errors and report expected shutdown or unexpected exit."""
             if not task.cancelled():
                 task.exception()
             if not self.stopping and not self.revoked:
@@ -1203,11 +1275,13 @@ class VoicePipeline:
         self.mark("constructionComplete")
 
     async def ready(self) -> None:
+        """Wait for pipeline startup, Daily transport join, and client readiness."""
         await self.started.wait()
         await self.joined.wait()
         await self.client_ready.wait()
 
     async def send_state(self) -> None:
+        """Publish sequenced conversation status and any response-pause reason."""
         await self.worker.rtvi.send_server_message(
             {
                 "type": "conversation-state",
@@ -1218,6 +1292,7 @@ class VoicePipeline:
         )
 
     async def interrupt(self) -> None:
+        """Flush stale speech, reset response budgets, and queue an eligible state-aware reply."""
         if self.revoked or not self.started.is_set():
             return
         from pipecat.frames.frames import InterruptionFrame
@@ -1251,6 +1326,7 @@ class VoicePipeline:
             await self.worker.queue_frame(LLMRunFrame())
 
     async def close(self) -> None:
+        """Stop the worker and release all processor and model-client resources."""
         self.stopping = True
         self.invalidate()
         failure: BaseException | None = None

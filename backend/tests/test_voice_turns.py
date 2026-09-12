@@ -33,6 +33,7 @@ from .test_voice import environment
 
 
 def tool_reply(name, arguments, call_id, following=()):
+    """Build a synthetic completion stream containing one or more tool calls."""
     chunk = {
         "id": "test-completion",
         "object": "chat.completion.chunk",
@@ -75,6 +76,7 @@ def tool_reply(name, arguments, call_id, following=()):
 
 
 async def next_frame(queue, frame_type):
+    """Wait up to two seconds for a queued frame of the requested type."""
     async with asyncio.timeout(2):
         while True:
             frame = await queue.get()
@@ -83,6 +85,7 @@ async def next_frame(queue, frame_type):
 
 
 async def recognize(voice, text, *, final=True):
+    """Deliver a synthetic final or interim recognition event through the SDK callback."""
     event = SimpleNamespace(
         result=SimpleNamespace(
             text=text,
@@ -95,6 +98,7 @@ async def recognize(voice, text, *, final=True):
 
 
 async def complete_turn(voice, text):
+    """Submit a synthetic final transcript and wait for the user turn to complete."""
     await recognize(voice, text)
     # Policy tests await asynchronous callbacks; dedicated turn tests own timing assertions.
     return await asyncio.wait_for(voice.turns.get(), voice.turn_timeout + 10)
@@ -102,6 +106,7 @@ async def complete_turn(voice, text):
 
 @pytest.fixture
 def voice_boundaries(monkeypatch):
+    """Supply queued frames and mocked transport, recognition, synthesis, and HTTP boundaries."""
     frames = asyncio.Queue()
     requests = asyncio.Queue()
     responses = asyncio.Queue()
@@ -125,11 +130,15 @@ def voice_boundaries(monkeypatch):
     monkeypatch.setattr("app.speech.SpeechSynthesizer", Mock(return_value=synthesizer))
 
     class PendingStream(httpx.AsyncByteStream):
+        """Synthetic response stream that remains pending until cancellation."""
+
         async def __aiter__(self):
+            """Suspend stream iteration without emitting response bytes."""
             await asyncio.Event().wait()
             yield b""
 
     def respond(request):
+        """Capture completion requests and return queued or synthetic tool responses."""
         assert request.url.path == "/openai/v1/chat/completions"
         body = json.loads(request.content)
         requests.put_nowait(body)
@@ -156,6 +165,7 @@ def voice_boundaries(monkeypatch):
 
 @pytest.fixture
 async def voice(store, tmp_path, voice_boundaries, request):
+    """Yield a running pipeline with isolated provider boundaries and observed turn events."""
     store.config = store.config.model_copy(
         update={"voice": store.config.voice.model_copy(update=getattr(request, "param", {}))}
     )
@@ -205,6 +215,7 @@ async def voice(store, tmp_path, voice_boundaries, request):
 
 
 async def test_azure_request_disables_parallel_generation_not_tool_cancellation(voice):
+    """Verify completion requests disable parallel tool generation but retain cancellation."""
     await complete_turn(voice, "Please help me get started.")
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request.get("parallel_tool_calls") is False
@@ -217,6 +228,7 @@ async def test_azure_request_disables_parallel_generation_not_tool_cancellation(
 
 
 async def test_finalized_segments_cannot_save_a_correction_while_user_is_speaking(voice, store):
+    """Verify finalized segments wait for the full user turn before saving a correction."""
     await voice.pipeline.tools.update_facts(
         {
             "expectedRevision": 0,
@@ -284,6 +296,7 @@ async def test_finalized_segments_cannot_save_a_correction_while_user_is_speakin
 
 @pytest.mark.parametrize("vad", [True, False])
 async def test_split_correction_rearms_turn_stop_including_transcript_only_turns(voice, store, vad):
+    """Verify split corrections reset turn completion with and without VAD events."""
     if vad:
         await voice.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
         await asyncio.wait_for(voice.started.wait(), 2)
@@ -314,12 +327,14 @@ async def test_split_correction_rearms_turn_stop_including_transcript_only_turns
 async def test_interrupted_real_tool_runner_can_read_ambiguous_write_outcome(
     voice, store, monkeypatch, committed
 ):
+    """Verify an interrupted tool runner can reconcile whether a fact write committed."""
     transaction = store.transaction
     reached = asyncio.Event()
     release = asyncio.Event()
 
     @asynccontextmanager
     async def paused_transaction():
+        """Pause the real transaction on the selected side of its commit boundary."""
         async with transaction():
             yield
             if not committed:
@@ -356,12 +371,14 @@ async def test_interrupted_real_tool_runner_can_read_ambiguous_write_outcome(
 
 
 async def test_real_tool_callbacks_serialize_writes_and_reads(voice, store, monkeypatch):
+    """Verify sequential tool callbacks finish writes before serving subsequent reads."""
     transaction = store.transaction
     reached = asyncio.Event()
     release = asyncio.Event()
 
     @asynccontextmanager
     async def paused_transaction():
+        """Pause the real transaction before commit until explicitly released."""
         async with transaction():
             yield
             reached.set()
@@ -393,6 +410,7 @@ async def test_real_tool_callbacks_serialize_writes_and_reads(voice, store, monk
 async def test_watcher_distinguishes_own_write_from_external_correction(
     voice, store, tmp_path, monkeypatch
 ):
+    """Verify the watcher interrupts only external corrections and retains the latest state."""
     pipeline = voice.pipeline
     manager = CallManager(store, store.config, environment(tmp_path))
     call_id = uuid4()
@@ -407,6 +425,7 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
     refresh = pipeline.refresh
 
     def observed_refresh(snapshot):
+        """Refresh the pipeline and queue the supplied snapshot for inspection."""
         refresh(snapshot)
         refreshed.put_nowait(snapshot)
 
@@ -415,6 +434,7 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
     interrupt_pipeline = pipeline.interrupt
 
     async def completed_interrupt():
+        """Interrupt the pipeline and signal completion to the test."""
         await interrupt_pipeline()
         interrupted.set()
 
@@ -453,7 +473,7 @@ async def test_watcher_distinguishes_own_write_from_external_correction(
             if message["content"].startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == current.model_dump(
-            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
+            mode="json", by_alias=True, exclude={"workspace", "latest_change", "plan"}
         )
         assert any("Saved figures changed" in message["content"] for message in request["messages"])
         assert await store.get("owner") == current

@@ -36,6 +36,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 
 def text_reply(text):
+    """Build a synthetic streamed chat response containing the supplied text."""
     chunk = {
         "id": "completion",
         "object": "chat.completion.chunk",
@@ -52,9 +53,11 @@ def text_reply(text):
 
 @pytest.mark.parametrize("cause", ["interruption", "correction", "revocation"])
 async def test_delayed_sdk_audio_cannot_enter_the_next_synthesis(voice, store, monkeypatch, cause):
+    """Verify delayed SDK callbacks cannot emit obsolete audio after interruption or revocation."""
     requests = asyncio.Queue()
 
     def synthesizer(**kwargs):
+        """Create a synthesizer mock that queues itself when speech is requested."""
         instance = Mock()
         instance.speak_ssml_async.side_effect = lambda text: requests.put_nowait(instance)
         return instance
@@ -109,6 +112,7 @@ async def test_delayed_sdk_audio_cannot_enter_the_next_synthesis(voice, store, m
 
 @pytest.mark.parametrize("trigger", ["timer", "coalescedEvents"])
 async def test_timer_uses_latest_snapshot_and_does_not_regress(voice, store, tmp_path, trigger):
+    """Verify timer and coalesced store events refresh the latest snapshot without regression."""
     pipeline = voice.pipeline
     manager = CallManager(
         store,
@@ -150,11 +154,15 @@ async def test_timer_uses_latest_snapshot_and_does_not_regress(voice, store, tmp
 async def test_cancelled_completion_cannot_speak_or_save_after_external_correction(
     voice, store, reply
 ):
+    """Verify cancelled completions cannot speak or save stale output after a correction."""
     reached = asyncio.Event()
     delivered = asyncio.Event()
 
     class DelayedStream(httpx.AsyncByteStream):
+        """Completion stream fake that delivers obsolete output when cancelled."""
+
         async def __aiter__(self):
+            """Wait for cancellation before yielding a synthetic text or tool response."""
             reached.set()
             try:
                 await asyncio.Event().wait()
@@ -195,7 +203,7 @@ async def test_cancelled_completion_cannot_speak_or_save_after_external_correcti
         if message.get("content", "").startswith("Canonical application state;")
     )
     assert json.loads(state.split("\n", 1)[1])["snapshot"] == snapshot.model_dump(
-        mode="json", by_alias=True, exclude={"workspace", "latest_change"}
+        mode="json", by_alias=True, exclude={"workspace", "latest_change", "plan"}
     )
     result = await next_frame(voice.frames, FunctionCallResultFrame)
     assert result.function_name == "read_state" and result.tool_call_id != "obsolete-save"
@@ -208,6 +216,7 @@ async def test_cancelled_completion_cannot_speak_or_save_after_external_correcti
 async def test_revocation_during_real_save_never_delivers_a_result(
     voice, store, monkeypatch, committed
 ):
+    """Verify revocation suppresses tool delivery during a save even when facts persist."""
     transaction = store.transaction
     reached = asyncio.Event()
     release = asyncio.Event()
@@ -215,6 +224,7 @@ async def test_revocation_during_real_save_never_delivers_a_result(
 
     @asynccontextmanager
     async def paused_transaction():
+        """Pause the real transaction before or after commit and signal completion."""
         async with transaction():
             yield
             if not committed:
@@ -242,10 +252,12 @@ async def test_revocation_during_real_save_never_delivers_a_result(
 
 
 async def test_pipeline_error_is_sanitized_and_revokes_output(voice):
+    """Verify pipeline errors are sanitized and revoke further context and generation."""
     voice.expect_failure = True
     errors = asyncio.Queue()
 
     async def error_received(worker, frame):
+        """Capture a pipeline error frame for inspection."""
         errors.put_nowait(frame)
 
     voice.pipeline.worker.add_event_handler("on_pipeline_error", error_received)
@@ -266,6 +278,7 @@ async def test_pipeline_error_is_sanitized_and_revokes_output(voice):
 
 @pytest.fixture
 async def lifecycle(store, tmp_path, monkeypatch, voice_boundaries):
+    """Yield a call manager with mocked room and voice boundaries, then close it."""
     await store.create("owner")
     rooms = SimpleNamespace(
         create=AsyncMock(return_value="https://test.daily.co/owned-room"),
@@ -290,6 +303,7 @@ async def lifecycle(store, tmp_path, monkeypatch, voice_boundaries):
     "terminal", ["end", "leave", "provider", "store", "cancelledRunner", "readiness"]
 )
 async def test_real_runner_terminal_paths_release_the_owned_room(lifecycle, store, terminal):
+    """Verify runner terminal paths release the owned room and revoke pipeline resources."""
     manager = lifecycle.manager
     if terminal == "readiness":
         manager.config = manager.config.model_copy(
@@ -329,6 +343,7 @@ async def test_real_runner_terminal_paths_release_the_owned_room(lifecycle, stor
 async def test_native_stop_blocks_replacement_until_reobserved(
     lifecycle, voice_boundaries, service
 ):
+    """Verify pending native stops block replacement calls until cleanup is observed complete."""
     manager = lifecycle.manager
     manager.config = manager.config.model_copy(
         update={"voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.1})}
@@ -344,6 +359,7 @@ async def test_native_stop_blocks_replacement_until_reobserved(
     loop = asyncio.get_running_loop()
 
     def stop():
+        """Signal native stop entry from its thread and block until released."""
         loop.call_soon_threadsafe(entered.set)
         release.wait()
 
@@ -408,9 +424,11 @@ async def test_native_stop_blocks_replacement_until_reobserved(
 
 
 async def test_supervised_system_exit_is_sanitized_without_escaping_event_loop(voice, capsys):
+    """Verify supervised SystemExit revokes the pipeline without leaking details or escaping."""
     voice.expect_failure = True
 
     async def exit_worker():
+        """Raise a simulated worker exit containing private diagnostic text."""
         raise SystemExit("private-worker-body")
 
     task = voice.pipeline.worker.task_manager.create_task(exit_worker(), "exiting-worker")
@@ -423,9 +441,11 @@ async def test_supervised_system_exit_is_sanitized_without_escaping_event_loop(v
 
 @pytest.mark.parametrize("queued", [False, True])
 async def test_supervised_cancellation_is_silent_and_closes_queued_coroutines(voice, queued):
+    """Verify worker cancellation closes queued coroutines without reporting a crash."""
     entered = asyncio.Event()
 
     async def pending():
+        """Signal worker entry and remain suspended until cancellation."""
         entered.set()
         await asyncio.Event().wait()
 
@@ -443,15 +463,18 @@ async def test_supervised_cancellation_is_silent_and_closes_queued_coroutines(vo
 
 
 async def test_end_during_provider_startup_never_returns_a_join(lifecycle, monkeypatch):
+    """Verify ending during mocked provider startup prevents a join and deduplicates cleanup."""
     reached = asyncio.Event()
     closing = asyncio.Event()
     release = asyncio.Event()
 
     async def token(*args):
+        """Signal token request entry and remain blocked until cancellation."""
         reached.set()
         await asyncio.Event().wait()
 
     async def delete(*args):
+        """Signal room deletion entry and wait for the test to release cleanup."""
         closing.set()
         await release.wait()
 
@@ -476,6 +499,7 @@ async def test_end_during_provider_startup_never_returns_a_join(lifecycle, monke
 
 @pytest.mark.parametrize("cleanup", ["delete", "close"])
 async def test_room_cleanup_deadline_preserves_primary_setup_failure(lifecycle, cleanup):
+    """Verify a room cleanup timeout preserves the primary startup error and ends supervision."""
     manager = lifecycle.manager
     manager.config = manager.config.model_copy(
         update={"voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.05})}
@@ -483,6 +507,7 @@ async def test_room_cleanup_deadline_preserves_primary_setup_failure(lifecycle, 
     lifecycle.rooms.token.side_effect = Problem(503, "voiceUnavailable", "Primary setup failure")
 
     async def blocked(*args):
+        """Simulate a room cleanup operation that never completes on its own."""
         await asyncio.Event().wait()
 
     getattr(lifecycle.rooms, cleanup).side_effect = blocked
@@ -502,6 +527,7 @@ async def test_room_cleanup_deadline_preserves_primary_setup_failure(lifecycle, 
 async def test_real_authorization_loss_stops_the_runner(
     auth_server, voice_boundaries, monkeypatch, terminal
 ):
+    """Verify logout or session expiry revokes the runner and releases mocked room resources."""
     application, client, now = auth_server
     manager = application.state.calls
     manager.config = manager.config.model_copy(update={"heartbeat_seconds": 0.01})

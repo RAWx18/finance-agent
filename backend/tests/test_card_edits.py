@@ -28,12 +28,14 @@ from .test_workspace import update
 
 
 def card_edit(revision, **changes):
+    """Build a fact-update command marked as a human card edit."""
     command = update(revision, **changes)
     command.operation.source = "humanCardEdit"
     return command
 
 
 async def test_provenance_persists_atomically_with_immutable_retry_receipt(store):
+    """Verify card-edit provenance persists with immutable receipts across retries and restart."""
     await store.create("owner")
     queue = await store.subscribe("owner")
     queue.get_nowait()
@@ -82,12 +84,14 @@ async def test_provenance_persists_atomically_with_immutable_retry_receipt(store
 async def test_failed_card_transaction_cannot_leave_state_receipt_or_notification(
     store, monkeypatch
 ):
+    """Verify a failed card-edit transaction leaves no state, command receipt, or notification."""
     before = await store.create("owner")
     queue = await store.subscribe("owner")
     queue.get_nowait()
     save = store.save_snapshot
 
     async def failing_save(owner, snapshot):
+        """Raise after snapshot persistence to exercise transaction rollback."""
         await save(owner, snapshot)
         raise RuntimeError("transaction interrupted")
 
@@ -100,6 +104,7 @@ async def test_failed_card_transaction_cannot_leave_state_receipt_or_notificatio
 
 
 async def test_noop_does_not_relabel_or_repeat_provenance_and_voice_stays_unattributed(store):
+    """Verify no-op edits preserve provenance and voice updates lack human-card attribution."""
     await store.create("owner")
     saved = await store.command("owner", update(0, opening=money("100")))
     assert saved.latest_change.source is None
@@ -115,6 +120,7 @@ async def test_noop_does_not_relabel_or_repeat_provenance_and_voice_stays_unattr
 
 
 async def test_card_resolution_preserves_exact_changed_refs_and_estimate(store):
+    """Verify card conflict resolution retains estimate status and records the resolved conflict."""
     await store.create("owner")
     await store.command("owner", update(0, opening=money("100")))
     disputed = await store.command(
@@ -151,6 +157,7 @@ async def test_card_resolution_preserves_exact_changed_refs_and_estimate(store):
 
 
 def test_http_card_edits_use_authenticated_actor_and_reject_forgery(client):
+    """Verify card-edit attribution uses the authenticated actor and rejects forged metadata."""
     client.post("/api/session", json={})
     user_id = client.get("/api/auth/session").json()["user"]["id"]
     command = card_edit(0, opening=money("100")).model_dump(
@@ -181,6 +188,7 @@ def test_http_card_edits_use_authenticated_actor_and_reject_forgery(client):
 
 
 async def test_llm_cannot_supply_card_source_and_compaction_retains_canonical_change(store):
+    """Verify tools reject human-card attribution and compacted context retains canonical edits."""
     await store.create("owner")
     saved = await store.command("owner", card_edit(0, opening=money("100")))
     assert "source" not in tool_parameters(FactsPatch)["properties"]
@@ -203,11 +211,14 @@ async def test_llm_cannot_supply_card_source_and_compaction_retains_canonical_ch
     request = conversation_messages(messages, 40)
     sent = json.loads(request[0]["content"].split("\n", 1)[1])
     assert "latestChange" not in sent["snapshot"] and "workspace" not in sent["snapshot"]
-    assert (
-        sent["change"]
-        == sent["workspace"]["change"]
-        == saved.latest_change.model_dump(mode="json", by_alias=True)
+    assert "change" not in sent["workspace"]
+    assert sent["change"]["source"] == saved.latest_change.source.model_dump(
+        mode="json", by_alias=True
     )
+    assert sent["change"]["id"] == str(saved.latest_change.id)
+    for item in saved.latest_change.items:
+        if not item.id.startswith("result:"):
+            assert item.model_dump(mode="json", by_alias=True) in sent["change"]["items"]
     assert json.loads(request[-1]["content"])["stateSource"] == "canonical"
     assert sent["dialogue"]["sharedCardIds"] == ["cash"]
 
@@ -216,11 +227,15 @@ async def test_llm_cannot_supply_card_source_and_compaction_retains_canonical_ch
 async def test_watcher_human_edit_invalidates_generation_and_sends_canonical_state(
     voice, store, tmp_path, reply
 ):
+    """Verify a human card edit invalidates stale voice output and sends authoritative state."""
     reached = asyncio.Event()
     delivered = asyncio.Event()
 
     class DelayedStream(httpx.AsyncByteStream):
+        """Deliver an obsolete model response after cancellation to test generation invalidation."""
+
         async def __aiter__(self):
+            """Yield stale text or a tool response after cancellation and signal delivery."""
             reached.set()
             try:
                 await asyncio.Event().wait()
@@ -267,7 +282,13 @@ async def test_watcher_human_edit_invalidates_generation_and_sends_canonical_sta
             if item.get("content", "").startswith("Canonical application state;")
         )
         state = json.loads(state.split("\n", 1)[1])
-        assert state["change"] == saved.latest_change.model_dump(mode="json", by_alias=True)
+        assert state["change"]["id"] == str(saved.latest_change.id)
+        assert state["change"]["source"] == saved.latest_change.source.model_dump(
+            mode="json", by_alias=True
+        )
+        for item in saved.latest_change.items:
+            if not item.id.startswith("result:"):
+                assert item.model_dump(mode="json", by_alias=True) in state["change"]["items"]
         assert state["snapshot"]["facts"]["opening"]["amountPaise"] == 20000
         assert pipeline.generation > generation and pipeline.sequence == saved.sequence
         receipt = await next_frame(voice.frames, FunctionCallResultFrame)

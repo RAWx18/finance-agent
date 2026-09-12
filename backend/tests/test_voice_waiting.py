@@ -46,6 +46,7 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 
 @pytest.fixture
 def config(request):
+    """Load configuration with an optional parametrized inactivity timeout."""
     config = load_config()
     if hasattr(request, "param"):
         config = config.model_copy(
@@ -55,6 +56,7 @@ def config(request):
 
 
 async def next_state(voice):
+    """Wait for the next conversation-state transport message."""
     async with asyncio.timeout(2):
         while True:
             frame = await voice.frames.get()
@@ -68,6 +70,7 @@ async def next_state(voice):
 
 
 async def continue_conversation(voice, sequence):
+    """Dispatch a Continue client message carrying the supplied state sequence."""
     await voice.pipeline.worker.rtvi._call_event_handler(
         "on_client_message",
         ClientMessage(
@@ -77,6 +80,7 @@ async def continue_conversation(voice, sequence):
 
 
 async def enter_waiting(voice):
+    """Simulate finished bot speech and return the verified waiting-state sequence."""
     sequence = voice.pipeline.state_sequence
     await voice.pipeline.worker.queue_frames([BotStartedSpeakingFrame(), BotStoppedSpeakingFrame()])
     state = await next_state(voice)
@@ -87,6 +91,7 @@ async def enter_waiting(voice):
 
 @pytest.fixture
 async def active(voice, store, synthesis):
+    """Complete a scripted exchange and supply a ready pipeline with active state."""
     user = next(item for item in voice.pipeline.processors if isinstance(item, LLMUserAggregator))
     assert isinstance(user._user_idle_controller, UserIdleController)
     voice.responses.put_nowait(tool_reply("read_state", {}, "initial-state"))
@@ -115,6 +120,7 @@ async def active(voice, store, synthesis):
 
 
 def test_conversation_timing_defaults_are_independent(config):
+    """Verify independent defaults for speech, VAD, inactivity, and call duration."""
     assert config.voice.speech_timeout_seconds == 2.6
     assert config.voice.vad_start_seconds == 0.1
     assert config.voice.vad_stop_seconds == 0.2
@@ -125,6 +131,7 @@ def test_conversation_timing_defaults_are_independent(config):
 
 @pytest.mark.parametrize("pause", [1.2, 2.0])
 async def test_pauses_filler_and_interims_remain_one_turn_until_speech_timer(voice, store, pause):
+    """Verify pauses, fillers, and interim corrections stay in one turn until speech settles."""
     baseline = await store.get("owner")
     await voice.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
     await asyncio.wait_for(voice.started.wait(), 2)
@@ -159,6 +166,7 @@ async def test_pauses_filler_and_interims_remain_one_turn_until_speech_timer(voi
 
 
 async def test_short_no_interrupts_before_turn_completion(voice, store):
+    """Verify a short refusal interrupts bot speech before the user turn completes."""
     await voice.pipeline.worker.queue_frame(BotStartedSpeakingFrame())
     await next_frame(voice.frames, BotStartedSpeakingFrame)
     await voice.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
@@ -176,6 +184,7 @@ async def test_short_no_interrupts_before_turn_completion(voice, store):
 
 
 async def test_ordered_speaking_frames_clear_stale_flag_before_llm_context(active):
+    """Verify ordered speech-stop frames clear stale speaking state before generation."""
     pipeline = active.pipeline
     await pipeline.worker.queue_frame(UserStartedSpeakingFrame())
     await next_frame(active.frames, UserStartedSpeakingFrame)
@@ -190,10 +199,13 @@ async def test_ordered_speaking_frames_clear_stale_flag_before_llm_context(activ
 
 @pytest.mark.parametrize("config", [0.05], indirect=True)
 class TestWaiting:
+    """Waiting-state lifecycle, continuation, and input-output isolation checks."""
+
     @pytest.mark.parametrize("cause", ["empty", "inactivity"])
     async def test_continue_before_any_user_turn_preserves_call_context_and_fresh_state(
         self, voice, synthesis, store, cause
     ):
+        """Verify early Continue retains call context and refreshes facts without tool replay."""
         pipeline = voice.pipeline
         context, worker, task = pipeline.context, pipeline.worker, pipeline.task
         voice.responses.put_nowait(text_reply("" if cause == "empty" else "Hello, how can I help?"))
@@ -233,7 +245,7 @@ class TestWaiting:
             if message.get("content", "").startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == baseline.model_dump(
-            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
+            mode="json", by_alias=True, exclude={"workspace", "latest_change", "plan"}
         )
         instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
         text = "".join(ElementTree.fromstring(ssml).itertext()).strip()
@@ -260,6 +272,7 @@ class TestWaiting:
     async def test_ending_recovery_suppresses_late_sdk_audio_and_continue(
         self, voice, synthesis, store, cause
     ):
+        """Verify ending recovery blocks late SDK audio and subsequent Continue requests."""
         pipeline = voice.pipeline
         pipeline.client_ready.set()
         sequence = await enter_waiting(voice)
@@ -284,6 +297,7 @@ class TestWaiting:
         assert await store.get("owner") == baseline
 
     async def test_idle_before_any_user_input_keeps_the_call_open(self, voice, store):
+        """Verify pre-input inactivity keeps the call open without generation or speech."""
         baseline = await store.get("owner")
         voice.pipeline.client_ready.set()
         await enter_waiting(voice)
@@ -300,6 +314,7 @@ class TestWaiting:
     async def test_idle_after_bot_output_waits_without_input_output_or_call_end(
         self, active, store
     ):
+        """Verify inactivity after bot output waits silently without ending the call."""
         baseline = await store.get("owner")
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(next_state(active), 0.15)
@@ -317,6 +332,7 @@ class TestWaiting:
     async def test_continue_keeps_context_and_refreshes_external_edits_once(
         self, active, store, monkeypatch, synthesis
     ):
+        """Verify Continue retains context, refreshes edits, and ignores duplicate requests."""
         pipeline = active.pipeline
         context, worker, runner = pipeline.context, pipeline.worker, pipeline.runner
         context.add_message({"role": "user", "content": "My wages arrive on Friday."})
@@ -344,7 +360,7 @@ class TestWaiting:
             if item.get("content", "").startswith("Canonical application state;")
         )
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == baseline.model_dump(
-            mode="json", by_alias=True, exclude={"workspace", "latest_change"}
+            mode="json", by_alias=True, exclude={"workspace", "latest_change", "plan"}
         )
         assert {"role": "user", "content": "My wages arrive on Friday."} in request["messages"]
         instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
@@ -370,6 +386,7 @@ class TestWaiting:
         assert await store.get("owner") == baseline
 
     async def test_stale_continue_returns_waiting_without_running_model(self, active):
+        """Verify stale Continue requests return waiting state without starting generation."""
         sequence = await enter_waiting(active)
         await continue_conversation(active, sequence - 1)
         assert await next_state(active) == {
@@ -385,6 +402,7 @@ class TestWaiting:
     async def test_waiting_blocks_queued_input_context_and_registered_tools(
         self, active, store, monkeypatch
     ):
+        """Verify waiting blocks queued audio, transcripts, generation, and tool execution."""
         await enter_waiting(active)
         pipeline = active.pipeline
         baseline = await store.get("owner")
@@ -422,6 +440,7 @@ class TestWaiting:
         assert await store.get("owner") == baseline
 
     async def test_revoked_continue_cannot_resume_or_restore_context(self, active, store):
+        """Verify Continue cannot resume a revoked pipeline or restore its context."""
         sequence = await enter_waiting(active)
         baseline = await store.get("owner")
         active.pipeline.invalidate()
@@ -435,6 +454,7 @@ class TestWaiting:
         assert await store.get("owner") == baseline
 
     async def test_expired_session_fails_closed_on_continue(self, active, store):
+        """Verify Continue revokes the pipeline when its stored session has expired."""
         sequence = await enter_waiting(active)
         baseline = await store.get("owner")
         store.clock = lambda: baseline.expires_at + timedelta(seconds=1)
@@ -451,6 +471,7 @@ class TestWaiting:
         assert error.value.body.code == "notFound"
 
     async def test_delayed_audio_metadata_is_rejected_after_wait_and_continue(self, active):
+        """Verify audio from a prior generation is rejected after waiting and Continue."""
         generation = active.pipeline.generation
         published = active.pipeline.metrics["published_audio"]
         sequence = await enter_waiting(active)
@@ -470,6 +491,7 @@ class TestWaiting:
 
     @pytest.mark.parametrize("busy", ["user", "bot"])
     async def test_idle_controller_suppresses_timer_during_speaking(self, active, busy):
+        """Verify speaking suppresses inactivity waiting until both sides are silent."""
         await active.pipeline.worker.queue_frame(BotStoppedSpeakingFrame())
         if busy == "user":
             await active.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
@@ -490,10 +512,12 @@ class TestWaiting:
     async def test_idle_controller_does_not_fire_while_real_tool_runner_is_busy(
         self, active, store, monkeypatch
     ):
+        """Verify a pending tool read prevents inactivity waiting until it completes."""
         reached, release = asyncio.Event(), asyncio.Event()
         read = active.pipeline.tools.read_state
 
         async def paused_read():
+            """Wait for release before reading the real canonical state."""
             reached.set()
             await release.wait()
             return await read()

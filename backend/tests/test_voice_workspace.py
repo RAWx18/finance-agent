@@ -14,6 +14,7 @@ from .conftest import facts, money, parsed_command, record
 
 
 async def test_voice_and_consumers_share_one_workspace_for_multi_fact_corrections(store):
+    """Verify multi-fact voice corrections publish the same workspace to all consumers."""
     initial = await store.create("owner")
     assert initial.workspace.cards == []
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
@@ -88,6 +89,7 @@ async def test_voice_and_consumers_share_one_workspace_for_multi_fact_correction
 
 
 async def test_one_completed_turn_can_create_disputed_income_and_other_clear_facts(store):
+    """Verify one turn saves disputed income alongside clear facts for later resolution."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     arguments = {
@@ -151,6 +153,7 @@ async def test_one_completed_turn_can_create_disputed_income_and_other_clear_fac
 
 
 async def test_question_choice_is_bounded_and_unavailable_is_not_repeated(store):
+    """Verify bounded question choices stop offering unavailable details without hiding issues."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -188,6 +191,7 @@ async def test_question_choice_is_bounded_and_unavailable_is_not_repeated(store)
 
 
 async def test_later_intake_questions_do_not_displace_help_for_the_current_gap(store):
+    """Verify immediate gap guidance takes priority over later intake questions."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -217,6 +221,7 @@ async def test_later_intake_questions_do_not_displace_help_for_the_current_gap(s
 
 
 async def test_read_workspace_is_single_snapshot_not_an_unbounded_options_fetch(store, monkeypatch):
+    """Verify reading voice state returns a bounded workspace without scanning options."""
     await store.create("owner")
     monkeypatch.setattr(store, "options", AsyncMock(side_effect=AssertionError("No option scan")))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
@@ -228,7 +233,43 @@ async def test_read_workspace_is_single_snapshot_not_an_unbounded_options_fetch(
     store.options.assert_not_awaited()
 
 
+async def test_repeated_facts_read_keeps_original_goal_and_revision(store):
+    """Verify reading repeated facts preserves the saved goal and revision."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "5000",
+                [record("rent", "essential", "7000", "2026-09-15")],
+                decision={
+                    "concern": "Help me cover rent before payday.",
+                    "focusRecordIds": ["rent"],
+                },
+            )
+        ),
+    )
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    result = await tools.invoke("read_state", {}, "repeated-amounts")
+    assert result["snapshot"]["facts"]["decision"]["concern"] == baseline.facts.decision.concern
+    assert await store.get("owner") == baseline
+
+
+async def test_tool_failure_logs_type_without_private_arguments(store, monkeypatch, caplog):
+    """Verify tool failures log their type without exposing private exception details."""
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    monkeypatch.setattr(
+        store, "get", AsyncMock(side_effect=RuntimeError("private amount or token"))
+    )
+    result = await tools.invoke("read_state", {}, "failed-read")
+    assert result["code"] == "voiceUnavailable"
+    assert "tool=read_state exception=RuntimeError" in caplog.text
+    assert "private amount or token" not in caplog.text
+    assert "private amount or token" not in json.dumps(result)
+
+
 async def test_explicit_proposal_rejection_is_not_discard_or_execution(store):
+    """Verify explicit proposal rejection records refusal without executing adjustments."""
     await store.create("owner")
     await store.command(
         "owner",
@@ -270,6 +311,7 @@ async def test_explicit_proposal_rejection_is_not_discard_or_execution(store):
     ],
 )
 async def test_model_cannot_write_authoritative_results_or_server_owned_decisions(store, arguments):
+    """Verify tool inputs cannot overwrite authoritative results or server-owned decisions."""
     before = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     response = await tools.invoke("update_facts", arguments, "invalid-authority")
@@ -278,6 +320,7 @@ async def test_model_cannot_write_authoritative_results_or_server_owned_decision
 
 
 def test_tool_contract_and_scope_separate_interpretation_from_financial_authority(config):
+    """Verify tool schemas and guidance separate interpretation from financial authority."""
     schema = tool_parameters(FactsPatch)
     assert "$ref" not in json.dumps(schema)
     assert "amountPaise" not in json.dumps(schema)
@@ -293,6 +336,7 @@ def test_tool_contract_and_scope_separate_interpretation_from_financial_authorit
 
 
 async def test_omitted_date_certainty_never_promotes_an_estimate(store):
+    """Verify date edits preserve estimated certainty until explicitly confirmed exact."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     response = await tools.update_facts(
