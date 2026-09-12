@@ -5,7 +5,11 @@ from datetime import date
 
 import pytest
 
-from .conftest import facts, money, record
+from app.facts import facts_input
+
+from .conftest import facts, money, parsed_command, record
+from .test_action_responses import response_command
+from .test_currency_conversion import foreign
 from .test_decision_priorities import next_action
 from .test_finance import project
 
@@ -260,3 +264,101 @@ def test_unknown_outflow_scope_never_gives_positive_assurance_with_dated_records
         "Check remaining living costs and required payments"
         in plan.decision_assessment.outcome.summary
     )
+
+
+@pytest.mark.parametrize("field", ["amount", "rate", "fee"])
+async def test_finite_unknown_questions_advance_only_with_their_source_correction(store, field):
+    """Keep one dated question per field and preserve later unknown sources through deferrals."""
+    amounts = [money("100")] + [
+        money(None, "unknown") if field == "amount" else foreign(**{field: None}) for _ in range(3)
+    ]
+    item = record(
+        "work",
+        "income",
+        None,
+        None,
+        schedule={"date": "2026-09-12", "recurrence": "weekly", "amounts": amounts},
+    ) | {"amount": money(None, "unknown")}
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(facts("100", [item, record("loan", "debt", "500", "2026-09-14")])),
+    )
+    identity = f"work:{'amount' if field == 'amount' else 'conversion' + field.title()}"
+    current = await store.command("owner", response_command(baseline, "unavailable"))
+    assert next_action(current.plan).id == f"clarify:{identity}"
+    assert next_action(current.plan).before_date == date(2026, 9, 19)
+    assert str(date(2026, 9, 19)) in next_action(current.plan).question
+    assert [
+        u.id for u in current.plan.decision_assessment.uncertainties if u.record_ids == ["work"]
+    ] == [identity]
+    current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).id == "review"
+    assert current.plan.events == baseline.plan.events
+    source = facts_input(current.facts).model_dump(mode="json", by_alias=True)
+    source["records"][0]["schedule"]["amounts"][1] = (
+        money("100") if field == "amount" else foreign()
+    )
+    current = await store.command("owner", parsed_command(source, current.revision))
+    assert next_action(current.plan).id == f"clarify:{identity}"
+    assert next_action(current.plan).before_date == date(2026, 9, 26)
+    assert "2026-09-26" in next_action(current.plan).question
+    assert len([u for u in current.plan.decision_assessment.uncertainties if u.id == identity]) == 1
+    assert (
+        facts_input(current.facts).records[0].schedule.amounts[2:]
+        == facts_input(baseline.facts).records[0].schedule.amounts[2:]
+    )
+    assert [
+        e.model_dump(exclude={"balance_paise"})
+        for e in current.plan.events
+        if e.record_id == "work"
+    ][2:] == [
+        e.model_dump(exclude={"balance_paise"})
+        for e in baseline.plan.events
+        if e.record_id == "work"
+    ][2:]
+    receipt = next(
+        e for e in current.plan.events if e.record_id == "work" and e.schedule_index == 1
+    )
+    assert current.plan.closing_paise == baseline.plan.closing_paise + receipt.amount_paise
+    assert current.preview is current.accepted is None
+
+
+async def test_later_missing_occurrence_precedes_a_later_purchase_cut(store):
+    """Ask the next dated missing amount after deferral before offering a still later reduction."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "100",
+                [
+                    record(
+                        "food",
+                        "essential",
+                        None,
+                        None,
+                        schedule={
+                            "date": "2026-09-12",
+                            "recurrence": "weekly",
+                            "amounts": [money("100"), money(None, "unknown")],
+                        },
+                    )
+                    | {"amount": money(None, "unknown")},
+                    record("loan", "debt", "500", "2026-09-14"),
+                    record("purchase", "optional", "1000", "2026-09-20"),
+                    record("rent", "essential", "1000", "2026-09-22"),
+                ],
+            )
+        ),
+    )
+    assert next_action(baseline.plan).id == "contact:loan:2026-09-14"
+    current = await store.command("owner", response_command(baseline, "unavailable"))
+    assert next_action(current.plan).id == "clarify:food:amount"
+    assert next_action(current.plan).before_date == date(2026, 9, 19)
+    current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).id == "contact:food:2026-09-19"
+    current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).id == "preview:purchase:2026-09-20"
+    assert current.plan.events == baseline.plan.events
+    assert current.preview is current.accepted is None

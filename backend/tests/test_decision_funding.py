@@ -5,10 +5,10 @@ from datetime import date
 
 import pytest
 
-from app.decisions import action_dependency_key
+from app.decisions import UNAVAILABLE_ACTIONS, action_dependency_key
 from app.facts import facts_input
-from app.finance import calculate, export_text, normalize
-from app.models import Command, FactsInput
+from app.finance import calculate, export_text, normalize, resolve_adjustments
+from app.models import AdjustmentInput, Command, FactsInput, ProjectionMetrics
 from app.voice_tools import canonical
 
 from .conftest import facts, money, parsed_command, record
@@ -180,6 +180,60 @@ async def test_essential_support_deferral_survives_cash_but_reopens_on_commitmen
     assert current.facts.records[0].amount.amount_paise == 100000
 
 
+@pytest.mark.parametrize("early_timing_only", [False, True])
+@pytest.mark.parametrize("decline_first", [False, True])
+async def test_later_timing_only_cut_remains_optional_after_earlier_deferral(
+    store, early_timing_only, decline_first
+):
+    """Retain optional comparisons without promoting timing-only relief as funded progress."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "0",
+                [
+                    record("rent", "essential", "6000", "2026-09-14", controllability="committed"),
+                    record(
+                        "salary", "income", "6000" if early_timing_only else "4000", "2026-09-14"
+                    ),
+                    record("wages", "income", "10000", "2026-09-15"),
+                    record("purchase", "optional", "12000", "2026-09-16"),
+                    record("receipt", "income", "10000", "2026-09-16"),
+                ],
+            )
+        ),
+    )
+    assert next_action(baseline.plan).id == (
+        "clarify:schedule:sameDayTiming:2026-09-14"
+        if early_timing_only
+        else "contact:rent:2026-09-14"
+    )
+    current = await store.command("owner", response_command(baseline, "unavailable"))
+    action = next_action(current.plan)
+    assert action.id == "clarify:schedule:sameDayTiming:2026-09-16"
+    choice = next(c for c in current.plan.decision_assessment.choices if c.kind == "reduceOptional")
+    assert choice.metrics.first_gap == baseline.plan.first_gap
+    assert choice.metrics.peak_gap_paise == baseline.plan.peak_gap_paise == 600000
+    assert choice.metrics.closing_paise > baseline.plan.closing_paise > 0
+    assert choice.metrics.timing_risks == baseline.plan.timing_risks[:1]
+    assert len(baseline.plan.timing_risks) == 2
+    preview = next(a for a in current.plan.decision_assessment.actions if a.choice_id == choice.id)
+    assert "explicit consent" in preview.question
+    assert current.plan.events == baseline.plan.events
+    assert current.preview is current.accepted is None
+    if decline_first:
+        current = await store.command("owner", response_command(current, "declined", preview.id))
+        assert next_action(current.plan).id == "clarify:schedule:sameDayTiming:2026-09-16"
+    current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).id == "review"
+    assert any(
+        item.id == preview.id for item in current.plan.decision_assessment.actions
+    ) is not decline_first
+    assert current.plan.events == baseline.plan.events
+    assert current.facts.provider_responses == []
+
+
 async def test_loan_target_review_is_not_an_adjustment_or_required_shortfall(store):
     """Verify loan target reviews distinguish intended extras from required payments."""
     await store.create("owner")
@@ -344,3 +398,123 @@ def test_required_only_gap_is_not_mislabeled_as_an_intended_extra(target):
     assert "not an established shortfall" not in action.question
     assert "INR 1000.00 remains unfunded" in action.question
     assert plan.first_gap.amount_paise == 100000
+
+
+@pytest.mark.parametrize("timing_peak", [False, True], ids=["laterPeak", "unchangedTimingPeak"])
+async def test_later_funding_cut_is_reachable_without_resolving_earlier_gap(store, timing_peak):
+    """Verify later funding relief stays selectable after earlier obligations are deferred."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "0",
+                [
+                    record(
+                        "rent",
+                        "essential",
+                        "6000" if timing_peak else "1000",
+                        "2026-09-14",
+                        controllability="committed",
+                    ),
+                    record("wages", "income", "10000" if timing_peak else "2000", "2026-09-15"),
+                    record("purchase", "optional", "6000", "2026-09-16"),
+                    record(
+                        "salary",
+                        "income",
+                        "4000" if timing_peak else "10000",
+                        "2026-09-14" if timing_peak else "2026-09-16",
+                    ),
+                    record("food", "essential", "7000" if timing_peak else "6000", "2026-09-18"),
+                ],
+            )
+        ),
+    )
+    plan = baseline.plan
+    choice = next(c for c in plan.decision_assessment.choices if c.kind == "reduceOptional")
+    comparison = calculate(
+        baseline.facts,
+        baseline.anchor_date,
+        store.config,
+        adjustments=resolve_adjustments(
+            [AdjustmentInput(event_id="purchase:2026-09-16", amount="0")],
+            (await store.options("owner")).options,
+            store.config,
+        ),
+    )
+    assert choice.metrics.model_dump() == comparison.model_dump(
+        include=set(ProjectionMetrics.model_fields)
+    )
+    assert choice.metrics.first_gap == plan.first_gap
+    assert not choice.affects_first_gap
+    assert plan.first_gap.date == date(2026, 9, 14)
+    assert plan.first_gap.amount_paise == (600000 if timing_peak else 100000)
+    assert plan.peak_gap_paise == (600000 if timing_peak else 500000)
+    assert plan.closing_paise == (-500000 if timing_peak else -100000)
+    assert comparison.peak_gap_paise == (600000 if timing_peak else 100000)
+    assert comparison.closing_paise == (100000 if timing_peak else 500000)
+    assert choice.affects_peak_gap == (not timing_peak)
+    if timing_peak:
+        assert plan.timing_risks[0].remaining_gap_paise == 200000
+        assert comparison.timing_risks == plan.timing_risks
+    assert next_action(plan).id == "contact:rent:2026-09-14"
+    current = baseline
+    for _ in range(len(plan.decision_assessment.actions)):
+        action = next_action(current.plan)
+        if action.kind not in UNAVAILABLE_ACTIONS:
+            break
+        current = await store.command("owner", response_command(current, "unavailable"))
+    action = next_action(current.plan)
+    assert action.id == "preview:purchase:2026-09-16"
+    assert action.kind == "previewChange"
+    assert "still unfunded on 2026-09-14" in action.question
+    assert "explicit consent" in action.question
+    assert "No further funded change" not in current.plan.decision_assessment.outcome.next_step
+    assert current.plan.first_gap == plan.first_gap
+    assert current.plan.events == plan.events
+    assert current.facts.model_dump(exclude={"decision"}) == baseline.facts.model_dump(
+        exclude={"decision"}
+    )
+    assert current.preview is current.accepted is None
+    current = await store.command("owner", response_command(current, "declined"))
+    assert not any(a.id == action.id for a in current.plan.decision_assessment.actions)
+    assert current.plan.events == plan.events
+
+
+@pytest.mark.parametrize("later_gap", [False, True])
+@pytest.mark.parametrize(
+    "intent,focus",
+    [("plan30Days", []), ("specificDecision", ["rent"]), ("specificDecision", ["purchase"])],
+)
+async def test_later_cut_selection_requires_relevant_funding_relief(
+    store, later_gap, intent, focus
+):
+    """Verify unrelated cuts are not pushed solely for a higher closing balance."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "0",
+                [
+                    record("rent", "essential", "1000", "2026-09-14"),
+                    record("wages", "income", "10000", "2026-09-15"),
+                    record("purchase", "optional", "6000", "2026-09-16"),
+                    record("food", "essential", "4000" if later_gap else "1000", "2026-09-18"),
+                ],
+                decision={"intent": intent, "focusRecordIds": focus},
+            )
+        ),
+    )
+    current = baseline
+    for _ in range(len(baseline.plan.decision_assessment.actions)):
+        action = next_action(current.plan)
+        if action.kind not in UNAVAILABLE_ACTIONS:
+            break
+        current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).kind == (
+        "previewChange"
+        if later_gap and (intent == "plan30Days" or focus == ["purchase"])
+        else "reviewOutcome"
+    )
+    assert current.plan.events == baseline.plan.events

@@ -134,6 +134,94 @@ async def test_deferring_one_payee_moves_to_another_exposed_commitment(store):
     assert current.facts.provider_responses == []
 
 
+@pytest.mark.parametrize(
+    "rent_status,loan_status",
+    [("declined", "awaiting"), ("reportedTerms", "awaiting"), ("declined", None), (None, None)],
+)
+async def test_same_day_provider_replies_select_supported_individual_actions(
+    store, rent_status, loan_status
+):
+    """Verify grouped funding exposure retains each saved reply without allocating payments."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "1000",
+                [
+                    record("rent", "essential", "6000", "2026-09-15", controllability="committed"),
+                    record("loan", "debt", "3000", "2026-09-15"),
+                ],
+                providerResponses=[
+                    {
+                        "eventId": f"{identity}:2026-09-15",
+                        "status": status,
+                        "reportedOn": "2026-09-11",
+                        **(
+                            {
+                                "payment": money("500"),
+                                "paymentDate": "2026-09-21",
+                                "cost": money("0"),
+                            }
+                            if status == "reportedTerms"
+                            else {}
+                        ),
+                    }
+                    for identity, status in (("rent", rent_status), ("loan", loan_status))
+                    if status is not None
+                ],
+            )
+        ),
+    )
+    assert baseline.plan.first_gap.amount_paise == 800000
+    consequence = baseline.plan.decision_assessment.consequences[0]
+    assert consequence.event_ids == ["loan:2026-09-15", "rent:2026-09-15"]
+    assert consequence.amount_paise == 800000
+    if rent_status is loan_status is None:
+        action = next_action(baseline.plan)
+        assert action.kind == "resolveGroup"
+        assert set(action.record_ids) == {"rent", "loan"}
+        assert "INR 8000.00" in action.question
+        assert "no payment allocation is assumed" in action.question
+        return
+    assert next_action(baseline.plan).kind != "resolveGroup"
+    expected = {
+        "rent": "verifyTerms" if rent_status == "reportedTerms" else "seekSupport",
+        "loan": "followUp" if loan_status == "awaiting" else "contactPayee",
+    }
+    current = baseline
+    for _ in range(2):
+        action = next_action(current.plan)
+        identity = action.record_ids[0]
+        assert action.kind == expected.pop(identity)
+        assert action.consequence_ids == [consequence.id]
+        assert "INR 8000.00" in action.question
+        assert "shared across all commitments" in action.question
+        assert f"not allocated to {identity}" in action.question
+        assert "do not add it to other item shortfalls" in action.question
+        if identity == "rent":
+            assert ("reported terms" if rent_status == "reportedTerms" else "declined") in (
+                action.question
+            )
+            if rent_status == "reportedTerms":
+                assert "payment INR 500.00" in action.question
+                assert "cost INR 0.00" in action.question
+                assert "2026-09-21" in action.question
+        elif loan_status:
+            assert "awaiting" in action.question
+        current = await store.command("owner", response_command(current, "unavailable"))
+        assert current.plan.first_gap == baseline.plan.first_gap
+        assert current.plan.events == baseline.plan.events
+        assert current.plan.decision_assessment.consequences == [consequence]
+        assert current.facts.model_dump(exclude={"decision"}) == baseline.facts.model_dump(
+            exclude={"decision"}
+        )
+        assert current.preview is current.accepted is None
+    assert not expected
+    assert next_action(current.plan).kind == "reviewOutcome"
+    assert await store.get("owner") == current
+
+
 @pytest.mark.parametrize("cash", ["1000", "400"])
 async def test_declined_card_targets_explain_combined_minimums_without_applying_them(store, cash):
     """Verify declined card reductions explain funded combined minimums without applying them."""
@@ -375,3 +463,45 @@ async def test_joint_minimum_claim_requires_complete_dated_basis(store, correcti
     assert not any(
         action.id == "review:2026-09-12" for action in current.plan.decision_assessment.actions
     )
+
+
+async def test_group_replies_precede_a_later_unreported_obligation(store):
+    """Follow shared exposed commitments by deadline without hiding their saved replies."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "1000",
+                [
+                    record("rent", "essential", "6000", "2026-09-15", controllability="committed"),
+                    record("loan", "debt", "3000", "2026-09-15"),
+                    record("bill", "debt", "100", "2026-09-18"),
+                ],
+                providerResponses=[
+                    {
+                        "eventId": "rent:2026-09-15",
+                        "status": "declined",
+                        "reportedOn": "2026-09-11",
+                    },
+                    {
+                        "eventId": "loan:2026-09-15",
+                        "status": "awaiting",
+                        "reportedOn": "2026-09-11",
+                    },
+                ],
+            )
+        ),
+    )
+    current = baseline
+    for identity in ("loan", "rent"):
+        action = next_action(current.plan)
+        assert action.id == f"response:{identity}:2026-09-15"
+        assert "INR 8000.00" in action.question
+        assert "shared across all commitments" in action.question
+        assert action.consequence_ids == ["cash:2026-09-15"]
+        current = await store.command("owner", response_command(current, "unavailable"))
+    assert next_action(current.plan).id == "contact:bill:2026-09-18"
+    assert current.plan.events == baseline.plan.events
+    assert current.facts.provider_responses == baseline.facts.provider_responses
+    assert current.preview is current.accepted is None

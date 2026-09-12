@@ -401,36 +401,46 @@ def assess(
         if any(item.record_id == record.id and item.field == field for item in facts.conflicts):
             continue
         if field == "amount":
-            sources = [
-                event.source
-                for event in plan.events
-                if event.record_id == record.id and event.amount_paise is None
-            ] or [record.amount.source]
+            sources = (
+                [
+                    (event.date if record.schedule.amounts else day, event.source)
+                    for event in plan.events
+                    if event.record_id == record.id and event.amount_paise is None
+                ]
+                or [(day, source) for source in record.schedule.amounts]
+                or [(day, record.amount.source)]
+            )
             for term in ("rate", "fee"):
                 unknown_sources = [
-                    source
-                    for source in sources
+                    (source_day, source)
+                    for source_day, source in sources
                     if source is not None
                     and source.conversion is not None
                     and getattr(source.conversion, term) is None
                 ]
                 if unknown_sources:
+                    if record.schedule.amounts:
+                        unknown_sources = unknown_sources[:1]
+                    day = unknown_sources[0][0]
+                    label = record.label + (
+                        f" on {day}" if record.schedule.amounts and day is not None else ""
+                    )
                     currencies = ", ".join(
                         sorted(
                             {
                                 source.conversion.currency
-                                for source in unknown_sources
+                                for _, source in unknown_sources
                                 if source.conversion is not None
                             }
                         )
                     )
-                    question(
+                    action = question(
                         f"{record.id}:conversion{term.title()}",
                         f"amount.conversion.{term}",
-                        f"What INR per {currencies} rate applies to {record.label}, and is it "
+                        f"What INR per {currencies} rate applies to {label}, and is it "
                         "explicitly fixed or estimated?"
                         if term == "rate"
-                        else f"What INR conversion fee applies to {record.label} ({currencies})? "
+                        else f"What INR conversion fee applies to {label} ({currencies})? "
                         "Confirm zero only if no fee was explicitly reported.",
                         [record.id],
                         "Net INR is unknown until the source amount, rate and fee are known; "
@@ -438,8 +448,21 @@ def assess(
                         day=day,
                         immediate=day is None or day <= deadline,
                     )
-            if all(source is not None and source.amount is not None for source in sources):
+                    if record.schedule.amounts and day is not None and day > deadline:
+                        deferred.append(action)
+            sources = [
+                (source_day, source)
+                for source_day, source in sources
+                if source is None or source.amount is None
+            ]
+            if not sources:
                 continue
+            day = sources[0][0]
+        label = record.label + (
+            f" on {day}"
+            if field == "amount" and record.schedule.amounts and day is not None
+            else ""
+        )
         if field == "schedule.date" and required:
             assessment.constraints.append(
                 Constraint(
@@ -494,14 +517,14 @@ def assess(
             else f"How much do you want to pay toward {record.label}, including the required "
             f"minimum of {rupees(record.amount.amount_paise)}?"
             if field == "target"
-            else f"What is the required payment amount for {record.label}, before any extra "
+            else f"What is the required payment amount for {label}, before any extra "
             "you want to pay?"
             if record.kind == "debt"
-            else f"What amount do you expect from {record.label}?"
+            else f"What amount do you expect from {label}?"
             if record.kind == "income"
             else f"What is the calendar-month budget for {record.label}?"
             if record.schedule.recurrence == "monthlyBudget"
-            else f"What is the amount for {record.label}?",
+            else f"What is the amount for {label}?",
             [record.id],
             "The required minimum already has a shortfall; intended extras cannot remove it."
             if minimum_short
@@ -532,6 +555,45 @@ def assess(
         ]
         if not events:
             continue
+        day = next(
+            (
+                event.date
+                for event in events
+                if event.included and not event.overdue and event.date >= today
+            ),
+            None,
+        )
+        if (
+            record.kind == "optional"
+            and record.controllability == "controllable"
+            and not record.auto_debit
+            and (
+                record.schedule.recurrence == "monthlyBudget"
+                or record.schedule.amounts
+                and all(event.amount_status == "exact" for event in events)
+            )
+            and day is not None
+            and (day <= deadline or facts.decision.intent == "plan30Days" or record.id in focus)
+            and any(
+                event.date >= day
+                and event.balance_paise is not None
+                and event.balance_paise < facts.reserve_paise
+                for event in plan.events
+            )
+        ):
+            deferred.append(
+                question(
+                    f"{record.id}:controllability",
+                    "controllability",
+                    f"Could you hold off on {record.label} from {day}, or report a smaller "
+                    "planned budget? Planned amounts stay unchanged until you report a decision.",
+                    [record.id],
+                    "Future optional spending precedes a projected cash or reserve shortfall; "
+                    "no reduction or revised amount is assumed.",
+                    day=day,
+                    kind="uncertain",
+                )
+            )
         if record.schedule.pattern is not None:
             question(
                 f"{record.id}:monthlyPattern",
@@ -700,6 +762,12 @@ def assess(
             else list(dict.fromkeys(event.record_id for event in plan.events if event.date == day))
         )
         immediate = day is None or day <= deadline
+        ask = issue.code != "sameDayTiming" and not (
+            issue.code == "uncertainDate"
+            and affected is not None
+            and affected.kind == "income"
+            and affected.reliability == "uncertain"
+        )
         action = question(
             f"{issue.record_id or 'schedule'}:{issue.code}"
             + (f":{day}" if issue.code in {"sameDayTiming", "missingMonthDay"} else ""),
@@ -717,11 +785,11 @@ def assess(
             if immediate
             else "This affects a later obligation, not the earlier exposed deadline.",
             day=day,
-            immediate=immediate and issue.code != "sameDayTiming",
+            immediate=immediate and ask,
             kind="conflict" if issue.code == "debtBalanceConflict" else "uncertain",
-            ask=issue.code != "sameDayTiming",
+            ask=ask,
         )
-        if not immediate and issue.code != "sameDayTiming":
+        if not immediate and ask:
             deferred.append(action)
     for day, grouped in groupby(plan.events, key=lambda event: event.date):
         events = list(grouped)
@@ -863,7 +931,11 @@ def assess(
             )
             assessment.actions.append(action)
             enquiries.append(action)
-        if len(mandatory) > 1 and not focus.intersection(event.record_id for event in mandatory):
+        if (
+            len(mandatory) > 1
+            and not focus.intersection(event.record_id for event in mandatory)
+            and not any(event.id in responses for event in mandatory)
+        ):
             text = (
                 f"Resolve {labels([event.record_id for event in mandatory])} together on {day}: "
                 f"{rupees(exposure)} remains unfunded across this date's commitments. Protect "
@@ -885,6 +957,12 @@ def assess(
         for event in mandatory:
             record = records[event.record_id]
             response = responses.get(event.id)
+            comparison_text = (
+                f"The {rupees(exposure)} shortage is shared across all commitments on {day}, "
+                f"not allocated to {record.label}; do not add it to other item shortfalls. "
+                if len(due) > 1
+                else ""
+            )
             if (
                 record.kind == "essential"
                 and record.controllability != "committed"
@@ -898,7 +976,7 @@ def assess(
                     kind="seekSupport",
                     record_ids=[record.id],
                     before_date=event.original_due_date,
-                    question=f"Protect {record.label} as an essential need on "
+                    question=comparison_text + f"Protect {record.label} as an essential need on "
                     f"{event.original_due_date}: {rupees(exposure)} remains unfunded. "
                     "Check available funds or seek essential-needs support before then. "
                     "The essential amount stays unchanged.",
@@ -908,11 +986,15 @@ def assess(
                 assessment.actions.append(action)
                 enquiries.append(action)
                 continue
-            comparison_text = ""
             if record.target is not None and event.amount_paise != event.required_paise:
-                comparison_text = (
-                    f"The {rupees(exposure)} cash exposure is against the intended payment of "
-                    f"{rupees(event.amount_paise)} for {record.label} on {day}, not an "
+                comparison_text += (
+                    (
+                        "The comparison includes the intended payment of "
+                        if len(due) > 1
+                        else f"The {rupees(exposure)} cash exposure is against the intended "
+                        "payment of "
+                    )
+                    + f"{rupees(event.amount_paise)} for {record.label} on {day}, not an "
                     f"established shortfall in its required payment of "
                     f"{rupees(event.required_paise)}. "
                 )
@@ -1080,14 +1162,13 @@ def assess(
         impact = impacts[option.event_id]
         first = plan.first_gap is not None and impact.first_gap != plan.first_gap
         peak = impact.peak_gap_paise != plan.peak_gap_paise
+        # Timing precautions alone do not justify reducing otherwise funded spending.
         useful = (
-            bool(
-                funding_risks
-                and funding_risks[0].date is not None
-                and option.date <= funding_risks[0].date
-            )
-            if deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0
-            else first
+            (first or facts.decision.intent == "plan30Days" or option.record_id in focus)
+            and plan.closing_paise is not None
+            and impact.closing_paise is not None
+            and impact.closing_paise > plan.closing_paise
+            and any(risk.date is not None and option.date <= risk.date for risk in funding_risks)
             if plan.first_gap
             else impact.reserve_shortfall_paise != plan.reserve_shortfall_paise
         )
@@ -1113,6 +1194,26 @@ def assess(
                 if impact.first_gap
                 else "no cash gap in this comparison; "
             )
+            comparison_timing = next(
+                (
+                    risk
+                    for risk in impact.timing_risks
+                    if impact.first_gap and risk.date == impact.first_gap.date
+                ),
+                None,
+            )
+            if comparison_timing:
+                residual = (
+                    f"{rupees(comparison_timing.exposure_paise)} needed before same-day income "
+                    f"on {comparison_timing.date}; "
+                    + (
+                        f"{rupees(comparison_timing.remaining_gap_paise)} still unfunded on "
+                        f"{comparison_timing.date} after included income; "
+                        if comparison_timing.remaining_gap_paise
+                        else "no remaining funding gap after included income, but payment "
+                        "timing is not guaranteed; "
+                    )
+                )
             action = Action(
                 id=f"preview:{option.event_id}",
                 kind="previewChange",
@@ -1173,6 +1274,11 @@ def assess(
     needs_scope = {kind: status for kind, status in scope.items() if kind != "income"}
     coverage = None
     if scope:
+        discover = (
+            facts.decision.intent == "specificDecision"
+            and bool(needs_scope)
+            and not any(record.kind != "income" for record in facts.records)
+        )
         ask = any(
             status in {"notDiscussed", "reported"}
             for status in (
@@ -1186,7 +1292,9 @@ def assess(
         action = question(
             "coverage",
             "coverage",
-            "Before deciding, are there any other essentials, required debt "
+            "What is the next bill or essential living cost you need to cover?"
+            if discover
+            else "Before deciding, are there any other essentials, required debt "
             "payments or spending you've already committed to over the next 30 days?"
             if facts.decision.intent == "specificDecision" and needs_scope
             else "What payments, essential spending and expected income need to be covered over "
@@ -1195,7 +1303,11 @@ def assess(
             else "Before closing this 30-day plan, is anything else missing: payments, income, "
             "essential spending or spending you've already planned?",
             [],
-            "Unreported items are not zero. One scope check qualifies the whole-period "
+            "Cash and income do not answer the stated decision while its costs are missing. "
+            "Identify the next relevant commitment using the user's goal and known timing; "
+            "this is initial discovery, not a final check for other items."
+            if discover
+            else "Unreported items are not zero. One scope check qualifies the whole-period "
             "conclusion without blocking a useful immediate decision.",
             kind="coverage",
             immediate=facts.decision.intent == "specificDecision"
@@ -1229,6 +1341,34 @@ def assess(
     for candidates in (dependencies, changes, enquiries, followups, deferred):
         candidates[:] = [action for action in candidates if action.id not in blocked]
         candidates.sort(key=semantic)
+    steps = sorted(
+        enquiries
+        + followups
+        + [
+            action
+            for action in deferred
+            if action.kind == "clarify"
+            and any(
+                item.id == questions[action.id]
+                and item.field in {"amount", "amount.conversion.rate", "amount.conversion.fee"}
+                for item in assessment.uncertainties
+            )
+        ],
+        key=lambda action: (semantic(action)[0], action.kind != "clarify", semantic(action)),
+    )
+    change_deadline = min(
+        (
+            semantic(action)[0]
+            for action in steps
+            if not (
+                action.kind == "confirmReceipt"
+                and action.before_date in timing_risks
+                and not timing_risks[action.before_date].remaining_gap_paise
+            )
+        ),
+        default=date.max,
+    )
+    changes[:] = [action for action in changes if semantic(action)[0] <= change_deadline]
     changes.sort(key=lambda action: (change_order[action.id], semantic(action)))
     dependency_order = {}
     for action in dependencies:
@@ -1282,7 +1422,7 @@ def assess(
         )
     dependencies.sort(key=lambda action: dependency_order[action.id])
     selected_action = next(
-        (items[0] for items in (dependencies, changes, enquiries, followups, deferred) if items),
+        (items[0] for items in (dependencies, changes, steps, deferred) if items),
         coverage,
     )
     if selected_action is None:
