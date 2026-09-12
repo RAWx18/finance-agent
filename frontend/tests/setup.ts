@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterEach, vi } from 'vitest';
+import { afterEach, beforeEach, vi } from 'vitest';
 import { dismissAll } from '../src/Toast';
 
 // Scrolling geometry is verified in the browser, not jsdom.
@@ -15,6 +15,13 @@ Object.defineProperties(HTMLDialogElement.prototype, {
 		this.removeAttribute('open');
 		this.dispatchEvent(new Event('close'));
 	} },
+});
+
+// WebGL and media preferences are exercised in Chromium; jsdom has neither implementation.
+beforeEach(() => {
+	vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
+	vi.stubGlobal('matchMedia', vi.fn((media: string) => ({ matches: false, media,
+		addEventListener: vi.fn(), removeEventListener: vi.fn() })));
 });
 
 afterEach(() => { cleanup(); dismissAll(); vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllGlobals(); });

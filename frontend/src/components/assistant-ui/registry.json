@@ -1,0 +1,43 @@
+{
+  "registry": "https://r.assistant-ui.com/voice.json",
+  "renderer": "https://r.assistant-ui.com/elements-voice.json",
+  "documentation": "https://www.assistant-ui.com/elements/orb",
+  "retrievedOn": "2026-09-12",
+  "sourcePath": "packages/ui/src/components/react/assistant-ui/elements/voice.tsx",
+  "upstreamSha256": "b6f8ec3a137d2dd2ecb5ec514f5fc9245de84f030e65ea1333c42ddb27da0a38",
+  "adaptations": [
+    "Preserved MIT license with SPDX attribution.",
+    "Replaced the shadcn cn import with clsx.",
+    "Reduced motion freezes time and volume, draws the current preset on state or size changes, and cancels continuous frames without replacing the renderer. Shaders, state presets and palettes are unchanged."
+  ],
+  "sourceAdaptations": [
+    {
+      "upstream": "    const canvasRef = useRef<HTMLCanvasElement>(null);",
+      "installed": "    const reducedMotion = useRef(false);\n    const canvasRef = useRef<HTMLCanvasElement>(null);"
+    },
+    {
+      "upstream": "    useEffect(() => {\n      targetParams.current = { ...STATE_PARAMS[state] };\n    }, [state]);\n\n    const colors = VARIANT_COLORS[variant];",
+      "installed": "    const colors = VARIANT_COLORS[variant];"
+    },
+    {
+      "upstream": "      const s = 0.045;",
+      "installed": "      const s = reducedMotion.current ? 1 : 0.045;"
+    },
+    {
+      "upstream": "      const elapsed = (performance.now() - startTime.current) / 1000;",
+      "installed": "      const elapsed = reducedMotion.current ? 0 : (performance.now() - startTime.current) / 1000;"
+    },
+    {
+      "upstream": "      const vol = volumeRef.current;",
+      "installed": "      const vol = reducedMotion.current ? 0 : volumeRef.current;"
+    },
+    {
+      "upstream": "      animRef.current = requestAnimationFrame(render);\n    }, [colors]);",
+      "installed": "      if (!reducedMotion.current) animRef.current = requestAnimationFrame(render);\n    }, [colors]);"
+    },
+    {
+      "upstream": "    useEffect(() => {\n      if (!ready) return;",
+      "installed": "    useEffect(() => {\n      targetParams.current = { ...STATE_PARAMS[state] };\n      const media = window.matchMedia(\"(prefers-reduced-motion: reduce)\");\n      const update = () => {\n        reducedMotion.current = media.matches;\n        cancelAnimationFrame(animRef.current);\n        if (glRef.current) animRef.current = requestAnimationFrame(render);\n      };\n      update();\n      media.addEventListener(\"change\", update);\n      window.addEventListener(\"resize\", update);\n      return () => {\n        media.removeEventListener(\"change\", update);\n        window.removeEventListener(\"resize\", update);\n      };\n    }, [state, render]);\n\n    useEffect(() => {\n      if (!ready) return;"
+    }
+  ]
+}

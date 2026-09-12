@@ -1,0 +1,38 @@
+{
+  "retrievedOn": "2026-09-12",
+  "license": "MIT",
+  "copyright": "AgentbaseAI Inc.",
+  "elements": [
+    {
+      "registry": "https://r.assistant-ui.com/elements-thread-list.json",
+      "documentation": "https://www.assistant-ui.com/elements/thread-list",
+      "sourcePath": "packages/ui/src/components/react/assistant-ui/elements/thread-list.tsx",
+      "installedPath": "elements/threadList.tsx",
+      "upstreamSha256": "df3240a0ec63e4a9263b334fa08d4913a0c7ceebcb3983a5190703a5a42e7e80",
+      "adaptations": [
+        "Translate utility classes and surface tokens to scoped product CSS; use existing clsx.",
+        "Use stable record keys and React Router links for actual conversation deep links.",
+        "Remove the demo Today heading and unwired rename/delete/unread controls; retain compact title/time rows and active styling."
+      ]
+    },
+    {
+      "registry": "https://r.assistant-ui.com/elements-day-separator.json",
+      "documentation": "https://www.assistant-ui.com/elements/day-separator",
+      "sourcePath": "packages/ui/src/components/react/assistant-ui/elements/day-separator.tsx",
+      "installedPath": "elements/daySeparator.tsx",
+      "upstreamSha256": "47b268ccbdd3756f1cfb1313bab43897e4c3a6e71c888bf561c5496e1d18e021",
+      "adaptations": [
+        "Translate utility classes and surface tokens to scoped product CSS; use existing clsx.",
+        "Retain day grouping and right-aligned user bubbles / left-aligned assistant text.",
+        "Use You and configured assistant speaker labels, semantic articles and time elements, readable persistent timestamps, preserved whitespace, and partial-caption labels."
+      ]
+    }
+  ],
+  "viewport": {
+    "package": "@assistant-ui/react",
+    "version": "0.15.19",
+    "documentation": "https://www.assistant-ui.com/docs/runtimes/custom/external-store",
+    "components": ["AssistantRuntimeProvider", "useExternalStoreRuntime", "ThreadPrimitive.Root", "ThreadPrimitive.Viewport", "ThreadPrimitive.ScrollToBottom"],
+    "adaptations": ["Disable sending for stored history; no composer, editing, regeneration, tools, or model connection."]
+  }
+}

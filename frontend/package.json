@@ -17,8 +17,10 @@
     "contracts:check": "node scripts/contracts.mjs --check"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.15.19",
     "@pipecat-ai/client-js": "1.13.1",
     "@pipecat-ai/daily-transport": "1.6.8",
+    "clsx": "2.1.1",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "react-router": "7.18.3"

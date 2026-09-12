@@ -1,0 +1,27 @@
+/* SPDX-FileCopyrightText: AgentbaseAI Inc. */
+/* SPDX-License-Identifier: MIT */
+.aui-thread-list { display: flex; width: 100%; flex-direction: column; gap: .2rem; }
+.aui-thread-item { display: flex; min-height: 48px; width: 100%; align-items: center; justify-content: space-between; gap: .65rem; padding: .65rem .75rem; border-radius: 10px; text-align: start; font-size: .83rem; text-decoration: none; color: var(--ink); }
+.aui-thread-item:hover { background: #e5eee7; }
+.aui-thread-active { background: #deede3; color: #065f46; }
+.aui-thread-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aui-thread-active .aui-thread-title { font-weight: 600; }
+.aui-thread-time { flex-shrink: 0; color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; }
+.aui-dated-messages { display: flex; width: 100%; max-width: 48rem; flex-direction: column; gap: 1.25rem; margin-inline: auto; }
+.aui-dated-entry { display: flex; flex-direction: column; gap: 1rem; }
+.aui-day-separator { display: flex; align-items: center; gap: .75rem; padding: .5rem 0; color: var(--muted); font-size: .72rem; }
+.aui-day-separator > :first-child, .aui-day-separator > :last-child { height: 1px; flex: 1; background: var(--line); opacity: .6; }
+.aui-message-row { display: flex; align-items: flex-end; gap: .65rem; }
+.aui-message-row[data-role="user"] { flex-direction: row-reverse; }
+.aui-message-content { max-width: 80%; font-size: .9rem; line-height: 1.65; overflow-wrap: anywhere; color: var(--ink); }
+.aui-message-row[data-role="user"] .aui-message-content { padding: .7rem 1rem; background: #e8f3ed; border-radius: 16px; }
+.aui-message-row[data-role="assistant"] .aui-message-content { padding: .25rem 0; }
+.aui-message-speaker { display: block; margin-bottom: .25rem; color: #42715c; font-size: .72rem; font-weight: 600; }
+.aui-message-text { white-space: pre-wrap; }
+.aui-message-partial { display: block; color: var(--muted); font-size: .7rem; margin-top: .3rem; }
+.aui-message-time { flex-shrink: 0; padding-bottom: .2rem; color: var(--muted); font-size: .65rem; font-variant-numeric: tabular-nums; }
+@media (max-width: 700px) {
+  .aui-message-row { gap: .45rem; }
+  .aui-message-content { max-width: 83%; font-size: .875rem; }
+  .aui-message-row[data-role="user"] .aui-message-content { padding: .6rem .8rem; }
+}

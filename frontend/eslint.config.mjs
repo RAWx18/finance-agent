@@ -6,7 +6,8 @@ import hooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 
 export default ts.config(
-  { ignores: ['dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'src/contracts.ts'] },
+  // Third-party renderer provenance and the documented accessibility patch are tested separately.
+  { ignores: ['dist/**', 'coverage/**', 'playwright-report/**', 'test-results/**', 'src/contracts.ts', 'src/components/assistant-ui/elements/voice.tsx'] },
   js.configs.recommended,
   ...ts.configs.recommended,
   { languageOptions: { globals: { ...globals.browser, ...globals.node } } },
