@@ -525,6 +525,49 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     } finally { release(); }
   });
 
+  test('lost End acknowledgement reconciles saved state and permits reconnect without manual retry', async ({ page, voice }) => {
+    await speaking(page);
+    const saved = await current(page);
+    await page.evaluate(() => {
+      const fetch = window.fetch;
+      let lost = false;
+      /** Drop only the first cleanup response after the server boundary has processed it. */
+      window.fetch = async (input, init) => {
+        const response = await fetch(input, init);
+        if (!lost && String(input).endsWith('/api/session/call') && init?.method === 'DELETE') {
+          lost = true;
+          throw new TypeError('Synthetic acknowledgement loss');
+        }
+        return response;
+      };
+      /** Keep local SDK disconnect pending independently of owned backend cleanup. */
+      window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined);
+    });
+    const reads = voice.calls.filter(method => method === 'GET').length;
+    await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+    await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'false');
+    expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+    await expect(page.locator('audio')).toHaveJSProperty('srcObject', null);
+    await expect(page.getByText('Call ending not confirmed', { exact: true })).toHaveCount(0);
+    expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(1);
+    expect(voice.calls.filter(method => method === 'GET').length).toBeGreaterThan(reads);
+    expect(await current(page)).toEqual(saved);
+    const reconnect = page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true });
+    await expect(reconnect).toBeEnabled();
+    await reconnect.click();
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[1]?.connections.length ?? 0)).toBe(1);
+    expect(voice.calls.filter(method => method === 'POST')).toHaveLength(2);
+    await page.evaluate(() => {
+      window.voiceFixture.clients[0].callbacks.onDisconnected!();
+      window.voiceFixture.clients[0].callbacks.onBotReady!({ version: '2.1' });
+    });
+    await expect(page.getByRole('button', { name: 'End conversation', exact: true })).toBeEnabled();
+    expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(1);
+    await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+    await ended(page);
+    expect(await current(page)).toEqual(saved);
+  });
+
   test('browser refresh preserves owned End recovery after unload network loss and hung SDK disconnect', async ({ page, voice }) => {
     const started = page.waitForRequest(request => new URL(request.url()).pathname === '/api/session/call' && request.method() === 'POST');
     await speaking(page);
@@ -673,7 +716,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await speaking(page);
     const initial = await current(page);
     const saved = await submit(page, initial, { type: 'replaceFacts', facts: { ...draftFacts(initial), opening: { amount: '123.45', status: 'exact' } } });
-    const cash = page.getByRole('article', { name: 'Available opening cash', exact: true });
+    const cash = page.getByRole('article', { name: saved.workspace!.cards!.find(card => card.template === 'cash')!.title, exact: true });
     await expect(cash).toContainText('₹123.45');
     const before = await geometry(page);
     await page.evaluate(() => {
@@ -681,7 +724,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
       client.callbacks.onUserTranscript!({ text: 'Rent is due tomorrow', final: true, timestamp: 'rent', user_id: 'fixture-user' });
       client.callbacks.onBotStoppedSpeaking!();
-      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 2 });
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 2, reason: 'response' });
     });
     await expect(page.locator('.voice-status')).toHaveText('Paused');
     await expect(page.locator('.call-orb')).toHaveAttribute('data-state', 'paused');

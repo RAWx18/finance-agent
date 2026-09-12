@@ -224,7 +224,7 @@ async def test_unconfirmed_cleanup_blocks_replacement_until_explicit_retry(
     async def failed(*args):
         """Simulate a selected cleanup timeout, process exit, or ordinary exception."""
         if failure == "timeout":
-            await asyncio.Event().wait()
+            raise TimeoutError
         if failure == "systemExit":
             raise SystemExit("private cleanup failure")
         raise RuntimeError("private cleanup failure")

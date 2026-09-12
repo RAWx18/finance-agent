@@ -1330,25 +1330,55 @@ class VoicePipeline:
 
     async def close(self) -> None:
         """Stop the worker and release all processor and model-client resources."""
+        from pipecat.transports.daily.transport import DailyInputTransport, DailyOutputTransport
+
+        from .speech import SpeechRecognition, SpeechSynthesis
+
+        async def cleanup(processor: Any) -> None:
+            """Keep timed-out native stops owned until their actual completion."""
+            try:
+                await processor.cleanup()
+            except TimeoutError:
+                if not isinstance(processor, SpeechRecognition | SpeechSynthesis):
+                    raise
+                task = processor._native_stop
+                if task is None:
+                    raise
+                await asyncio.shield(task)
+                await processor.cleanup()
+
         self.stopping = True
         self.invalidate()
-        failure: BaseException | None = None
         try:
             if self.flush is not None:
-                await self.flush
+                # A failed output flush cannot skip worker termination or resource release.
+                await asyncio.gather(self.flush, return_exceptions=True)
             if self.task is not None:
                 if not self.task.done():
                     await self.worker.cancel()
-                if not self.task.cancelled():
-                    await self.task
-        except BaseException as error:
-            failure = error
-            raise
+                # Runtime failure is distinct from whether teardown actually releases resources.
+                await asyncio.gather(self.task, return_exceptions=True)
         finally:
             self.tools = None
-            cleanup = [processor.cleanup() for processor in self.processors]
+            operations = [cleanup(processor) for processor in self.processors]
             if self.llm is not None:
-                cleanup.append(self.llm._client.close())
-            results = await asyncio.gather(*cleanup, return_exceptions=True)
-            if failure is None and any(isinstance(result, BaseException) for result in results):
+                operations.append(self.llm._client.close())
+            results = await asyncio.gather(*operations, return_exceptions=True)
+            for index, result in enumerate(results):
+                if isinstance(result, BaseException):
+                    logger.warning(
+                        "Voice resource cleanup source=%s exception=%s",
+                        type(self.processors[index]).__name__
+                        if index < len(self.processors)
+                        else "modelClient",
+                        type(result).__name__,
+                    )
+            if any(isinstance(result, BaseException) for result in results):
                 raise RuntimeError("Voice resource cleanup failed")
+            # Daily's shared-release counter can finish before a failed native release is retried.
+            if any(
+                isinstance(processor, DailyInputTransport | DailyOutputTransport)
+                and processor._client._client is not None
+                for processor in self.processors
+            ):
+                raise RuntimeError("Daily client release unconfirmed")

@@ -286,7 +286,7 @@ async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monke
 
 @pytest.mark.parametrize("service", ["recognition", "synthesis"])
 async def test_failed_native_stop_remains_unconfirmed(config, monkeypatch, service):
-    """Verify failed native stops remain tracked and cleanup reports failure without retry."""
+    """Verify persistent native stop failures cannot be mistaken for successful cleanup."""
     provider = Mock()
     if service == "recognition":
         adapter = SpeechRecognition(api_key="test-only", region="centralindia", phrases=[])
@@ -307,9 +307,10 @@ async def test_failed_native_stop_remains_unconfirmed(config, monkeypatch, servi
     for _ in range(2):
         with pytest.raises(RuntimeError, match="native stop failed"):
             await adapter.cleanup()
-        assert adapter._native_stop is task
-    stop.assert_called_once()
-    stop.return_value.get.assert_called_once()
+        assert adapter._native_stop is not task
+        assert adapter._native_stop.done() and adapter._native_stop.exception() is not None
+        task = adapter._native_stop
+    assert stop.call_count == stop.return_value.get.call_count == 3
 
 
 @pytest.mark.parametrize("region", ["https://centralindia", "a.b", "a/b", "a@b", "-a", "a-", "a\n"])

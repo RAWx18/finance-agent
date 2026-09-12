@@ -125,7 +125,7 @@ async def test_response_failure_continues_once_without_replaying_writes(
     assert await store.get("owner") == baseline
 
 
-@pytest.mark.parametrize("cause", ["first", "progress", "empty", "canceled"])
+@pytest.mark.parametrize("cause", ["first", "progress", "empty", "canceled", "serviceError"])
 async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts(
     voice, synthesis, store, cause
 ):
@@ -154,12 +154,14 @@ async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts
         instance.synthesis_completed.connect.call_args.args[0](
             SimpleNamespace(result=SimpleNamespace(audio_duration=timedelta()))
         )
-    elif cause == "canceled":
+    elif cause in {"canceled", "serviceError"}:
         instance.synthesis_canceled.connect.call_args.args[0](
             SimpleNamespace(
                 result=SimpleNamespace(
                     cancellation_details=SimpleNamespace(
-                        error_code=CancellationErrorCode.ServiceTimeout
+                        error_code=CancellationErrorCode.ServiceError
+                        if cause == "serviceError"
+                        else CancellationErrorCode.ServiceTimeout
                     )
                 )
             )

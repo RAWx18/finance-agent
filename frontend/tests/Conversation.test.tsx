@@ -14,7 +14,7 @@ import type { Transcript } from '../src/Captions';
 import type { VoiceOrbState } from '../src/components/assistant-ui/elements/voice';
 import { ToastViewport } from '../src/Toast';
 import * as toast from '../src/Toast';
-import { api, ApiError } from '../src/api';
+import { api, ApiError, invalidateRequests } from '../src/api';
 import { settings, snapshot } from './fixtures';
 
 const sdk = vi.hoisted(() => ({
@@ -332,6 +332,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
   it.each(['end', 'pagehide', 'unmount'] as const)('keeps the owned HTTP termination alive beyond the confirmation deadline on %s', async action => {
     const view = show(); await start(); ready();
     vi.mocked(api.endCall).mockRestore();
+    vi.mocked(api.call).mockRestore();
     const fetch = vi.fn().mockReturnValue(new Promise<never>(() => undefined));
     vi.stubGlobal('fetch', fetch);
     sdk.disconnect.mockReturnValueOnce(new Promise<never>(() => undefined));
@@ -346,7 +347,9 @@ describe('owned lifecycle deadlines and background cleanup', () => {
       });
       await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
       expect(fetch.mock.calls[0][1].signal).toBeUndefined();
-      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenNthCalledWith(2, '/api/session/call', { credentials: 'same-origin', signal: expect.any(AbortSignal) });
+      expect(fetch.mock.calls[1][1].signal.aborted).toBe(true);
       if (action !== 'unmount') {
         expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
         expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
@@ -510,6 +513,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
 
   it('bounds an unanswered DELETE, stops media immediately, and retries the same identity', async () => {
     const release = deferred<Awaited<ReturnType<typeof api.endCall>>>(); vi.mocked(api.endCall).mockReturnValueOnce(release.promise);
+    vi.mocked(api.call).mockResolvedValue({ callId: join.callId, status: 'ending', cleanupConfirmed: false, message: null });
     const view = show(); await start(); ready();
     const microphone = sdk.tracks().local.audio as MediaStreamTrack;
     vi.useFakeTimers();
@@ -520,10 +524,13 @@ describe('owned lifecycle deadlines and background cleanup', () => {
       expect(screen.getByText('Your microphone is off. Confirming the call is closed.')).toBeVisible();
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
       expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
-      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
       expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
       expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
       expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(api.call).toHaveBeenCalledTimes(10);
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(api.call).toHaveBeenCalledTimes(10);
       await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Retry ending call' })));
       expect(api.endCall).toHaveBeenNthCalledWith(2, join.callId);
       expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
@@ -545,23 +552,213 @@ describe('owned lifecycle deadlines and background cleanup', () => {
 
   it.each(['ending', 'ended', 'error'] as const)('does not treat an unconfirmed DELETE %s as safe to reconnect', async status => {
     vi.mocked(api.endCall).mockResolvedValueOnce({ callId: join.callId, status, cleanupConfirmed: false, message: null });
+    vi.mocked(api.call).mockResolvedValue({ callId: join.callId, status, cleanupConfirmed: false, message: null });
     const view = show(); await start(); ready();
-    await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
-    expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
-    expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
-    expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
-    expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
-    expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
-    expect(panel().queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
+      expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toBeVisible();
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(panel().queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+      expect(api.call).toHaveBeenCalledTimes(20);
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+    } finally { view.unmount(); vi.useRealTimers(); }
   });
 
   it('rejects mismatched join and termination identities without connecting', async () => {
     vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, callId: 'e2639293-b514-436d-b359-88637e030142' });
     vi.mocked(api.endCall).mockResolvedValueOnce({ callId: 'e2639293-b514-436d-b359-88637e030142', status: 'ended', cleanupConfirmed: true, message: null });
+    vi.mocked(api.call).mockResolvedValueOnce({ callId: 'e2639293-b514-436d-b359-88637e030142', status: 'ended', cleanupConfirmed: true, message: null });
     show(); await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
     await panel().findByRole('button', { name: 'Retry ending call' });
     expect(sdk.connect).not.toHaveBeenCalled();
     expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+  });
+
+  it.each(['ended', 'error', 'idle'] as const)('reconciles a lost DELETE acknowledgement with confirmed GET %s without manual retry', async status => {
+    vi.mocked(api.endCall).mockRejectedValueOnce(new TypeError('Acknowledgement lost'));
+    vi.mocked(api.call).mockResolvedValueOnce({ callId: status === 'idle' ? null : join.callId, status, cleanupConfirmed: true, message: null });
+    const view = show(); await start(); ready(); const bot = await hear();
+    const microphone = sdk.tracks().local.audio as MediaStreamTrack;
+    act(() => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+    expect(microphone.stop).toHaveBeenCalled(); expect(bot.stop).toHaveBeenCalled();
+    expect(HTMLMediaElement.prototype.pause).toHaveBeenCalled();
+    expect(view.container.querySelector('audio')!.srcObject).toBeNull();
+    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+    await act(async () => undefined);
+    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+    expect(screen.queryByRole('alert', { name: 'Call ending not confirmed' })).not.toBeInTheDocument();
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+    expect(api.call).toHaveBeenCalledExactlyOnceWith(expect.any(AbortSignal));
+    expect(api.startCall).toHaveBeenCalledOnce();
+    expect(performance.mark).toHaveBeenCalledWith('voice:end-confirmed');
+  });
+
+  it.each(['rejected', 'unconfirmed', 'overdue'] as const)('polls pending cleanup after %s DELETE and recovers past a failed status read', async acknowledgement => {
+    if (acknowledgement === 'rejected') vi.mocked(api.endCall).mockRejectedValueOnce(new TypeError('Acknowledgement lost'));
+    else if (acknowledgement === 'overdue') vi.mocked(api.endCall).mockReturnValueOnce(new Promise(() => undefined));
+    else vi.mocked(api.endCall).mockResolvedValueOnce({ callId: join.callId, status: 'ending', cleanupConfirmed: false, message: null });
+    vi.mocked(api.call).mockResolvedValueOnce({ callId: join.callId, status: 'ending', cleanupConfirmed: false, message: null })
+      .mockRejectedValueOnce(new TypeError('Status temporarily unavailable'))
+      .mockResolvedValueOnce({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null });
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      if (acknowledgement === 'overdue') {
+        expect(api.call).not.toHaveBeenCalled();
+        await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000));
+      }
+      expect(api.call).toHaveBeenCalledOnce();
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000 / 10));
+      expect(api.call).toHaveBeenCalledTimes(2);
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000 / 10));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+      expect(api.call).toHaveBeenCalledTimes(3);
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(api.call).toHaveBeenCalledTimes(3);
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('accepts a late owned DELETE acknowledgement while GET is hung and ignores its stale result', async () => {
+    const release = deferred<Awaited<ReturnType<typeof api.endCall>>>();
+    const status = deferred<Awaited<ReturnType<typeof api.call>>>();
+    vi.mocked(api.endCall).mockReturnValueOnce(release.promise);
+    vi.mocked(api.call).mockReturnValueOnce(status.promise);
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000));
+      expect(api.call).toHaveBeenCalledOnce();
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeDisabled();
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000 / 10));
+      await act(async () => release.resolve({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null }));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      expect(vi.mocked(api.call).mock.calls[0][0]?.aborted).toBe(true);
+      vi.mocked(crypto.randomUUID).mockReturnValue('e2639293-b514-436d-b359-88637e030142');
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Reconnect' })));
+      ready();
+      await act(async () => status.resolve({ callId: join.callId, status: 'active', cleanupConfirmed: false, message: null }));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+      expect(api.call).toHaveBeenCalledOnce();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each([
+    { callId: 'e2639293-b514-436d-b359-88637e030142', status: 'active', cleanupConfirmed: false },
+    { callId: 'e2639293-b514-436d-b359-88637e030142', status: 'ended', cleanupConfirmed: true },
+    { callId: 'e2639293-b514-436d-b359-88637e030142', status: 'idle', cleanupConfirmed: true },
+    { callId: null, status: 'ended', cleanupConfirmed: true },
+    { callId: undefined, status: 'idle', cleanupConfirmed: true },
+    { callId: null, status: 'idle', cleanupConfirmed: false },
+    ...(['connecting', 'active', 'ending'] as const).map(status => ({ callId: join.callId, status, cleanupConfirmed: true })),
+  ] as const)('does not confirm or adopt GET $callId / $status / $cleanupConfirmed', async state => {
+    vi.mocked(api.endCall).mockRejectedValueOnce(new TypeError('Acknowledgement lost'));
+    vi.mocked(api.call).mockResolvedValue({ ...state, message: null });
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    const marks = vi.spyOn(performance, 'mark');
+    try {
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(marks).not.toHaveBeenCalledWith('voice:end-confirmed');
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+      expect(api.startCall).toHaveBeenCalledOnce();
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Retry ending call' })));
+      expect(api.endCall).toHaveBeenNthCalledWith(2, join.callId);
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each(['before DELETE', 'before reconciliation', 'during status', 'between polls'] as const)('does not reconcile across auth invalidation %s', async stage => {
+    const release = deferred<Awaited<ReturnType<typeof api.endCall>>>();
+    const status = deferred<Awaited<ReturnType<typeof api.call>>>();
+    if (stage === 'before reconciliation') vi.mocked(api.endCall).mockReturnValueOnce(release.promise);
+    else vi.mocked(api.endCall).mockRejectedValueOnce(new TypeError('Acknowledgement lost'));
+    if (stage === 'between polls') vi.mocked(api.call).mockResolvedValue({ callId: join.callId, status: 'ending', cleanupConfirmed: false, message: null });
+    else vi.mocked(api.call).mockReturnValueOnce(status.promise);
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    const marks = vi.spyOn(performance, 'mark');
+    try {
+      if (stage === 'before DELETE') invalidateRequests();
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      if (stage !== 'before DELETE') invalidateRequests();
+      await act(async () => {
+        release.resolve({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null });
+        status.resolve({ callId: join.callId, status: 'ended', cleanupConfirmed: true, message: null });
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(api.endCall).toHaveBeenCalledTimes(stage === 'before DELETE' ? 0 : 1);
+      expect(api.call).toHaveBeenCalledTimes(stage === 'during status' || stage === 'between polls' ? 1 : 0);
+      expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(marks).not.toHaveBeenCalledWith('voice:end-confirmed');
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Retry ending call' })));
+      expect(api.endCall).toHaveBeenCalledTimes(stage === 'before DELETE' ? 0 : 1);
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it.each(['resolve', 'reject'] as const)('reconnects after GET confirmation without a late room %s, DELETE, or SDK callback affecting the new call', async settlement => {
+    const room = deferred<typeof join>(); vi.mocked(api.startCall).mockReturnValueOnce(room.promise);
+    const release = deferred<Awaited<ReturnType<typeof api.endCall>>>(); vi.mocked(api.endCall).mockReturnValueOnce(release.promise);
+    vi.mocked(api.call).mockResolvedValueOnce({ callId: join.callId, conversationSlug: join.conversationSlug, status: 'ended', cleanupConfirmed: true, message: null });
+    const view = show(); await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
+    const events = sdk.options!.callbacks!;
+    const onTrack = sdk.listeners.get(RTVIEvent.TrackStarted)!;
+    const microphone = track();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'End conversation' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 1000));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      expect(sdk.connect).not.toHaveBeenCalled();
+      sdk.tracks.mockReturnValue({ local: { audio: microphone } });
+      vi.mocked(api.start).mockResolvedValueOnce({ ...snapshot(), conversationSlug: join.conversationSlug });
+      vi.mocked(crypto.randomUUID).mockReturnValue('e2639293-b514-436d-b359-88637e030142');
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Reconnect' })));
+      ready(); const bot = await hear();
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      const late = track();
+      await act(async () => {
+        if (settlement === 'resolve') room.resolve(join); else room.reject(new TypeError('Late room'));
+        release.resolve({ callId: join.callId, conversationSlug: 'conversation-2026-09-12-999999', status: 'active', cleanupConfirmed: false, message: null });
+        events.onBotReady!({ version: '2.1' }); events.onDisconnected!();
+        events.onUserTranscript!({ text: 'Stale words', final: true, timestamp: 'late', user_id: 'me' });
+        onTrack(late, { ...remote, local: true });
+      });
+      expect(late.stop).toHaveBeenCalledOnce();
+      expect(microphone.stop).not.toHaveBeenCalled(); expect(bot.stop).not.toHaveBeenCalled();
+      expect((view.container.querySelector('audio')!.srcObject as MediaStream).getTracks()).toEqual([bot]);
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      expect(screen.queryByText('Stale words')).not.toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(api.startCall).toHaveBeenNthCalledWith(2, 'e2639293-b514-436d-b359-88637e030142', join.conversationSlug);
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId);
+      expect(sdk.connect).toHaveBeenCalledOnce();
+      expect(sdk.enableMic).toHaveBeenCalledExactlyOnceWith(true);
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(api.call).toHaveBeenCalledOnce();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+    } finally { view.unmount(); vi.useRealTimers(); }
   });
 
   it('bounds a hung refresh check and discovers its call ID before retrying termination', async () => {
@@ -1593,25 +1790,32 @@ describe('real SDK integration boundary', () => {
   it('surfaces start failure and retries an unconfirmed backend termination', async () => {
     vi.mocked(api.startCall).mockRejectedValue(new ApiError(503, { code: 'voiceUnavailable', message: 'internal detail' }));
     vi.mocked(api.endCall).mockRejectedValueOnce(new TypeError('Network lost'));
-    const view = show(); await userEvent.click(screen.getByRole('button', { name: 'Start talking' }));
-    const retry = await panel().findByRole('button', { name: 'Retry ending call' });
-    expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toHaveTextContent('Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.');
-    expect(within(screen.getByRole('alert', { name: 'Conversations unavailable' })).getByText('Try again shortly.')).toBeVisible();
-    expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
-    expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
-    expect(view.onPhaseChange).toHaveBeenLastCalledWith('error');
-    await userEvent.click(retry); await panel().findByRole('button', { name: 'Reconnect' });
-    expect(screen.queryByRole('alert', { name: 'Call ending not confirmed' })).not.toBeInTheDocument();
-    expect(screen.getByRole('alert', { name: 'Conversations unavailable' })).toBeVisible();
-    expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
-    expect(api.endCall).toHaveBeenCalledTimes(2);
+    vi.mocked(api.call).mockRejectedValue(new TypeError('Status unavailable'));
+    const view = show();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'Start talking' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      const retry = panel().getByRole('button', { name: 'Retry ending call' });
+      expect(screen.getByRole('alert', { name: 'Call ending not confirmed' })).toHaveTextContent('Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.');
+      expect(within(screen.getByRole('alert', { name: 'Conversations unavailable' })).getByText('Try again shortly.')).toBeVisible();
+      expect(screen.queryByText('internal detail')).not.toBeInTheDocument();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(true);
+      expect(view.onPhaseChange).toHaveBeenLastCalledWith('error');
+      await act(async () => fireEvent.click(retry));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+      expect(screen.queryByRole('alert', { name: 'Call ending not confirmed' })).not.toBeInTheDocument();
+      expect(screen.getByRole('alert', { name: 'Conversations unavailable' })).toBeVisible();
+      expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
+      expect(api.endCall).toHaveBeenCalledTimes(2);
+    } finally { view.unmount(); vi.useRealTimers(); }
   });
   it('labels unexpected disconnection honestly and releases resources', async () => {
     show(); await start(); ready();
     act(() => sdk.options!.callbacks!.onDisconnected!());
     await screen.findByText('Disconnected', { exact: true });
     expectOrb('idle', 0, 'disconnected');
-    expect(within(screen.getByRole('alert', { name: 'Connection lost' })).getByText('Check your internet connection, then reconnect.')).toBeVisible(); expect(api.endCall).toHaveBeenCalledTimes(1);
+    expect(within(screen.getByRole('alert', { name: 'Connection lost' })).getByText('The call disconnected. Reconnect to continue.')).toBeVisible(); expect(api.endCall).toHaveBeenCalledTimes(1);
   });
   it('keeps local End stable while reporting a confirmed backend error separately', async () => {
     vi.mocked(api.endCall).mockResolvedValue({ callId: join.callId, status: 'error', cleanupConfirmed: true, message: 'Provider failed' });
@@ -1623,13 +1827,32 @@ describe('real SDK integration boundary', () => {
     expect(view.onBusyChange).toHaveBeenLastCalledWith(false);
     expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
   });
+  it.each(['bot', 'transport'] as const)('reports an acknowledged backend failure instead of blaming the internet after %s disconnect', async (source) => {
+    vi.mocked(api.endCall).mockResolvedValue({ callId: join.callId, status: 'error', cleanupConfirmed: true, message: 'private provider error' });
+    show(); await start(); ready();
+    act(() => {
+      if (source === 'bot') sdk.options!.callbacks!.onBotDisconnected!(remote);
+      else sdk.options!.callbacks!.onDisconnected!();
+    });
+    const notice = await screen.findByRole('alert', { name: 'Conversation stopped' });
+    expect(notice).toHaveTextContent('The assistant could not continue. Your saved figures are still available. Reconnect to continue.');
+    expect(screen.queryByRole('alert', { name: 'Connection lost' })).not.toBeInTheDocument();
+    expect(screen.queryByText('private provider error')).not.toBeInTheDocument();
+    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    expect(api.endCall).toHaveBeenCalledTimes(1);
+  });
   it('treats an active DELETE response as unconfirmed and offers termination retry', async () => {
     vi.mocked(api.endCall).mockResolvedValue({ callId: join.callId, status: 'active', cleanupConfirmed: false, message: null });
-    show(); await start();
-    await userEvent.click(screen.getByRole('button', { name: 'End conversation' }));
-    await panel().findByRole('button', { name: 'Retry ending call' });
-    expect(screen.getByRole('alert')).toHaveTextContent('Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.');
-    expect(panel().queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    vi.mocked(api.call).mockResolvedValue({ callId: join.callId, status: 'active', cleanupConfirmed: false, message: null });
+    const view = show(); await start();
+    vi.useFakeTimers();
+    try {
+      await act(async () => fireEvent.click(screen.getByRole('button', { name: 'End conversation' })));
+      await act(async () => vi.advanceTimersByTimeAsync(settings.voiceShutdownSeconds * 2000));
+      expect(panel().getByRole('button', { name: 'Retry ending call' })).toBeEnabled();
+      expect(screen.getByRole('alert')).toHaveTextContent('Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.');
+      expect(panel().queryByRole('button', { name: 'Reconnect' })).not.toBeInTheDocument();
+    } finally { view.unmount(); vi.useRealTimers(); }
   });
   it('handles pipeline errors without exposing provider diagnostics', async () => {
     show(); await start(); ready();

@@ -5,7 +5,7 @@ import { DeviceError, PipecatClient, RTVIEvent } from '@pipecat-ai/client-js';
 import { DailyTransport } from '@pipecat-ai/daily-transport';
 import type { DailyEventObjectParticipant } from '@daily-co/daily-js';
 import { api, ApiError, authEpoch } from './api';
-import type { CallJoin, Settings, Snapshot } from './api';
+import type { CallJoin, CallState, Settings, Snapshot } from './api';
 import { LiveCaption } from './Captions';
 import type { Caption, Transcript } from './Captions';
 import { CallIcon } from './CallIcon';
@@ -55,29 +55,65 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
   if (owner.authEpoch !== authEpoch()) return 'unconfirmed';
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let acknowledgement: ReturnType<typeof setTimeout> | undefined;
+  let poll: ReturnType<typeof setTimeout> | undefined;
+  // Reserve a second shutdown window for status checks after the server's own shutdown deadline.
+  const timeout = new Promise<Release>(resolve => {
+    timer = setTimeout(() => { controller.abort(); resolve('unconfirmed'); }, seconds * 2000);
+  });
+  /** Accept only owned terminal cleanup or an explicitly empty authenticated status check. */
+  function confirmed(call: CallState, status = false): Release | undefined {
+    if (controller.signal.aborted || owner.authEpoch !== authEpoch()) return;
+    if (call.callId !== owner.callId && !(status && call.callId === null && call.status === 'idle')) return;
+    if (call.callId === owner.callId && call.conversationSlug) owner.conversationSlug = call.conversationSlug;
+    if (call.cleanupConfirmed !== true || !['idle', 'ended', 'error'].includes(call.status)) return;
+    mark('end-confirmed');
+    return call.status === 'error' ? 'error' : 'ended';
+  }
   try {
     return await Promise.race([
       (async (): Promise<Release> => {
         if (!owner.callId) {
           const call = await api.call(controller.signal);
+          if (owner.authEpoch !== authEpoch() || controller.signal.aborted) return 'unconfirmed';
           if (call.cleanupConfirmed && ['idle', 'ended', 'error'].includes(call.status)) return call.status === 'error' ? 'error' : 'ended';
           owner.callId = call.callId ?? undefined;
         }
         if (!owner.callId || owner.authEpoch !== authEpoch() || controller.signal.aborted) return 'unconfirmed';
         mark('end-request');
         // The deadline limits confirmation, not delivery of the keepalive termination request.
-        const call = await api.endCall(owner.callId);
-        if (owner.authEpoch !== authEpoch() || call.callId !== owner.callId) return 'unconfirmed';
-        if (call.conversationSlug) owner.conversationSlug = call.conversationSlug;
-        if (call.cleanupConfirmed !== true) return 'unconfirmed';
-        if (call.status !== 'idle' && call.status !== 'ended' && call.status !== 'error') return 'unconfirmed';
-        mark('end-confirmed');
-        return call.status === 'error' ? 'error' : 'ended';
+        const ended = api.endCall(owner.callId).then(call => confirmed(call), error =>
+          error instanceof ApiError && [401, 403].includes(error.status) ? 'unconfirmed' as const : undefined);
+        const result = await Promise.race([ended, new Promise<undefined>(resolve => {
+          acknowledgement = setTimeout(() => resolve(undefined), seconds * 1000);
+        })]);
+        clearTimeout(acknowledgement);
+        if (result) return result;
+        return await Promise.race([
+          // A late DELETE acknowledgement can still confirm cleanup while a status request is pending.
+          ended.then(result => result ?? timeout),
+          (async (): Promise<Release> => {
+            while (!controller.signal.aborted && owner.authEpoch === authEpoch()) {
+              try {
+                const call = await api.call(controller.signal);
+                if (controller.signal.aborted || owner.authEpoch !== authEpoch()) return 'unconfirmed';
+                if (call.callId !== owner.callId && !(call.callId === null && call.status === 'idle')) return 'unconfirmed';
+                const result = confirmed(call, true);
+                if (result) return result;
+              } catch (error) {
+                if (error instanceof ApiError && [401, 403].includes(error.status)) return 'unconfirmed';
+              }
+              if (controller.signal.aborted || owner.authEpoch !== authEpoch()) return 'unconfirmed';
+              await new Promise<void>(resolve => { poll = setTimeout(resolve, seconds * 1000 / 10); });
+            }
+            return 'unconfirmed';
+          })(),
+        ]);
       })(),
-      new Promise<Release>(resolve => { timer = setTimeout(() => { controller.abort(); resolve('unconfirmed'); }, seconds * 1000); }),
+      timeout,
     ]);
   } catch { return 'unconfirmed'; }
-  finally { clearTimeout(timer); }
+  finally { controller.abort(); clearTimeout(timer); clearTimeout(acknowledgement); clearTimeout(poll); }
 }
 
 /** Stop every media track retained by a call attempt. */
@@ -390,7 +426,9 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     setCleanupPending(false);
     if (issue?.type === 'end') previousCall.current = { authEpoch: owner.authEpoch };
     setEndIssue(issue?.type === 'end' ? 'open' : released === 'unconfirmed' ? endIssue === 'open' ? 'open' : 'unconfirmed' : null);
-    if (released === 'error' && !issue && !problem && !actions.current.sessionBlocked) setProblem({ ...callError(undefined),
+    if (released === 'error' && issue?.type === 'reconnect' && !actions.current.sessionBlocked) setProblem({ ...issue,
+      title: 'Conversation stopped', message: 'The assistant could not continue. Your saved figures are still available. Reconnect to continue.' });
+    else if (released === 'error' && !issue && !problem && !actions.current.sessionBlocked) setProblem({ ...callError(undefined),
       title: 'Conversation stopped', message: 'The conversation stopped with an error. Try a new conversation.' });
   }
 
@@ -468,7 +506,8 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       /** Stop the call and explain how to recover a disconnected microphone. */
       const microphoneLost = () => fail({ id: 'voice:problem', type: 'retry', title: 'Microphone disconnected', severity: 'error', duration: null,
         message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
-      const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
+      const disconnected = () => { if (live()) void actions.current.finish('disconnected', { ...callError(new TypeError()),
+        message: 'The call disconnected. Reconnect to continue.' }); };
       const client = new PipecatClient({ transport, enableMic: false, enableCam: false, callbacks: {
         onConnected: () => {
           if (live() && current?.ready) clearTimeout(current.startupTimer);
@@ -514,7 +553,8 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         /** End fatal SDK failures or expose an unsuccessful continuation. */
         onError: (message) => {
           if (!message.data || typeof message.data !== 'object' || !('fatal' in message.data) || message.data.fatal !== false)
-            fail({ ...callError(undefined), title: 'Conversation stopped', message: 'The assistant could not continue. Check your connection and try again.' });
+            fail({ ...callError(undefined), title: 'Conversation stopped',
+              message: 'The assistant could not continue. Your saved figures are still available. Reconnect to continue.' });
           else if (live() && current?.activity.continuing) {
             clearTimeout(current.resumeTimer);
             update({ continuing: false, resumeFailed: true });

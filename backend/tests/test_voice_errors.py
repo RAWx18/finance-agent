@@ -407,8 +407,6 @@ async def test_native_stop_blocks_replacement_until_reobserved(
         release.set()
         await asyncio.wait_for(asyncio.shield(task), 2)
         await asyncio.wait_for(asyncio.shield(call.operations["pipeline"]), 2)
-        await manager.end("owner", call.id)
-        await asyncio.wait_for(asyncio.shield(call.teardown), 2)
         assert manager.state("owner").cleanup_confirmed
         assert call.pipeline is None
         native_stop.assert_called_once()
@@ -518,7 +516,11 @@ async def test_room_cleanup_deadline_preserves_primary_setup_failure(lifecycle, 
         "Conversations are temporarily unavailable. Please try again shortly."
     )
     lifecycle.rooms.delete.assert_awaited_once()
-    lifecycle.rooms.close.assert_awaited_once()
+    if cleanup == "delete":
+        lifecycle.rooms.close.assert_not_awaited()
+        assert not manager.call.operations["roomDelete"].done()
+    else:
+        lifecycle.rooms.close.assert_awaited_once()
     await asyncio.wait_for(asyncio.shield(manager.call.task), 1)
     assert manager.call.task.done()
 

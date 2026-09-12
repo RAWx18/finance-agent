@@ -203,7 +203,11 @@ class DailyRooms:
 
     async def delete(self, name: str) -> None:
         """Delete the named room, treating an absent room as already deleted."""
-        await self.request("DELETE", "/rooms/" + name)
+        try:
+            await self.request("DELETE", "/rooms/" + name)
+        except (aiohttp.ClientError, TimeoutError):
+            # An ambiguous response may follow a committed deletion; the same DELETE is safe.
+            await self.request("DELETE", "/rooms/" + name)
 
     async def close(self) -> None:
         """Close the Daily API HTTP session."""
@@ -234,6 +238,11 @@ class Call:
     timings: dict[str, float] = field(default_factory=dict)
     session_id: UUID | None = None
     resume_slug: str | None = None
+
+    def completed(self, name: str) -> bool:
+        """Check whether a tracked cleanup operation finished successfully."""
+        task = self.operations.get(name)
+        return bool(task and task.done() and not task.cancelled() and task.result())
 
     def mark(self, stage: str) -> None:
         """Record and log a lifecycle stage's elapsed time since admission."""
@@ -304,6 +313,7 @@ class CallManager:
     def state(self, owner: Owner) -> CallState:
         """Return the owner's call state with provider error details concealed."""
         if self.call and self.call.owner == owner:
+            self.reconcile(self.call)
             state = self.call.state.model_copy()
             if state.status == "error":
                 state.message = VOICE_UNAVAILABLE
@@ -313,6 +323,8 @@ class CallManager:
     def check_idle(self) -> None:
         """Reject admission while a call or its cleanup remains unsettled."""
         call = self.call
+        if call:
+            self.reconcile(call)
         if call and (
             call.state.status in {"connecting", "active", "ending"}
             or not call.state.cleanup_confirmed
@@ -320,7 +332,7 @@ class CallManager:
             and not call.task.done()
             or call.teardown is not None
             and not call.teardown.done()
-            or any(not task.done() for task in call.operations.values())
+            or any(not task.done() for name, task in call.operations.items() if name != "history")
         ):
             raise Problem(409, "callBusy", "A voice call is already running or ending.")
 
@@ -448,6 +460,7 @@ class CallManager:
             task = call.teardown or call.task
         if task and task is not asyncio.current_task():
             await asyncio.wait({task}, timeout=self.config.voice.shutdown_seconds)
+        self.reconcile(call)
         state = call.state.model_copy()
         if state.status == "error":
             state.message = VOICE_UNAVAILABLE
@@ -734,15 +747,10 @@ class CallManager:
                 watcher.cancel()
         deadline = asyncio.get_running_loop().time() + self.config.voice.shutdown_seconds
 
-        def completed(name: str) -> bool:
-            """Check whether a named cleanup operation finished successfully."""
-            task = call.operations.get(name)
-            return bool(task and task.done() and not task.cancelled() and task.result())
-
         def launch(name: str, operation: Callable[[], Awaitable[None]]) -> None:
             """Start or retry a cleanup operation unless it is pending or successful."""
             task = call.operations.get(name)
-            if task and (not task.done() or completed(name)):
+            if task and (not task.done() or call.completed(name)):
                 return
 
             async def execute() -> bool:
@@ -765,6 +773,7 @@ class CallManager:
                     return False
 
             call.operations[name] = asyncio.create_task(execute())
+            call.operations[name].add_done_callback(lambda _: self.reconcile(call))
 
         if call.pipeline is not None:
             launch("pipeline", call.pipeline.close)
@@ -774,7 +783,7 @@ class CallManager:
             launch("history", lambda: history.finish(call.owner, call.id))
         # A failed DELETE needs a fresh HTTP client, not a replacement room or worker.
         task = call.operations.get("roomDelete")
-        if call.rooms is None and task is not None and not completed("roomDelete"):
+        if call.rooms is None and task is not None and not call.completed("roomDelete"):
             if task.done():
                 call.rooms = DailyRooms(self.environment, self.config.voice.shutdown_seconds)
                 call.operations.pop("roomClose", None)
@@ -782,34 +791,47 @@ class CallManager:
             rooms = call.rooms
             launch("roomDelete", lambda: rooms.delete(call.room_name))
 
-        task = call.operations.get("roomDelete")
-        if task is not None and not task.done():
-            # Reserve half the total teardown budget for closing the HTTP client after DELETE.
-            _, pending = await asyncio.wait({task}, timeout=self.config.voice.shutdown_seconds / 2)
-            for task in pending:
-                task.cancel()
-        if call.rooms is not None:
-            launch("roomClose", call.rooms.close)
+            async def close_rooms() -> None:
+                """Keep the HTTP client alive until room deletion settles."""
+                await asyncio.shield(call.operations["roomDelete"])
+                await rooms.close()
+
+            launch("roomClose", close_rooms)
         pending = {task for task in [*call.operations.values(), *call.watchers] if not task.done()}
         if pending:
             _, pending = await asyncio.wait(
                 pending, timeout=max(0, deadline - asyncio.get_running_loop().time())
             )
             for task in pending:
-                task.cancel()
-        call.state.cleanup_confirmed = all(
-            completed(name) for name in call.operations if name != "history"
+                if task in call.watchers or task is call.operations.get("history"):
+                    task.cancel()
+        self.reconcile(call)
+        call.mark("shutdownComplete" if call.state.cleanup_confirmed else "shutdownUnconfirmed")
+
+    def reconcile(self, call: Call) -> None:
+        """Confirm late resource releases without replaying cleanup operations."""
+        if not call.stopping or not call.operations:
+            return
+        confirmed = all(
+            call.completed(name) for name in call.operations if name != "history"
         ) and all(task.done() for task in call.watchers)
-        if completed("roomClose") and call.operations["roomDelete"].done():
+        if call.completed("roomClose") and call.operations["roomDelete"].done():
             call.rooms = None
-        if completed("pipeline"):
+        if call.completed("pipeline"):
             call.pipeline = None
-        if not call.state.cleanup_confirmed:
+        if confirmed:
+            if not call.state.cleanup_confirmed:
+                call.mark("shutdownComplete")
+            if call.state.status != "error":
+                call.state.status = "ended"
+        elif any(
+            task.done() and not call.completed(name)
+            for name, task in call.operations.items()
+            if name != "history"
+        ):
             call.state.status = "error"
             if call.state.message is None:
                 call.state.message = "Call termination is unconfirmed; retry ending this call."
-        elif call.state.status != "error":
-            call.state.status = "ended"
-        call.mark("shutdownComplete" if call.state.cleanup_confirmed else "shutdownUnconfirmed")
+        call.state.cleanup_confirmed = confirmed
         if call.revoked and call.state.cleanup_confirmed and self.call is call:
             self.call = None
