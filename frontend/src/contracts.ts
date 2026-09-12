@@ -10,7 +10,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Settings */
+        /**
+         * Settings
+         * @description Return public sign-in availability and session duration settings.
+         */
         get: operations["settings_api_auth_settings_get"];
         put?: never;
         post?: never;
@@ -29,7 +32,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Login */
+        /**
+         * Login
+         * @description Start Google sign-in and bind the login flow to the browser.
+         */
         post: operations["login_api_auth_login_post"];
         delete?: never;
         options?: never;
@@ -44,7 +50,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Session */
+        /**
+         * Session
+         * @description Return the authenticated user's current session.
+         */
         get: operations["session_api_auth_session_get"];
         put?: never;
         post?: never;
@@ -63,7 +72,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh */
+        /**
+         * Refresh
+         * @description Extend the authenticated session's idle lifetime and return its details.
+         */
         post: operations["refresh_api_auth_refresh_post"];
         delete?: never;
         options?: never;
@@ -80,7 +92,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Logout */
+        /**
+         * Logout
+         * @description Sign out the browser, clear its cookies, and settle revoked calls.
+         */
         post: operations["logout_api_auth_logout_post"];
         delete?: never;
         options?: never;
@@ -98,11 +113,17 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Delete */
+        /**
+         * Delete
+         * @description Delete the account, clear browser access, and attempt Google token revocation.
+         */
         delete: operations["delete_api_account_delete"];
         options?: never;
         head?: never;
-        /** Account */
+        /**
+         * Account
+         * @description Change the authenticated user's display name.
+         */
         patch: operations["account_api_account_patch"];
         trace?: never;
     };
@@ -113,7 +134,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Settings */
+        /**
+         * Settings
+         * @description Return public cashflow limits, local date, and voice availability settings.
+         */
         get: operations["settings_api_settings_get"];
         put?: never;
         post?: never;
@@ -130,12 +154,21 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Current */
+        /**
+         * Current
+         * @description Return the authenticated owner's current financial snapshot.
+         */
         get: operations["current_api_session_get"];
         put?: never;
-        /** Start */
+        /**
+         * Start
+         * @description Create a financial session for the authenticated owner.
+         */
         post: operations["start_api_session_post"];
-        /** Delete */
+        /**
+         * Delete
+         * @description End any active call and delete the owner's financial session.
+         */
         delete: operations["delete_api_session_delete"];
         options?: never;
         head?: never;
@@ -149,7 +182,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** History List */
+        /**
+         * History List
+         * @description List the owner's saved conversations with optional text search.
+         */
         get: operations["history_list_api_history_get"];
         put?: never;
         post?: never;
@@ -166,7 +202,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** History Detail */
+        /**
+         * History Detail
+         * @description Return a saved conversation and its transcript messages.
+         */
         get: operations["history_detail_api_history__slug__get"];
         put?: never;
         post?: never;
@@ -185,7 +224,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** History Continue */
+        /**
+         * History Continue
+         * @description Select a saved conversation for continued financial planning.
+         */
         post: operations["history_continue_api_history__slug__continue_post"];
         delete?: never;
         options?: never;
@@ -200,7 +242,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** History Transcript */
+        /**
+         * History Transcript
+         * @description Download a saved conversation as a plain-text transcript.
+         */
         get: operations["history_transcript_api_history__slug__transcript_get"];
         put?: never;
         post?: never;
@@ -217,7 +262,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Options */
+        /**
+         * Options
+         * @description Return available adjustments for the current financial session.
+         */
         get: operations["options_api_session_options_get"];
         put?: never;
         post?: never;
@@ -234,12 +282,21 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Call State */
+        /**
+         * Call State
+         * @description Return voice-call status after verifying the owner's financial session.
+         */
         get: operations["call_state_api_session_call_get"];
         put?: never;
-        /** Join Call */
+        /**
+         * Join Call
+         * @description Start or join the requested voice conversation.
+         */
         post: operations["join_call_api_session_call_post"];
-        /** End Call */
+        /**
+         * End Call
+         * @description End the requested voice call and return its resulting state.
+         */
         delete: operations["end_call_api_session_call_delete"];
         options?: never;
         head?: never;
@@ -255,7 +312,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Command */
+        /**
+         * Command
+         * @description Apply a financial command and return the resulting session snapshot.
+         */
         post: operations["command_api_session_commands_post"];
         delete?: never;
         options?: never;
@@ -270,7 +330,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Events */
+        /**
+         * Events
+         * @description Subscribe the owner to financial snapshots and terminal session events.
+         */
         get: operations["events_api_session_events_get"];
         put?: never;
         post?: never;
@@ -287,7 +350,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Export */
+        /**
+         * Export
+         * @description Download the current cashflow snapshot as a plain-text report.
+         */
         get: operations["export_api_session_export_get"];
         put?: never;
         post?: never;
@@ -304,7 +370,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Live */
+        /**
+         * Live
+         * @description Report that the application can serve requests.
+         */
         get: operations["live_health_live_get"];
         put?: never;
         post?: never;
@@ -321,7 +390,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Ready */
+        /**
+         * Ready
+         * @description Verify that session cleanup and persistent storage are available.
+         */
         get: operations["ready_health_ready_get"];
         put?: never;
         post?: never;
@@ -335,7 +407,10 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** AcceptPreview */
+        /**
+         * AcceptPreview
+         * @description Command operation accepting a preview with explicit unconditional consent.
+         */
         AcceptPreview: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -355,7 +430,10 @@ export interface components {
              */
             consentScope: "unconditional";
         };
-        /** AccountDelete */
+        /**
+         * AccountDelete
+         * @description Explicit confirmation for account deletion.
+         */
         AccountDelete: {
             /**
              * Confirmation
@@ -363,7 +441,10 @@ export interface components {
              */
             confirmation: "DELETE";
         };
-        /** AccountDeleted */
+        /**
+         * AccountDeleted
+         * @description Successful account deletion acknowledgement.
+         */
         AccountDeleted: {
             /**
              * Deleted
@@ -372,12 +453,18 @@ export interface components {
              */
             deleted: true;
         };
-        /** AccountUpdate */
+        /**
+         * AccountUpdate
+         * @description Requested account display-name change.
+         */
         AccountUpdate: {
             /** Displayname */
             displayName: string;
         };
-        /** Action */
+        /**
+         * Action
+         * @description Suggested financial next step with timing and consequence references.
+         */
         Action: {
             /** Id */
             id: string;
@@ -399,7 +486,10 @@ export interface components {
             /** Ifdeclinedconsequenceids */
             ifDeclinedConsequenceIds: string[];
         };
-        /** ActionResponse */
+        /**
+         * ActionResponse
+         * @description Declined or unavailable action response bound to its financial dependencies.
+         */
         ActionResponse: {
             /** Actionid */
             actionId: string;
@@ -411,7 +501,10 @@ export interface components {
             /** Dependencykey */
             dependencyKey: string;
         };
-        /** Adjustment */
+        /**
+         * Adjustment
+         * @description Selected payment adjustment with its optional acceptance revision.
+         */
         Adjustment: {
             /** Eventid */
             eventId: string;
@@ -442,21 +535,30 @@ export interface components {
             /** Acceptedrevision */
             acceptedRevision?: number | null;
         };
-        /** AdjustmentAmount */
+        /**
+         * AdjustmentAmount
+         * @description Event payment adjustment expressed in paise.
+         */
         AdjustmentAmount: {
             /** Eventid */
             eventId: string;
             /** Amountpaise */
             amountPaise: number;
         };
-        /** AdjustmentInput */
+        /**
+         * AdjustmentInput
+         * @description Proposed event payment amount reported in INR.
+         */
         AdjustmentInput: {
             /** Eventid */
             eventId: string;
             /** Amount */
             amount: string;
         };
-        /** AdjustmentOption */
+        /**
+         * AdjustmentOption
+         * @description Eligible payment adjustment with amount limits and acceptance dependencies.
+         */
         AdjustmentOption: {
             /** Eventid */
             eventId: string;
@@ -483,7 +585,10 @@ export interface components {
             /** Dependencykey */
             dependencyKey: string;
         };
-        /** AdjustmentOptions */
+        /**
+         * AdjustmentOptions
+         * @description Available payment adjustments for a session revision and evaluation date.
+         */
         AdjustmentOptions: {
             /** Revision */
             revision: number;
@@ -495,9 +600,15 @@ export interface components {
             /** Options */
             options: components["schemas"]["AdjustmentOption"][];
         };
-        /** AuthModel */
+        /**
+         * AuthModel
+         * @description Strict authentication payload with camel-case aliases.
+         */
         AuthModel: Record<string, never>;
-        /** AuthSession */
+        /**
+         * AuthSession
+         * @description Authenticated account profile and session expiry.
+         */
         AuthSession: {
             user: components["schemas"]["User"];
             /**
@@ -506,21 +617,30 @@ export interface components {
              */
             expiresAt: string;
         };
-        /** AuthSettings */
+        /**
+         * AuthSettings
+         * @description Public sign-in availability and session lifetime settings.
+         */
         AuthSettings: {
             /** Googleavailable */
             googleAvailable: boolean;
             /** Sessionhours */
             sessionHours: number;
         };
-        /** BudgetBasis */
+        /**
+         * BudgetBasis
+         * @description Completeness of the dated projection and its unresolved amounts.
+         */
         BudgetBasis: {
             /** Datedprojectioncomplete */
             datedProjectionComplete: boolean;
             /** Unresolvedamounts */
             unresolvedAmounts: components["schemas"]["UnresolvedAmount"][];
         };
-        /** CallJoin */
+        /**
+         * CallJoin
+         * @description Voice call connection credentials and expiry for a selected conversation.
+         */
         CallJoin: {
             /**
              * Callid
@@ -539,7 +659,10 @@ export interface components {
              */
             expiresAt: string;
         };
-        /** CallRequest */
+        /**
+         * CallRequest
+         * @description Voice call request with optional saved-conversation selection.
+         */
         CallRequest: {
             /**
              * Callid
@@ -549,7 +672,10 @@ export interface components {
             /** Conversationslug */
             conversationSlug?: string | null;
         };
-        /** CallState */
+        /**
+         * CallState
+         * @description Voice call lifecycle status and media cleanup confirmation.
+         */
         CallState: {
             /** Callid */
             callId?: string | null;
@@ -569,7 +695,10 @@ export interface components {
             /** Message */
             message?: string | null;
         };
-        /** ChangeItem */
+        /**
+         * ChangeItem
+         * @description Workspace change state with affected fields, records, results, and cards.
+         */
         ChangeItem: {
             /** Id */
             id: string;
@@ -587,7 +716,10 @@ export interface components {
             /** Cardids */
             cardIds?: string[];
         };
-        /** ChangeSource */
+        /**
+         * ChangeSource
+         * @description Actor and timestamp provenance for a human card edit.
+         */
         ChangeSource: {
             /**
              * Kind
@@ -602,7 +734,10 @@ export interface components {
              */
             at: string;
         };
-        /** Choice */
+        /**
+         * Choice
+         * @description Financial choice with prerequisites, adjustments, and projected consequences.
+         */
         Choice: {
             /** Id */
             id: string;
@@ -636,7 +771,10 @@ export interface components {
             laterOnly: boolean;
             metrics?: components["schemas"]["ProjectionMetrics"] | null;
         };
-        /** ClearAccepted */
+        /**
+         * ClearAccepted
+         * @description Command operation clearing accepted payment adjustments.
+         */
         ClearAccepted: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -644,7 +782,10 @@ export interface components {
              */
             type: "clearAccepted";
         };
-        /** Command */
+        /**
+         * Command
+         * @description Identified financial operation bound to an expected session revision.
+         */
         Command: {
             /**
              * Commandid
@@ -656,7 +797,10 @@ export interface components {
             /** Operation */
             operation: components["schemas"]["ReplaceFacts"] | components["schemas"]["UpdateFacts"] | components["schemas"]["PreviewAdjustments"] | components["schemas"]["AcceptPreview"] | components["schemas"]["DiscardPreview"] | components["schemas"]["RejectPreview"] | components["schemas"]["ClearAccepted"] | components["schemas"]["RespondToAction"];
         };
-        /** ConflictInput */
+        /**
+         * ConflictInput
+         * @description Reported financial conflict with user-supplied competing values.
+         */
         ConflictInput: {
             /**
              * Field
@@ -668,7 +812,10 @@ export interface components {
             /** Recordid */
             recordId?: string | null;
         };
-        /** ConflictValue */
+        /**
+         * ConflictValue
+         * @description Concrete competing date or paise amount with reported certainty.
+         */
         ConflictValue: {
             /** Id */
             id: string;
@@ -683,7 +830,10 @@ export interface components {
             status: "exact" | "estimate";
             source?: components["schemas"]["MoneyInput"] | null;
         };
-        /** ConflictValueInput */
+        /**
+         * ConflictValueInput
+         * @description Reported competing amount or date with certainty and conversion terms.
+         */
         ConflictValueInput: {
             /** Id */
             id: string;
@@ -698,7 +848,10 @@ export interface components {
             status: "exact" | "estimate";
             conversion?: components["schemas"]["Conversion"] | null;
         };
-        /** Consequence */
+        /**
+         * Consequence
+         * @description Cash exposure, reserve breach, or conditional-income risk linked to events.
+         */
         Consequence: {
             /** Id */
             id: string;
@@ -716,7 +869,10 @@ export interface components {
             /** Comparisonid */
             comparisonId?: string | null;
         };
-        /** Constraint */
+        /**
+         * Constraint
+         * @description Protected payment or reserve requirement affecting financial choices.
+         */
         Constraint: {
             /** Id */
             id: string;
@@ -732,7 +888,10 @@ export interface components {
             /** Amountpaise */
             amountPaise: number | null;
         };
-        /** Contribution */
+        /**
+         * Contribution
+         * @description Record or event contribution explaining a financial result.
+         */
         Contribution: {
             /** Id */
             id: string;
@@ -753,12 +912,18 @@ export interface components {
             /** References */
             references: string[];
         };
-        /** ConversationList */
+        /**
+         * ConversationList
+         * @description A collection of saved conversation summaries.
+         */
         ConversationList: {
             /** Conversations */
             conversations: components["schemas"]["ConversationSummary"][];
         };
-        /** ConversationMessage */
+        /**
+         * ConversationMessage
+         * @description A timestamped conversation message with interruption status.
+         */
         ConversationMessage: {
             /** Id */
             id: string;
@@ -777,7 +942,10 @@ export interface components {
             /** Interrupted */
             interrupted: boolean;
         };
-        /** ConversationSummary */
+        /**
+         * ConversationSummary
+         * @description Saved conversation metadata and message count.
+         */
         ConversationSummary: {
             /** Slug */
             slug: string;
@@ -798,7 +966,10 @@ export interface components {
             /** Messagecount */
             messageCount: number;
         };
-        /** Conversion */
+        /**
+         * Conversion
+         * @description Reported foreign-currency conversion terms and certainty.
+         */
         Conversion: {
             /** Currency */
             currency: string;
@@ -821,7 +992,10 @@ export interface components {
              */
             feeStatus: "exact" | "estimate" | "unknown";
         };
-        /** Coverage */
+        /**
+         * Coverage
+         * @description Discussion coverage of income, spending, and debts.
+         */
         Coverage: {
             /**
              * Income
@@ -848,7 +1022,10 @@ export interface components {
              */
             debt: "notDiscussed" | "reported" | "reviewed" | "none" | "unknown";
         };
-        /** CoveragePatch */
+        /**
+         * CoveragePatch
+         * @description Partial changes to financial discussion coverage.
+         */
         CoveragePatch: {
             /** Income */
             income?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
@@ -859,7 +1036,10 @@ export interface components {
             /** Debt */
             debt?: ("notDiscussed" | "reported" | "reviewed" | "none" | "unknown") | null;
         };
-        /** Decision */
+        /**
+         * Decision
+         * @description Planning intent, focused records, response preference, and action responses.
+         */
         Decision: {
             /**
              * Intent
@@ -882,7 +1062,10 @@ export interface components {
             /** Responses */
             readonly responses?: components["schemas"]["ActionResponse"][];
         };
-        /** DecisionAssessment */
+        /**
+         * DecisionAssessment
+         * @description Financial decision evidence, available choices, next steps, and outcome.
+         */
         DecisionAssessment: {
             /** Uncertainties */
             uncertainties?: components["schemas"]["Uncertainty"][];
@@ -900,7 +1083,10 @@ export interface components {
             nextActionId?: string | null;
             outcome?: components["schemas"]["Outcome"] | null;
         };
-        /** DecisionPatch */
+        /**
+         * DecisionPatch
+         * @description Partial changes to decision intent, record focus, and response preference.
+         */
         DecisionPatch: {
             /** Intent */
             intent?: ("plan30Days" | "specificDecision") | null;
@@ -913,7 +1099,10 @@ export interface components {
             /** Responsepreference */
             responsePreference?: ("standard" | "brief") | null;
         };
-        /** Deleted */
+        /**
+         * Deleted
+         * @description Successful resource deletion acknowledgement.
+         */
         Deleted: {
             /**
              * Deleted
@@ -922,7 +1111,10 @@ export interface components {
              */
             deleted: true;
         };
-        /** DiscardPreview */
+        /**
+         * DiscardPreview
+         * @description Command operation discarding a preview without rejecting its proposal.
+         */
         DiscardPreview: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -935,7 +1127,10 @@ export interface components {
              */
             previewId: string;
         };
-        /** Error */
+        /**
+         * Error
+         * @description API error details with optional current financial state.
+         */
         Error: {
             /** Code */
             code: string;
@@ -943,7 +1138,10 @@ export interface components {
             message: string;
             snapshot?: components["schemas"]["Snapshot"] | null;
         };
-        /** Event */
+        /**
+         * Event
+         * @description Projected income or payment occurrence with assumptions and cash balance.
+         */
         Event: {
             /** Id */
             id: string;
@@ -1002,7 +1200,10 @@ export interface components {
             /** Balancepaise */
             balancePaise: number | null;
         };
-        /** FactConflict */
+        /**
+         * FactConflict
+         * @description Identified unresolved conflict between canonical financial values.
+         */
         FactConflict: {
             /**
              * Field
@@ -1016,7 +1217,10 @@ export interface components {
             /** Id */
             id: string;
         };
-        /** Facts */
+        /**
+         * Facts
+         * @description Canonical financial facts, decision context, and unresolved conflicts.
+         */
         Facts: {
             opening: components["schemas"]["Money"];
             /** Reservepaise */
@@ -1030,7 +1234,10 @@ export interface components {
             /** Conflicts */
             readonly conflicts?: components["schemas"]["FactConflict"][];
         };
-        /** FactsInput */
+        /**
+         * FactsInput
+         * @description Reported cash, records, and decision context for a financial plan.
+         */
         FactsInput: {
             opening: components["schemas"]["MoneyInput"];
             /**
@@ -1047,7 +1254,10 @@ export interface components {
             /** Conflicts */
             readonly conflicts?: components["schemas"]["FactConflict"][];
         };
-        /** FactsPatch */
+        /**
+         * FactsPatch
+         * @description Revision-bound changes to financial facts, responses, and conflicts.
+         */
         FactsPatch: {
             /** Expectedrevision */
             expectedRevision: number;
@@ -1069,14 +1279,20 @@ export interface components {
             /** Merges */
             merges?: components["schemas"]["MergeRecords"][];
         };
-        /** FieldChange */
+        /**
+         * FieldChange
+         * @description Before-and-after values for a referenced workspace field.
+         */
         FieldChange: {
             /** Reference */
             reference: string;
             before: components["schemas"]["JsonValue"];
             after: components["schemas"]["JsonValue"];
         };
-        /** Gap */
+        /**
+         * Gap
+         * @description Dated cash shortfall expressed in paise.
+         */
         Gap: {
             /**
              * Date
@@ -1086,7 +1302,10 @@ export interface components {
             /** Amountpaise */
             amountPaise: number;
         };
-        /** Health */
+        /**
+         * Health
+         * @description Service availability status for health checks.
+         */
         Health: {
             /**
              * Status
@@ -1094,7 +1313,10 @@ export interface components {
              */
             status: "ok" | "unavailable";
         };
-        /** IncomeComparison */
+        /**
+         * IncomeComparison
+         * @description Projected cash metrics under specified income arrival conditions.
+         */
         IncomeComparison: {
             /** Id */
             id: string;
@@ -1102,7 +1324,10 @@ export interface components {
             conditions: components["schemas"]["IncomeCondition"][];
             metrics: components["schemas"]["ProjectionMetrics"];
         };
-        /** IncomeCondition */
+        /**
+         * IncomeCondition
+         * @description Assumed income arrival timing for a conditional projection.
+         */
         IncomeCondition: {
             /** Eventid */
             eventId: string;
@@ -1112,14 +1337,20 @@ export interface components {
              */
             arrival: "reportedDate" | "notByHorizon";
         };
-        /** InvalidatedAssumption */
+        /**
+         * InvalidatedAssumption
+         * @description Event adjustment assumption invalidated for a stated reason.
+         */
         InvalidatedAssumption: {
             /** Eventid */
             eventId: string;
             /** Reason */
             reason: string;
         };
-        /** Issue */
+        /**
+         * Issue
+         * @description Financial planning issue with optional record and date context.
+         */
         Issue: {
             /** Code */
             code: string;
@@ -1131,7 +1362,10 @@ export interface components {
             date?: string | null;
         };
         JsonValue: unknown;
-        /** LoginRequest */
+        /**
+         * LoginRequest
+         * @description Sign-in request with an allowed application return destination.
+         */
         LoginRequest: {
             /**
              * Returnto
@@ -1139,12 +1373,18 @@ export interface components {
              */
             returnTo: ("/app" | "/money" | "/money/income" | "/money/spending" | "/money/debts" | "/money/upcoming" | "/money/changes" | "/account" | "/history") | string;
         };
-        /** LoginURL */
+        /**
+         * LoginURL
+         * @description Provider sign-in URL returned to the client.
+         */
         LoginURL: {
             /** Url */
             url: string;
         };
-        /** MergeRecords */
+        /**
+         * MergeRecords
+         * @description Explicitly confirmed duplicate-record merge with supporting reason.
+         */
         MergeRecords: {
             /** Sourceid */
             sourceId: string;
@@ -1155,9 +1395,15 @@ export interface components {
             /** Reason */
             reason: string;
         };
-        /** Model */
+        /**
+         * Model
+         * @description Strict financial payload with camel-case aliases.
+         */
         Model: Record<string, never>;
-        /** Money */
+        /**
+         * Money
+         * @description INR amount in paise with certainty and retained foreign source terms.
+         */
         Money: {
             /** Amountpaise */
             amountPaise: number | null;
@@ -1168,7 +1414,10 @@ export interface components {
             status: "exact" | "estimate" | "unknown";
             source?: components["schemas"]["MoneyInput"] | null;
         };
-        /** MoneyInput */
+        /**
+         * MoneyInput
+         * @description Reported monetary amount with certainty and optional conversion terms.
+         */
         MoneyInput: {
             /** Amount */
             amount: string | null;
@@ -1179,7 +1428,10 @@ export interface components {
             status: "exact" | "estimate" | "unknown";
             conversion?: components["schemas"]["Conversion"] | null;
         };
-        /** MonthlyPattern */
+        /**
+         * MonthlyPattern
+         * @description Monthly timing rule without a concrete starting date.
+         */
         MonthlyPattern: {
             /**
              * Kind
@@ -1189,7 +1441,10 @@ export interface components {
             /** Day */
             day?: number | null;
         };
-        /** Outcome */
+        /**
+         * Outcome
+         * @description Qualified financial conclusion with coverage, next step, and revisit guidance.
+         */
         Outcome: {
             /**
              * Branch
@@ -1224,7 +1479,10 @@ export interface components {
             /** Revisit */
             revisit: string;
         };
-        /** Plan */
+        /**
+         * Plan
+         * @description Evaluated cash-flow projection with events, qualifications, and decision guidance.
+         */
         Plan: {
             /** Reliableincomepaise */
             reliableIncomePaise: number;
@@ -1262,7 +1520,10 @@ export interface components {
             /** Incomecomparisons */
             incomeComparisons?: components["schemas"]["IncomeComparison"][];
         };
-        /** PreviewAdjustments */
+        /**
+         * PreviewAdjustments
+         * @description Command operation previewing proposed payment adjustments.
+         */
         PreviewAdjustments: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1272,7 +1533,10 @@ export interface components {
             /** Adjustments */
             adjustments: components["schemas"]["AdjustmentInput"][];
         };
-        /** ProjectionMetrics */
+        /**
+         * ProjectionMetrics
+         * @description Cash-flow totals, balance extrema, shortfalls, and timing risks.
+         */
         ProjectionMetrics: {
             /** Reliableincomepaise */
             reliableIncomePaise: number;
@@ -1294,7 +1558,10 @@ export interface components {
             /** Timingrisks */
             timingRisks?: components["schemas"]["TimingRisk"][];
         };
-        /** ProviderResponse */
+        /**
+         * ProviderResponse
+         * @description Canonical provider response bound to its financial dependencies.
+         */
         ProviderResponse: {
             /** Eventid */
             eventId: string;
@@ -1318,7 +1585,10 @@ export interface components {
              */
             dependencyKey: string;
         };
-        /** ProviderResponseInput */
+        /**
+         * ProviderResponseInput
+         * @description Reported provider response with payment and cost amounts in INR.
+         */
         ProviderResponseInput: {
             /** Eventid */
             eventId: string;
@@ -1337,7 +1607,10 @@ export interface components {
             payment?: components["schemas"]["MoneyInput"] | null;
             cost?: components["schemas"]["MoneyInput"] | null;
         };
-        /** Record */
+        /**
+         * Record
+         * @description Financial record with payment and debt amounts expressed in paise.
+         */
         Record: {
             /** Id */
             id: string;
@@ -1364,7 +1637,10 @@ export interface components {
             target?: components["schemas"]["Money"] | null;
             outstanding?: components["schemas"]["Money"] | null;
         };
-        /** RecordConflictInput */
+        /**
+         * RecordConflictInput
+         * @description Reported competing values for a record's amount, debt, or date field.
+         */
         RecordConflictInput: {
             /**
              * Field
@@ -1374,7 +1650,10 @@ export interface components {
             /** Values */
             values: components["schemas"]["ConflictValueInput"][];
         };
-        /** RecordInput */
+        /**
+         * RecordInput
+         * @description Reported financial record with payment and debt amounts.
+         */
         RecordInput: {
             /** Id */
             id: string;
@@ -1401,7 +1680,10 @@ export interface components {
             target?: components["schemas"]["MoneyInput"] | null;
             outstanding?: components["schemas"]["MoneyInput"] | null;
         };
-        /** RecordPatch */
+        /**
+         * RecordPatch
+         * @description Financial record creation, correction, deletion, or conflict report.
+         */
         RecordPatch: {
             /** Id */
             id?: string | null;
@@ -1434,7 +1716,10 @@ export interface components {
             /** Conflicts */
             conflicts?: components["schemas"]["RecordConflictInput"][];
         };
-        /** RejectPreview */
+        /**
+         * RejectPreview
+         * @description Command operation recording rejection of a proposed preview.
+         */
         RejectPreview: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1447,7 +1732,10 @@ export interface components {
              */
             previewId: string;
         };
-        /** RejectedProposal */
+        /**
+         * RejectedProposal
+         * @description Identified payment-adjustment proposal rejected by the user.
+         */
         RejectedProposal: {
             /**
              * Id
@@ -1457,7 +1745,10 @@ export interface components {
             /** Adjustments */
             adjustments: components["schemas"]["Adjustment"][];
         };
-        /** ReplaceFacts */
+        /**
+         * ReplaceFacts
+         * @description Command operation replacing the full reported financial facts.
+         */
         ReplaceFacts: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1466,13 +1757,19 @@ export interface components {
             type: "replaceFacts";
             facts: components["schemas"]["FactsInput"];
         };
-        /** ResolveConflict */
+        /**
+         * ResolveConflict
+         * @description Chosen value for resolving an identified financial conflict.
+         */
         ResolveConflict: {
             /** Conflictid */
             conflictId: string;
             value: components["schemas"]["ConflictValueInput"];
         };
-        /** RespondToAction */
+        /**
+         * RespondToAction
+         * @description Command operation recording a declined or unavailable action response.
+         */
         RespondToAction: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1487,7 +1784,10 @@ export interface components {
              */
             response: "unavailable" | "declined";
         };
-        /** SavedConversation */
+        /**
+         * SavedConversation
+         * @description A saved conversation with its ordered transcript messages.
+         */
         SavedConversation: {
             /** Slug */
             slug: string;
@@ -1510,7 +1810,10 @@ export interface components {
             /** Messages */
             messages: components["schemas"]["ConversationMessage"][];
         };
-        /** Scenario */
+        /**
+         * Scenario
+         * @description Payment-adjustment scenario with its source revision and resulting plan.
+         */
         Scenario: {
             /**
              * Id
@@ -1532,7 +1835,10 @@ export interface components {
             /** Removedassumptionids */
             removedAssumptionIds?: string[];
         };
-        /** Schedule */
+        /**
+         * Schedule
+         * @description Payment timing, recurrence, certainty, and optional occurrence amounts.
+         */
         Schedule: {
             /** Enddate */
             endDate?: string | null;
@@ -1556,7 +1862,10 @@ export interface components {
             /** Amounts */
             amounts?: components["schemas"]["MoneyInput"][];
         };
-        /** SchedulePatch */
+        /**
+         * SchedulePatch
+         * @description Partial changes to payment timing, recurrence, and occurrence amounts.
+         */
         SchedulePatch: {
             /** Enddate */
             endDate?: string | null;
@@ -1572,7 +1881,10 @@ export interface components {
             /** Amounts */
             amounts?: components["schemas"]["MoneyInput"][];
         };
-        /** Settings */
+        /**
+         * Settings
+         * @description Public planning limits, date context, and voice availability settings.
+         */
         Settings: {
             /** Assistantname */
             assistantName: string;
@@ -1620,7 +1932,10 @@ export interface components {
              */
             openingBasis: string;
         };
-        /** Snapshot */
+        /**
+         * Snapshot
+         * @description Versioned financial session state with facts, plans, consent, and workspace.
+         */
         Snapshot: {
             /**
              * Sessionid
@@ -1675,7 +1990,10 @@ export interface components {
             /** Rejectedproposals */
             readonly rejectedProposals?: components["schemas"]["RejectedProposal"][];
         };
-        /** TimingRisk */
+        /**
+         * TimingRisk
+         * @description Dated pre-receipt cash exposure and remaining funding gap.
+         */
         TimingRisk: {
             /**
              * Date
@@ -1687,7 +2005,10 @@ export interface components {
             /** Remaininggappaise */
             remainingGapPaise: number;
         };
-        /** Uncertainty */
+        /**
+         * Uncertainty
+         * @description Prioritized financial uncertainty and the decisions it blocks or changes.
+         */
         Uncertainty: {
             /** Id */
             id: string;
@@ -1713,7 +2034,10 @@ export interface components {
             /** Beforedate */
             beforeDate?: string | null;
         };
-        /** UndatedImpact */
+        /**
+         * UndatedImpact
+         * @description Qualified cash impact of undated payments outside the dated projection.
+         */
         UndatedImpact: {
             /** Items */
             items: components["schemas"]["UndatedItem"][];
@@ -1731,7 +2055,10 @@ export interface components {
             /** Qualification */
             qualification: string;
         };
-        /** UndatedItem */
+        /**
+         * UndatedItem
+         * @description Undated payment with reported amounts, recurrence, and a planning assumption.
+         */
         UndatedItem: {
             /** Recordid */
             recordId: string;
@@ -1761,7 +2088,10 @@ export interface components {
             /** Assumption */
             assumption: string;
         };
-        /** UnresolvedAmount */
+        /**
+         * UnresolvedAmount
+         * @description Financial amount lacking a date, amount, or debt target for projection.
+         */
         UnresolvedAmount: {
             /** Recordid */
             recordId: string;
@@ -1777,7 +2107,10 @@ export interface components {
              */
             recurrence: "once" | "daily" | "weekly" | "fortnightly" | "monthly" | "monthlyBudget";
         };
-        /** UpdateFacts */
+        /**
+         * UpdateFacts
+         * @description Command operation applying fact changes with optional human-edit provenance.
+         */
         UpdateFacts: {
             /**
              * @description discriminator enum property added by openapi-typescript
@@ -1788,7 +2121,10 @@ export interface components {
             /** Source */
             source?: "humanCardEdit" | null;
         };
-        /** User */
+        /**
+         * User
+         * @description Account identity with chosen display name and Google profile details.
+         */
         User: {
             /**
              * Id
@@ -1802,7 +2138,10 @@ export interface components {
             /** Email */
             email: string;
         };
-        /** Workspace */
+        /**
+         * Workspace
+         * @description Financial cards, questions, evidence, choices, and changes for presentation.
+         */
         Workspace: {
             /** Cards */
             cards?: components["schemas"]["WorkspaceCard"][];
@@ -1820,7 +2159,10 @@ export interface components {
             choices?: components["schemas"]["Choice"][];
             change?: components["schemas"]["WorkspaceChange"] | null;
         };
-        /** WorkspaceCard */
+        /**
+         * WorkspaceCard
+         * @description Financial workspace card with rows, state, and supporting record references.
+         */
         WorkspaceCard: {
             /** Id */
             id: string;
@@ -1854,7 +2196,10 @@ export interface components {
             /** Dependencies */
             dependencies?: string[];
         };
-        /** WorkspaceChange */
+        /**
+         * WorkspaceChange
+         * @description Revision-associated workspace changes with optional edit provenance.
+         */
         WorkspaceChange: {
             /**
              * Id
@@ -1867,7 +2212,10 @@ export interface components {
             items: components["schemas"]["ChangeItem"][];
             source?: components["schemas"]["ChangeSource"] | null;
         };
-        /** WorkspaceQuestion */
+        /**
+         * WorkspaceQuestion
+         * @description Prioritized financial clarification with affected fields and decision impact.
+         */
         WorkspaceQuestion: {
             /** Id */
             id: string;
@@ -1890,7 +2238,10 @@ export interface components {
             /** Priority */
             priority: number;
         };
-        /** WorkspaceResult */
+        /**
+         * WorkspaceResult
+         * @description Traceable financial result with contributions, exclusions, and assumptions.
+         */
         WorkspaceResult: {
             /** Id */
             id: string;
@@ -1940,7 +2291,10 @@ export interface components {
             /** Assumptions */
             assumptions: string[];
         };
-        /** WorkspaceRow */
+        /**
+         * WorkspaceRow
+         * @description Labeled workspace field with value, certainty state, and evidence references.
+         */
         WorkspaceRow: {
             /** Field */
             field: string;
