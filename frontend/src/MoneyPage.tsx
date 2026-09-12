@@ -12,7 +12,7 @@ import { MoneyChecks } from './MoneyChecks';
 import { MoneyEdit } from './MoneyEdit';
 import type { EditTarget } from './MoneyEdit';
 import { MoneyIcon } from './MoneyIcon';
-import { Details, Dialog } from './Dialog';
+import { Dialog } from './Dialog';
 import { Download } from './Download';
 import { dateLabel, lastDate } from './money';
 import { changeNotes } from './FinancialContext';
@@ -58,12 +58,10 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
         {state.phase === 'loading' && <p role="status">Loading your saved plan…</p>}
         {state.phase === 'empty' && <section className="money-panel money-empty"><h2>No plan yet</h2><p>Talk through your money or start a blank plan and add what you know.</p><button className="primary" disabled={state.busy || voiceBusy} onClick={() => void perform('start')}>{state.busy ? 'Starting…' : 'Start a blank plan'}</button></section>}
         {snapshot && settings && <>
-          <div className="money-context">
-            <p className="money-basis">Based on what you’ve shared</p>
+          {stale && <div className="money-context">
             {stale && <p className="money-warning" role="status">Updates paused · showing your saved plan</p>}
-            {state.messageKind === 'status' && !edit && <p role="status" className="sr-only">{state.message}</p>}
-            {!!notes.length && <div className="money-update"><p role="status" className="sr-only">{notes[0]}</p><Details label="Recent changes"><PagedList label="Recent changes" className="money-checks" pageSize={6}>{notes.map(note => <li key={note}>{note}</li>)}</PagedList></Details></div>}
-          </div>
+          </div>}
+          {state.messageKind === 'status' && !edit && <p role="status" className="sr-only">{state.message}</p>}
           <div className="money-views" data-page={route} tabIndex={0} aria-label={`${title} details`} role="region">
             {route === '/money' && <MoneyOverview snapshot={snapshot} blocked={blocked} stale={stale} onEdit={openEdit} onChecks={() => setChecks(true)} onCommand={command} />}
             {['/money/income', '/money/spending', '/money/debts'].includes(route) && <MoneyRecords key={route} category={route === '/money/income' ? 'income' : route === '/money/debts' ? 'debts' : 'spending'} snapshot={snapshot} blocked={blocked} onEdit={openEdit} onCommand={command} />}
@@ -80,7 +78,7 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
         {state.phase === 'ready' && <Download compact label="Download saved plan" />}
         <button className="icon-button" aria-label="Print saved plan" title="Print saved plan" onClick={() => { setTools(false); requestAnimationFrame(() => window.print()); }}><MoneyIcon name="print" /></button>
         <button className="icon-button danger" disabled={blocked} aria-label="Delete plan" title="Delete plan" onClick={() => { setTools(false); setDeleting(true); }}><MoneyIcon name="remove" /></button>
-      </div><p className="hint">Downloads and printing contain the saved projection, never an unsaved preview.</p></Dialog>
+      </div>{!!notes.length && <><h3>Recent changes</h3><PagedList label="Recent changes" className="money-checks" pageSize={6}>{notes.map(note => <li key={note}>{note}</li>)}</PagedList></>}<p className="hint">Downloads and printing contain the saved projection, never an unsaved preview.</p></Dialog>
       <Dialog open={active && deleting} title="Delete this plan?" onClose={() => setDeleting(false)} actions={<><button onClick={() => setDeleting(false)}>Keep plan</button><button className="danger" disabled={blocked} onClick={() => { void perform('delete'); setDeleting(false); }}>Delete plan</button></>}><p>Your saved figures and corrections will be deleted. Download a copy first if needed. Your account will remain.</p></Dialog>
     </>}
     {snapshot && <MoneyPrint snapshot={snapshot} />}

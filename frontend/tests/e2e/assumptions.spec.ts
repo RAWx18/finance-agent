@@ -14,10 +14,10 @@ test.afterEach(async ({ context }) => { await cleanup(context); });
 /** Preview a custom spending amount without accepting it into the plan. */
 async function preview(page: Page, amount = '0', label = 'Optional purchase') {
   await browse(page, '/money/changes');
-  const custom = page.getByRole('button', { name: 'Choose custom changes', exact: true }); if (await custom.isVisible()) await custom.click();
+  const custom = page.getByRole('button', { name: 'Choose payments', exact: true }); if (await custom.isVisible()) await custom.click();
   const edit = page.getByRole('button', { name: 'Edit selections' }); if (await edit.isVisible()) await edit.click();
   const refresh = page.getByRole('button', { name: 'Review refreshed choices' }); if (await refresh.isVisible()) await refresh.click();
-  await page.getByRole('button', { name: 'Add a change', exact: true }).click();
+  await page.getByRole('button', { name: 'Choose a payment', exact: true }).click();
   const select = page.getByRole('combobox', { name: 'Payment or expense' });
   await select.selectOption((await select.getByRole('option', { name: new RegExp(label) }).getAttribute('value'))!);
   await page.getByLabel('Planned amount (₹)').fill(amount); await page.getByRole('button', { name: 'Add to preview' }).click();
@@ -39,7 +39,7 @@ async function calculatedResults(page: Page) {
 async function accept(page: Page) {
   await page.getByRole('checkbox', { name: /I agree to the exact amounts/ }).check();
   const response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
-  await page.getByRole('button', { name: 'Accept planning assumptions' }).click(); const result = await response;
+  await page.getByRole('button', { name: 'Accept changes' }).click(); const result = await response;
   expect(result.ok()).toBe(true); const saved = await result.json() as Snapshot;
   expect(result.request().postDataJSON().operation).toEqual({ type: 'acceptPreview', previewId: saved.accepted!.id, confirmed: true, consentScope: 'unconditional' });
   await expect(page.getByRole('heading', { name: 'Spending change preview' })).toHaveCount(0); return saved;
@@ -47,7 +47,7 @@ async function accept(page: Page) {
 test('unknown changeability permits preview but requires a focused correction and fresh consent', async ({ page }) => {
   const baseline = await golden(page); const optional = baseline.facts.records.find(item => item.kind === 'optional')!;
   await command(page, { type: 'updateFacts', changes: { expectedRevision: 0, records: [{ id: optional.id, delete: false, distinct: false, controllability: 'unknown' }] } });
-  await preview(page); await expect(page.getByRole('checkbox', { name: /I agree/ })).toBeDisabled(); await expect(page.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await preview(page); await expect(page.getByRole('checkbox', { name: /I agree/ })).toBeDisabled(); await expect(page.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   expect((await (await page.request.get('/api/session')).json() as Snapshot).accepted).toBeNull();
   await browse(page, '/money/spending'); await correct(page, 'Optional purchase', 'controllability', 'controllable');
   expect((await (await page.request.get('/api/session')).json() as Snapshot).preview).toBeNull();
@@ -58,8 +58,8 @@ test('preview keeps the original dated gaps and rejection leaves exports and pri
   const baseline = await golden(page); await preview(page);
   const proposal = page.getByRole('region', { name: 'Spending change preview' });
   const before = proposal.getByRole('region', { name: 'Before · active plan' }); const after = proposal.getByRole('region', { name: 'After · preview' });
-  await expect(before.getByText('Projected closing cash', { exact: true })).toBeHidden();
-  await expect(after.getByText('Assumed closing cash', { exact: true })).toBeHidden();
+  await expect(before.getByText('Projected closing cash', { exact: true })).toBeVisible();
+  await expect(after.getByText('Assumed closing cash', { exact: true })).toBeVisible();
   await calculatedResults(page);
   await expect(before).toContainText('₹10,000.00'); await expect(after).toContainText('₹12,000.00');
   for (const section of [before, after]) {
@@ -80,7 +80,7 @@ test('accepted changes survive export and reload; restoring requires confirmatio
   const baseline = await golden(page); await preview(page); const saved = await accept(page);
   expect(saved.facts).toEqual(baseline.facts); expect(saved.plan).toEqual(baseline.plan); expect(saved.accepted?.plan.closingPaise).toBe(1200000);
   await checkClosing(page, '₹12,000.00'); await page.getByRole('button', { name: 'Plan tools' }).click();
-  const downloadPromise = page.waitForEvent('download'); await page.getByRole('link', { name: 'Download saved plan' }).click();
+  const downloadPromise = page.waitForEvent('download'); await page.getByRole('dialog', { name: 'Plan tools', exact: true }).getByRole('link', { name: 'Download saved plan' }).click();
   const downloaded = await downloadPromise; const text = await readFile((await downloaded.path())!, 'utf8');
   expect(text).toContain('planning assumptions'); expect(text).toContain('reduced planned outflow'); expect(text).toContain('12000.00');
   await page.keyboard.press('Escape'); await page.reload(); await checkClosing(page, '₹12,000.00');
@@ -122,11 +122,11 @@ test('unrelated corrections retain consent while affected corrections invalidate
 });
 test('same-revision replacement requires fresh consent and active sets replace rather than stack', async ({ page, context }) => {
   const baseline = await golden(page); await preview(page); await page.getByRole('checkbox', { name: /I agree/ }).check();
-  await expect(page.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
   const second = await context.newPage(); await second.goto('/money'); await preview(second, '500');
   await calculatedResults(page);
   await expect(page.getByRole('region', { name: 'After · preview' }).getByText('Assumed closing cash', { exact: true }).locator('..')).toContainText('₹11,500.00');
-  await expect(page.getByRole('checkbox', { name: /I agree/ })).not.toBeChecked(); await expect(page.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: /I agree/ })).not.toBeChecked(); await expect(page.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   expect((await (await page.request.get('/api/session')).json() as Snapshot).revision).toBe(baseline.revision);
   await accept(page); await checkClosing(page, '₹11,500.00'); await checkClosing(second, '₹11,500.00');
   await preview(second, '1000'); await expect(second.getByRole('region', { name: 'Spending change preview' })).toContainText('changes do not stack');
@@ -136,7 +136,7 @@ test('same-revision replacement requires fresh consent and active sets replace r
 });
 test('card reductions respect minimums and leave target and outstanding debt unchanged', async ({ page }) => {
   const baseline = await golden(page, true); await browse(page, '/money/changes');
-  await page.getByRole('button', { name: 'Choose custom changes', exact: true }).click(); await page.getByRole('button', { name: 'Add a change', exact: true }).click();
+  await page.getByRole('button', { name: 'Choose payments', exact: true }).click(); await page.getByRole('button', { name: 'Choose a payment', exact: true }).click();
   const select = page.getByRole('combobox', { name: 'Payment or expense' }); await expect(select.getByRole('option')).toHaveCount(3);
   await select.selectOption((await select.getByRole('option', { name: /Card/ }).getAttribute('value'))!);
   await expect(page.getByRole('dialog', { name: 'Choose a spending change', exact: true })).toContainText('The required minimum is not payoff. Interest and fees may apply; outstanding debt stays unchanged.');
@@ -146,7 +146,7 @@ test('card reductions respect minimums and leave target and outstanding debt unc
   await expect(proposal).toContainText('Required minimum ₹2,000.00 · Reported. Not payoff.');
   await proposal.locator('summary').filter({ hasText: 'Terms for this change' }).click();
   await expect(proposal.getByText('Interest and fees may apply. Outstanding debt is unchanged.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   const saved = await accept(page); expect(saved.facts).toEqual(baseline.facts); await checkClosing(page, '₹10,000.00');
   await browse(page, '/money/debts'); const card = page.getByRole('listitem', { name: 'Card', exact: true });
   await expect(card).toContainText('Required / minimum₹2,000.00'); await expect(card).toContainText('Intended · includes minimum₹4,000.00'); await expect(card).toContainText('Outstanding balance₹20,000.00');
@@ -155,12 +155,12 @@ test('unknown card target preserves minimum, dated gap and export qualification'
   const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
   await command(page, { type: 'updateFacts', changes: { expectedRevision: initial.revision, opening: { amount: '100', status: 'exact' }, coverage: { income: 'none', essential: 'none', debt: 'reviewed', optional: 'none' }, records: [{ kind: 'debt', label: 'Card', debtType: 'card', distinct: true, delete: false, amount: { amount: '500', status: 'exact' }, target: { amount: null, status: 'unknown' }, schedule: { date: dateAt(initial.anchorDate, 1), certainty: 'exact', recurrence: 'once' } }] } });
   await page.goto('/money'); await expect(page.getByRole('region', { name: 'What needs attention' })).toContainText('₹400.00');
-  await browse(page, '/money/upcoming'); await expect(page.getByRole('list', { name: 'Upcoming events' })).toContainText('Required / minimum only · intended payment unknown');
+  await browse(page, '/money/upcoming'); await expect(page.getByRole('list', { name: 'Upcoming events' }).getByText('Minimum only · target unknown')).toBeVisible();
   await browse(page, '/money/debts'); const card = page.getByRole('listitem', { name: 'Card', exact: true });
   await expect(card.getByText('Required / minimum', { exact: true }).locator('..')).toContainText('₹500.00');
   await expect(card.getByText('Intended · includes minimum', { exact: true }).locator('..')).toContainText('Unknown');
   await expect(card.getByText('Outstanding balance', { exact: true }).locator('..')).toContainText('Not supplied');
   await expect(card).not.toContainText('₹0.00');
-  await browse(page, '/money/changes'); await page.getByRole('button', { name: 'Choose custom changes', exact: true }).click(); await expect(page.getByText(/No eligible spending changes/)).toBeVisible();
+  await browse(page, '/money/changes'); await page.getByRole('button', { name: 'Choose payments', exact: true }).click(); await expect(page.getByText(/No eligible spending changes/)).toBeVisible();
   const exported = await (await page.request.get('/api/session/export')).text(); expect(exported).toContain('required/minimum only; selected target unknown'); expect(exported).toContain('INR 400.00'); expect(exported).not.toContain('First gap: none');
 });

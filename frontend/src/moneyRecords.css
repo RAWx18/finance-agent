@@ -1,0 +1,55 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.money-category { min-width: 0; }
+.money-category .money-list-tools { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(7rem, auto) auto; align-items: center; gap: .5rem; margin: 0 0 .65rem; }
+.money-category .money-list-tools input, .money-category .money-list-tools select { min-height: 36px; font-size: .8125rem; border-color: var(--line); }
+.money-category .money-list-tools svg { width: 17px; height: 17px; flex-shrink: 0; }
+.category-note { color: var(--muted); font-size: .8125rem; padding-bottom: .5rem; }
+.money-record { padding: .85rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.money-record:last-child { border-bottom: 0; }
+.money-record-main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(8rem, auto) auto; gap: .75rem 1.25rem; align-items: start; }
+.money-record-identity { min-width: 0; }
+.money-record-identity h3 { margin: 0 0 .15rem; font-weight: 600; }
+.record-tags { display: flex; flex-wrap: wrap; gap: .2rem .55rem; font-size: .75rem; color: var(--muted); }
+.record-tags .money-warning { font-size: inherit; }
+.record-tags > span:first-child { font-weight: 550; color: var(--ink); }
+.money-record[data-kind="optional"] .record-tags > span:first-child { color: var(--teal); }
+.money-record .record-status { font-size: .75rem; margin: .25rem 0 0; }
+.money-page .record-value, .record-value { border: 0; background: transparent; padding: .2rem 0; min-height: 36px; text-align: left; justify-content: flex-start; font-size: 1.0625rem; border-radius: 4px; max-width: 100%; font-variant-numeric: tabular-nums; }
+.record-value strong { overflow-wrap: anywhere; min-width: 0; }
+.record-value svg, .record-timing svg { width: 13px; height: 13px; flex-shrink: 0; color: var(--muted); }
+.record-value:hover:not(:disabled), .record-timing:hover:not(:disabled) { background: var(--sage); }
+.money-page .record-timing, .record-timing { min-height: 32px; border: 0; background: transparent; color: var(--muted); font-size: .8125rem; font-weight: 400; padding: .15rem 0; text-align: left; justify-content: flex-start; max-width: 100%; }
+.money-record-amount { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.money-record-amount > span, .money-debt-values dd > span { display: block; font-size: .75rem; color: var(--muted); }
+.money-debt-values { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem 1rem; max-width: 26rem; }
+.money-debt-values > div:only-child { grid-column: 1 / -1; }
+.money-debt-values dt, .record-secondary-values dt { font-size: .75rem; }
+.money-record-main > .money-row-actions { margin: 0; gap: .15rem; flex-wrap: wrap; }
+.money-record-main > .money-row-actions > button { border-color: transparent; color: var(--muted); }
+.record-secondary-values { display: grid; gap: .6rem; margin-block: .6rem; }
+.category-review { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: center; border-top: 1px solid var(--line); padding-top: .5rem; }
+.money-category .category-review > button { border: 0; background: transparent; color: var(--teal); padding-inline: 0; font-size: .8125rem; }
+.money-views > .money-category { display: block; max-height: none; }
+.money-category > .money-records.scroll-region { max-height: none; min-height: 0; overflow: visible; padding: 0; }
+.money-page .money-category .dialog { height: fit-content; }
+@media (max-width: 800px) {
+  .money-record-main { grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; }
+  .money-record-main > .money-row-actions { grid-column: 2; grid-row: 1; }
+  .money-record-main > .money-record-amount, .money-record-main > .money-debt-values { grid-column: 1 / -1; }
+}
+@media (max-width: 700px) {
+  .money-category .money-list-tools { grid-template-columns: minmax(0, 1fr) auto; }
+  .money-category .money-search { grid-column: 1 / -1; }
+  .money-category .money-list-tools input, .money-category .money-list-tools select, .money-page .record-value, .money-page .record-timing { min-height: 44px; }
+}
+@media (max-width: 380px) {
+  .money-category .money-list-tools { grid-template-columns: minmax(0, 1fr); }
+  .money-debt-values { grid-template-columns: minmax(0, 1fr); }
+  .money-category .pagination { flex-wrap: wrap; }
+  .money-category .pagination > span { order: -1; flex-basis: 100%; text-align: center; }
+  .money-category .pagination > button { flex: 1 1 7rem; }
+  .money-category .dialog-heading { flex-wrap: wrap; }
+  .money-category .dialog-heading h2 { flex-basis: 100%; }
+  .money-category .dialog-heading > button { order: -1; margin-left: auto; }
+}

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import type { Plan, Snapshot } from './api';
 import { cardDate, cardMoney } from './cardFields';
 import { financialText, timestamp } from './money';
+import { Details } from './Dialog';
 import './planSummary.css';
 
 /** Explains a calculated result's certainty and limitations. */
@@ -35,7 +36,7 @@ export function GapFigure({ plan }: { plan: Plan }) {
 }
 
 /** Highlights the plan outcome, cash risks, qualifications, and next action. */
-export function PlanSummary({ snapshot, stale = false, showQualifications = true, children }: { snapshot: Snapshot; stale?: boolean; showQualifications?: boolean; children?: ReactNode }) {
+export function PlanSummary({ snapshot, stale = false, showQualifications = true, compact = false, children }: { snapshot: Snapshot; stale?: boolean; showQualifications?: boolean; compact?: boolean; children?: ReactNode }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const assessment = plan.decisionAssessment;
   const outcome = assessment?.outcome;
@@ -46,12 +47,24 @@ export function PlanSummary({ snapshot, stale = false, showQualifications = true
     && plan.budgetBasis.datedProjectionComplete && !snapshot.facts.conflicts?.length;
   const reserve = assessment?.consequences?.find(item => item.kind === 'reserveBreach');
   return <section className="plan-summary" aria-label="What needs attention" data-tone={plan.firstGap || plan.reserveShortfallPaise ? 'risk' : ready ? 'clear' : 'neutral'}>
-    <h3>{financialText(outcome.summary)}</h3>
-    <GapFigure plan={plan} />
+    {compact && <GapFigure plan={plan} />}
+    <h3>{financialText(compact ? outcome.headline : outcome.summary)}</h3>
+    {!compact && <GapFigure plan={plan} />}
     {showQualifications && <ResultQualification snapshot={snapshot} id={plan.firstGap ? 'firstGap' : 'closing'} />}
     {!!plan.reserveShortfallPaise && <p className="plan-reserve">Cash buffer at risk: {cardMoney(reserve?.amountPaise ?? plan.reserveShortfallPaise)} below your {cardMoney(snapshot.facts.reservePaise)} buffer{reserve?.date && <> · {cardDate(reserve.date)}</>}.{reserve && reserve.amountPaise !== plan.reserveShortfallPaise && <> Largest buffer shortfall: {cardMoney(plan.reserveShortfallPaise)}.</>} Separate from payment shortfalls.</p>}
-    {action && <p className="plan-next"><strong>Next step</strong> {financialText(action.question)}{action.beforeDate && <span className="plan-deadline">Before {cardDate(action.beforeDate)}</span>}</p>}
-    {!!outcome.conditions && <details className="plan-conditions"><summary>What this depends on</summary><p>{financialText(outcome.conditions)}</p><p>{financialText(outcome.revisit)}</p></details>}
+    {compact ? <>
+      {!!outcome.topCaveat && <p>{financialText(outcome.topCaveat)}</p>}
+      <Details label="Plan conditions" title="What this plan depends on">
+        <p>{financialText(outcome.summary)}</p><p>{financialText(outcome.covered)}</p><p>{financialText(outcome.notCovered)}</p>
+        {!!outcome.secondary && <p>{financialText(outcome.secondary)}</p>}
+        {action && <><h3>Next step in detail</h3><p>{financialText(action.question)}</p></>}
+        <p>{financialText(outcome.conditions)}</p><p>{financialText(outcome.revisit)}</p>
+        <ul>{outcome.trueNow.map(text => <li key={text}>{financialText(text)}</li>)}</ul>
+      </Details>
+    </> : <>
+      {action && <p className="plan-next"><strong>Next step</strong> {financialText(action.question)}{action.beforeDate && <span className="plan-deadline">Before {cardDate(action.beforeDate)}</span>}</p>}
+      {!!outcome.conditions && <details className="plan-conditions"><summary>What this depends on</summary><p>{financialText(outcome.conditions)}</p><p>{financialText(outcome.revisit)}</p></details>}
+    </>}
     {snapshot.accepted && <p className="plan-basis">Saved assumptions included · No payments made</p>}
     {children}
   </section>;

@@ -96,6 +96,34 @@
 .financial-context .card-invalidated { border-top: 1px solid var(--line); margin-top: .5rem; padding-top: .5rem; }
 .financial-context .card-invalidated ul { padding-left: 1.1rem; margin: .4rem 0; font-size: .8rem; }
 .financial-context .card-invalidated .card-meta { display: block; }
+.financial-context .final-plan { min-width: 0; padding: .9rem 1rem 1rem; border: 1px solid #b7d3c3; border-top: 4px solid var(--teal); border-radius: 12px; background: linear-gradient(180deg, #eef6f1, var(--paper) 45%); overflow-wrap: anywhere; }
+.financial-context .final-plan[data-tone="risk"] { border-top-color: #ad742d; background: linear-gradient(180deg, #fbf3e6, var(--paper) 45%); }
+.financial-context .final-plan-heading { margin-bottom: .6rem; }
+.financial-context .final-plan-eyebrow { display: block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--teal); }
+.financial-context .final-plan[data-tone="risk"] .final-plan-eyebrow { color: #885220; }
+.financial-context .final-plan h3 { margin: .1rem 0 .3rem; font-size: 1.15rem; font-weight: 650; color: var(--ink); }
+.financial-context .final-plan-headline { margin: 0; font-size: .92rem; line-height: 1.5; font-weight: 500; }
+.financial-context .final-plan-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: .5rem; margin: 0; }
+.financial-context .final-plan-figure { min-width: 0; padding: .5rem .6rem; border-radius: 8px; background: rgba(255, 255, 255, .7); border: 1px solid var(--line); }
+.financial-context .final-plan-figure[data-tone="risk"] { border-left: 3px solid #c68a38; }
+.financial-context .final-plan-figure dt { font-size: .72rem; font-weight: 500; color: var(--muted); }
+.financial-context .final-plan-figure dd { margin: .1rem 0 0; font-size: 1.25rem; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.financial-context .final-plan-figure[data-tone="risk"] dd { color: #895019; }
+.financial-context .final-plan-figure > .card-meta { display: block; margin-top: .15rem; }
+.financial-context .final-plan > .result-qualification { margin-top: .4rem; }
+.financial-context .final-plan h4 { margin: .75rem 0 .3rem; font-size: .78rem; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+.financial-context .final-plan-dates ol { list-style: none; margin: 0; padding: 0; }
+.financial-context .final-plan-dates li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; align-items: baseline; column-gap: .6rem; padding: .3rem 0; font-size: .85rem; border-top: 1px solid var(--line); }
+.financial-context .final-plan-dates li:first-child { border-top: 0; }
+.financial-context .final-plan-dates time { font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.financial-context .final-plan-dates li[data-gap] time { color: #895019; }
+.financial-context .final-plan-date-label { min-width: 0; }
+.financial-context .final-plan-date-amount { font-variant-numeric: tabular-nums; font-weight: 500; white-space: nowrap; }
+.financial-context .final-plan-dates li[data-income="true"] .final-plan-date-amount { color: var(--teal); }
+.financial-context .final-plan-actions { padding: .6rem .7rem; border-radius: 8px; background: rgba(255, 255, 255, .8); border-left: 3px solid var(--teal); }
+.financial-context .final-plan-actions h4 { margin-top: 0; }
+.financial-context .final-plan-action { margin: 0 0 .3rem; font-size: .92rem; font-weight: 600; line-height: 1.5; }
+.financial-context .final-plan .card-terms { margin-top: .5rem; }
 .result-value { font-size: 1.5rem; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.025em; }
 .evidence-list { list-style: none; padding: 0; margin: 0; }
 .evidence-list li + li { border-top: 1px solid var(--line); margin-top: .8rem; padding-top: .8rem; }
@@ -103,6 +131,10 @@
 .conflict-row ul { padding-left: 1.2rem; font-size: .85rem; }
 @container (max-width: 18rem) {
   .financial-context .companion-card { padding: .65rem; }
+  .financial-context .final-plan { padding: .7rem .65rem .8rem; }
+  .financial-context .final-plan-figures { grid-template-columns: minmax(0, 1fr); }
+  .financial-context .final-plan-dates li { grid-template-columns: max-content minmax(0, 1fr); }
+  .financial-context .final-plan-dates .final-plan-date-amount { grid-column: 2; }
   .financial-context .card-cash .card-number { font-size: clamp(1rem, 9cqi, 1.65rem); }
   .financial-context .card-record { grid-template-columns: minmax(0, 1fr); }
   .financial-context .card-record > * { grid-column: 1; }

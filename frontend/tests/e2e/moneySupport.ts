@@ -89,7 +89,9 @@ export async function correct(page: Page, label: string, field: string, value: s
 
 /** Seed the reference cash-flow scenario and open its Money overview. */
 export async function golden(page: Page, cardTarget = false) {
-  const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
+  const response = await page.request.post('/api/session', { data: {} });
+  expect(response.ok(), await response.text()).toBe(true);
+  const initial = await response.json() as Snapshot;
   const saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: initial.revision,
     opening: { status: 'exact', amount: '5000' }, coverage: { income: 'reviewed', essential: 'reviewed', debt: 'reviewed', optional: 'reviewed' },
     records: [

@@ -2,28 +2,33 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 .money-overview { display: grid; gap: .75rem; min-width: 0; container-type: inline-size; }
 .money-summary { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; }
-.money-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.money-metric { padding: .65rem 1.15rem; min-width: 0; }
+.money-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
+.money-metric { padding: .65rem 1.15rem; min-width: 0; overflow-wrap: anywhere; }
 .money-metric + .money-metric { border-left: 1px solid var(--line); }
-.money-metric dt { display: flex; gap: .4rem; align-items: center; min-height: 28px; font-size: .8125rem; }
+.money-metric dt { display: flex; gap: .4rem; align-items: center; min-height: 28px; font-size: .8125rem; line-height: 1.4; }
 .money-metric dd { font-size: clamp(1.3rem, 2.2vw, 1.875rem); font-weight: 650; letter-spacing: -.035em; line-height: 1.3; margin: .15rem 0 .2rem; }
 .money-metric > span { display: block; color: var(--muted); font-size: .75rem; }
 .money-metric.is-income dd { color: var(--teal); }
-.money-metric-closing { background: #f4f8f5; border-radius: 0 12px 12px 0; }
-.money-direction { font-size: 1rem; color: var(--muted); }
+.money-metric-closing { background: var(--paper); border-radius: 0 12px 12px 0; }
+.money-metric > .money-metric-caution { color: #805326; margin-top: .2rem; }
+.money-page .money-metric > button { padding: .25rem 0; min-height: 32px; font-size: .75rem; text-align: left; }
 .money-page .money-edit-cash { min-width: 28px; min-height: 28px; width: 28px; height: 28px; margin-left: auto; padding: .25rem; border-color: transparent; background: transparent; color: var(--muted); }
 .money-edit-cash svg { width: 14px; height: 14px; }
-.money-overview > .plan-summary { margin-bottom: 0; }
-.money-attention-action { margin-top: .5rem; }
+.money-overview > .plan-summary { margin: 0; padding: .75rem 1rem; min-width: 0; overflow-wrap: anywhere; }
+.money-overview > .plan-summary h3 { font-size: .9375rem; line-height: 1.4; margin-bottom: .3rem; }
+.money-overview > .plan-summary .plan-gap { margin-bottom: .35rem; }
+.money-overview > .plan-summary p { font-size: .8125rem; }
+.money-overview > .plan-summary .plan-next > strong { display: inline; color: var(--ink); }
+.money-page .money-overview > .plan-summary > button { margin-top: .35rem; padding: .25rem 0; min-height: 32px; font-size: .75rem; }
+.money-overview > .plan-summary .money-attention-action { display: inline-block; max-width: 100%; margin: .25rem 0 0 .75rem; }
 .money-page .money-attention-action > button { background: rgb(255 255 255 / 65%); border-color: #d6c5b1; font-size: .75rem; white-space: normal; max-width: 100%; }
 .money-overview-body { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(19rem, 1fr); gap: 1rem; align-items: stretch; }
 .money-overview-body > .money-panel { padding: 1rem 1.1rem .7rem; }
 .money-flow { display: flex; flex-direction: column; }
 .money-overview h2 { margin-bottom: 0; }
 .money-overview .money-section-head h2 { margin-bottom: 0; }
-.money-subtitle { font-size: .75rem; color: var(--muted); }
 .money-flow > header { align-items: start; gap: .75rem; margin-bottom: .5rem; }
-.money-status-pill { flex: none; padding: .15rem .5rem; border-radius: 20px; background: #edf3ef; color: #53685d; font-size: .6875rem; font-weight: 550; }
+.money-status-pill { flex: none; padding: .15rem .5rem; border-radius: 20px; background: #eff2ef; color: var(--muted); font-size: .6875rem; font-weight: 550; }
 .money-status-pill.is-caution { background: #fcf2e6; color: #885824; }
 .money-chart { margin: 0; min-width: 0; }
 .money-chart-plot { display: flex; height: 154px; margin-top: .4rem; }
@@ -71,8 +76,9 @@
 .money-upcoming-empty p { margin: 0; color: var(--muted); }
 .money-overview-footnotes, .money-overview-footnotes > div { display: flex; align-items: center; flex-wrap: wrap; gap: .25rem 1rem; }
 .money-overview-footnotes { justify-content: space-between; gap: .25rem .75rem; padding-inline: .2rem; }
-.money-inline-note { font-size: .75rem; color: #8c602f; }
-.money-inline-note i { display: inline-block; width: 5px; height: 5px; background: #bd8d4e; border-radius: 50%; margin-right: .4rem; vertical-align: middle; }
+.money-overview-footnotes > .plan-expiry { flex-basis: 100%; margin: 0; font-size: .6875rem; line-height: 1.5; overflow-wrap: anywhere; }
+.money-overview-download { margin-left: auto; border: 0; font-size: .75rem; }
+.money-page .money-overview-download > a { border: 0; background: none; padding: .25rem 0; min-height: 32px; color: var(--teal); font-size: inherit; text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 1050px) {
   .money-overview-body { grid-template-columns: minmax(0, 1.15fr) minmax(17rem, 1fr); gap: .8rem; }
   .money-metric { padding: .85rem; }
@@ -96,15 +102,16 @@
   .money-flow-footer { align-items: start; }
   .money-flow-footer > span { max-width: 27ch; }
   .money-page .money-text-link { min-height: 44px; }
+  .money-page .money-metric > button, .money-page .money-overview > .plan-summary > button, .money-page .money-attention-action > button, .money-page .money-overview-download > a { min-height: 44px; }
   .money-chart-plot { height: 170px; }
   .money-flow > header { flex-wrap: wrap; }
   .money-overview-footnotes { align-items: flex-start; }
+  .money-overview > .plan-summary .money-attention-action { margin-left: .5rem; }
 }
 @media (max-width: 360px) {
   .money-metric { padding: .55rem .65rem; }
   .money-metric dd { font-size: 1.125rem; }
   .money-metric dt { flex-wrap: wrap; gap: .2rem; }
-  .money-direction { display: none; }
   .money-chart-dates { font-size: .625rem; gap: .2rem; }
   .money-upcoming-compact > li { gap: .4rem; }
   .money-event-symbol { display: none; }

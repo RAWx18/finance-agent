@@ -226,12 +226,12 @@ function CompanionCards({ proposalActive, editingActive, ...editing }: Editing &
   })}</>;
 }
 
-/** Keeps manual corrections open until cancelled or confirmed against the displayed revision. */
+/** Shows the final plan from server readiness; open or unsettled corrections and an explicit Edit figures request keep the working cards. */
 function FinancialCards({ snapshot, blocked, onCommand, proposalActive }: Editing & { proposalActive: boolean }) {
   const [editing, setEditing] = useState<{ manual: boolean; fields: string[]; saved?: { revision: number; sequence: number } }>({ manual: false, fields: [] });
   const onEditingChange = useCallback((id: string, open: boolean, saved?: Snapshot) => {
     setEditing(editing => ({
-      manual: open || editing.manual,
+      manual: editing.manual,
       fields: open ? [...new Set([...editing.fields, id])] : editing.fields.filter(field => field !== id),
       saved: open ? undefined : saved ? { revision: saved.revision, sequence: saved.sequence } : editing.saved,
     }));
@@ -239,7 +239,8 @@ function FinancialCards({ snapshot, blocked, onCommand, proposalActive }: Editin
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const ready = !!plan.decisionAssessment?.outcome?.planReady && !blocked && !snapshot.preview;
   const saved = editing.saved && snapshot.revision >= editing.saved.revision && snapshot.sequence >= editing.saved.sequence;
-  const manual = editing.fields.length > 0 || editing.manual && !saved;
+  // A confirmed save that has reached the displayed snapshot ends manual editing; an unconfirmed one keeps the working cards.
+  const manual = editing.fields.length > 0 || !!editing.saved && !saved || editing.manual && !saved;
   if (ready && !manual) return <FinalPlan snapshot={snapshot} onEdit={() => setEditing({ manual: true, fields: [] })} />;
   return <>
     {editing.manual && <button type="button" className="card-expand" disabled={!ready || editing.fields.length > 0 || !!editing.saved && !saved} onClick={() => setEditing({ manual: false, fields: [] })}>Done editing</button>}

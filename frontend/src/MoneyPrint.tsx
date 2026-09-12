@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { Snapshot } from './api';
 import { amountLabel, budgetDescription, dateLabel, lastDate, money, scheduleLabel } from './money';
-import { MoneySources } from './MoneyValues';
+import { ExchangeValues, MoneySources } from './MoneyValues';
 import { MoneyEvent } from './MoneyUpcoming';
 import { amountStatus, coverageLabels, factStatus } from './MoneyRecords';
 import { moneyIssues } from './MoneyChecks';
@@ -18,16 +18,17 @@ export function MoneyPrint({ snapshot }: { snapshot: Snapshot }) {
     <PlanSummary snapshot={snapshot} />
     <PlanningPossibilities snapshot={snapshot} />
     <PlanExpiry snapshot={snapshot} />
-    <dl><div><dt>Cash at plan start · {dateLabel(snapshot.anchorDate)} · {factStatus(snapshot, 'opening')}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div>
+    <dl><div><dt>Cash at plan start · {dateLabel(snapshot.anchorDate)} · {factStatus(snapshot, 'opening') === 'Conflicting reports' ? 'Conflicting reports' : amountStatus[plan.planningFacts.opening.status]}</dt><dd>{money(plan.planningFacts.opening.amountPaise)}</dd></div>
       <div><dt>Income included · Calculated, expected, not received</dt><dd>{money(plan.reliableIncomePaise)}</dd></div>
       <div><dt>Projected closing cash · Calculated</dt><dd>{money(plan.closingPaise)}<ResultQualification snapshot={snapshot} id="closing" /></dd></div>
       <div><dt>{plan.timingRisks?.some(item => item.date === plan.peakGapDate) ? 'Largest timing exposure' : 'Largest funding gap'} · Calculated</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}<ResultQualification snapshot={snapshot} id="peakGap" /></dd></div></dl>
     <p>Calculated from reported figures, not a live bank balance. Closing cash is not available to spend. Missing amounts and dates are not zero.</p>
+    {snapshot.facts.opening.source?.conversion && <ExchangeValues source={snapshot.facts.opening.source} capturedPaise={snapshot.facts.opening.amountPaise} currentMoney={plan.planningFacts.opening} plan={plan} />}
     {snapshot.accepted && <><h2>Saved assumptions · not completed payments</h2><ul>{snapshot.accepted.adjustments.map(item => {
       const record = snapshot.facts.records.find(record => record.id === item.recordId);
       return <li key={item.eventId}>{item.label} · {dateLabel(item.date)} · Date: {factStatus(snapshot, 'schedule.date', record)}: {money(item.originalPaise)} {factStatus(snapshot, record?.target ? 'target' : 'amount', record)} → {money(item.amountPaise)} Saved assumption{item.kind === 'card' && <> · Required minimum {money(item.minimumPaise)} {factStatus(snapshot, 'amount', record)} · intended payment includes minimum</>}</li>;
     })}</ul></>}
-    <h2>Upcoming money & payments</h2><ol className="money-events">{plan.events.map(event => <MoneyEvent key={event.id} event={event} snapshot={snapshot} />)}</ol>
+    <h2>Upcoming money & payments</h2><ol className="money-events">{plan.events.map(event => <MoneyEvent key={event.id} event={event} snapshot={snapshot} expanded />)}</ol>
     <h2>Needs your check</h2><ul>{moneyIssues(snapshot).map(issue => <li key={issue.id}>{issue.question} {issue.reason}</li>)}</ul>
     {!!plan.budgetBasis.unresolvedAmounts.length && <><h3>Unresolved amounts and dates</h3><ul>{plan.budgetBasis.unresolvedAmounts.map((item, index) => {
       const record = snapshot.facts.records.find(record => record.id === item.recordId);

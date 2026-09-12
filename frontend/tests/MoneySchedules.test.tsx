@@ -21,7 +21,7 @@ import { projectWorkspace } from './workspace';
 
 /** Creates an exact USD source fixture with a dated conversion rate and zero fee. */
 function source(): MoneyInput {
-  return { amount: '125.50', status: 'exact', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'exact', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact' } };
+  return { amount: '125.50', status: 'exact', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'exact', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact', direction: 'receipt' } };
 }
 
 /** Builds a freelance-income fixture retaining original USD terms beside supplied INR values. */
@@ -31,6 +31,7 @@ function income(): Snapshot {
     amount: { amountPaise: 1043200, status: 'exact', source: source() } };
   saved.plan.events = [{ ...saved.plan.events[0], label: 'Freelance income', kind: 'income', amountPaise: 1043200, amountStatus: 'exact',
     requiredPaise: null, requiredStatus: 'unknown', source: source(), scheduleIndex: 0 }];
+  saved.plan.planningFacts = structuredClone(saved.facts);
   return projectWorkspace(saved);
 }
 
@@ -93,7 +94,7 @@ it('starts foreign conversion with unknown terms and requires an explicit zero d
   expect(screen.getByRole('alert')).toHaveTextContent('including 0 for no deduction');
   fireEvent.change(screen.getByLabelText('INR deduction (₹)'), { target: { value: '0' } });
   await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
-  expect(onCommand.mock.calls[0][0].changes.records[0].amount).toEqual({ amount: '125.50', status: 'exact', conversion: { currency: 'EUR', rate: '90.12345678', rateStatus: 'estimate', rateDate: null, fee: '0', feeStatus: 'exact' } });
+  expect(onCommand.mock.calls[0][0].changes.records[0].amount).toEqual({ amount: '125.50', status: 'exact', conversion: { currency: 'EUR', rate: '90.12345678', rateStatus: 'estimate', rateDate: null, fee: '0', feeStatus: 'exact', direction: 'receipt', provider: null, fetchedAt: null } });
 });
 
 it('keeps nested-only edits dirty and protects a stale draft and pending-save retry', async () => {
@@ -179,9 +180,9 @@ it.each(['income', 'debt'] as const)('never offers monthly budget for %s', kind 
   expect(screen.queryByRole('option', { name: /Monthly budget/ })).not.toBeInTheDocument();
 });
 
-it('keeps INR correction unchanged and limits conversion controls to income', async () => {
+it('keeps INR correction unchanged while offering currency controls', async () => {
   const { onCommand } = editor(planningSnapshot());
-  expect(screen.queryByLabelText('Currency')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Currency')).toHaveValue('INR');
   fireEvent.change(screen.getByLabelText('Amount (₹)'), { target: { value: '12000.10' } });
   await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
   expect(onCommand.mock.calls[0][0].changes.records[0]).toEqual({ id: 'rent', delete: false, distinct: false, amount: { amount: '12000.10', status: 'exact' } });
@@ -252,28 +253,36 @@ it('shows occurrence-specific source/status and saved balances, never preview va
   expect(print).not.toHaveTextContent('₹99,999.00');
 });
 
-it('labels budget facts per month and timeline occurrences as estimates, not lender payments', () => {
+it('labels budget facts per month and timeline occurrences as estimates, not lender payments', async () => {
   const saved = planningSnapshot(); saved.facts.records[0].label = 'Food budget';
   saved.facts.records[0].schedule = { ...saved.facts.records[0].schedule, recurrence: 'monthlyBudget', count: 2, endDate: '2026-10-15' };
   saved.plan.events[0] = { ...saved.plan.events[0], label: 'Food budget', amountPaise: 40000, amountBasis: 'budget', amountStatus: 'estimate', requiredPaise: null, requiredStatus: 'unknown', source: null, scheduleIndex: null };
   projectWorkspace(saved);
   render(<MemoryRouter><MoneyRecords category="spending" snapshot={saved} blocked={false} onEdit={vi.fn()} onCommand={vi.fn()} /><MoneyUpcoming snapshot={saved} /></MemoryRouter>);
   const facts = within(screen.getByRole('list', { name: 'Money items' })).getByRole('listitem', { name: 'Food budget' });
-  expect(facts).toHaveTextContent('per calendar month'); expect(facts).toHaveTextContent('2 calendar months'); expect(facts).toHaveTextContent('15 Oct 2026 (inclusive)');
+  expect(within(facts).getByText('per calendar month')).toBeVisible();
+  expect(within(facts).getByText(/2 calendar months/)).not.toBeVisible();
+  expect(within(facts).getByRole('button', { name: 'Edit Food budget amount' })).toHaveTextContent('₹12,000.00');
+  expect(within(facts).getByText('Budget estimate · not a bill')).toBeVisible();
   const event = within(screen.getByRole('list', { name: 'Upcoming events' })).getByRole('listitem', { name: 'Food budget' });
-  expect(event).toHaveTextContent('Estimated daily budget share'); expect(event).toHaveTextContent('−₹400.00');
+  expect(within(event).getByText('Budget estimate')).toBeVisible(); expect(event).toHaveTextContent('−₹400.00');
   expect(event).not.toHaveTextContent('Originally due'); expect(event).not.toHaveTextContent('Required / minimum');
+  await userEvent.click(within(facts).getByRole('button', { name: 'Details for Food budget' }));
+  const details = screen.getByRole('dialog', { name: 'Details for Food budget' });
+  expect(details).toHaveTextContent('2 calendar months'); expect(details).toHaveTextContent('15 Oct 2026 (inclusive)');
+  expect(details).toHaveTextContent('not a confirmed payment due date');
 });
 
 it('shows the selected live occurrence source instead of reporting an unknown scalar total', () => {
   const saved = income(); saved.facts.records[0].amount = { amountPaise: null, status: 'unknown' };
   saved.facts.records[0].schedule = { ...saved.facts.records[0].schedule, recurrence: 'daily', count: 1, amounts: [source()] };
+  saved.plan.occurrenceAmounts = { rent: [{ amountPaise: 1043200, status: 'exact', source: source() }] };
   projectWorkspace(saved);
   render(<FinancialContext snapshot={saved} stale={false} locked={false} onCommand={vi.fn()} proposalActive={false} />);
   const record = screen.getByRole('listitem', { name: 'Freelance income' });
   expect(record).toHaveTextContent('Occurrence 1 of 1'); expect(record).not.toHaveTextContent('Amount is unknown');
   expect(record).toHaveTextContent('USD 125.50');
-  expect(within(record).getByLabelText('Freelance income calculated net INR')).toHaveTextContent('Net INR ₹10,432Calculated');
+  expect(within(record).getByLabelText('Freelance income calculated net INR')).toHaveTextContent(/^Net INR ₹10,432Calculated$/);
 });
 
 it('explains backend conversion and monthly-budget assumptions without exposing reason keys', async () => {
@@ -284,7 +293,7 @@ it('explains backend conversion and monthly-budget assumptions without exposing 
   render(<ResultDetails snapshot={saved} result={result} />);
   await userEvent.click(screen.getByRole('button', { name: 'Why this result?' }));
   const dialog = screen.getByRole('dialog');
-  expect(dialog).toHaveTextContent('actual days'); expect(dialog).toHaveTextContent('No live rate is fetched');
+  expect(dialog).toHaveTextContent('actual days'); expect(dialog).toHaveTextContent('not actual bank rates or net quotes');
   expect(dialog).not.toHaveTextContent('currencyConversion'); expect(dialog).not.toHaveTextContent('Conditional receipt 1');
 });
 
@@ -342,7 +351,7 @@ it('requires fresh conversion assumptions when the user changes the foreign curr
   expect(screen.getByLabelText('Rate as of (optional)')).toHaveValue('');
   await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
   expect(onCommand.mock.calls[0][0].changes.records[0].amount).toEqual({ amount: '125.50', status: 'exact', conversion: {
-    currency: 'EUR', rate: null, rateStatus: 'unknown', rateDate: null, fee: null, feeStatus: 'unknown',
+    currency: 'EUR', rate: null, rateStatus: 'unknown', rateDate: null, fee: null, feeStatus: 'unknown', direction: 'receipt',
   } });
 });
 
@@ -368,6 +377,7 @@ it.each(['exact', 'estimate', 'unknown'] as const)('saves only the selected inli
   saved.facts.records[0].schedule = { date: '2026-09-06', certainty: 'exact', recurrence: 'weekly', basis: 'payment', count: null, endDate: '2026-09-30',
     amounts: [{ amount: '300', status: 'exact', conversion: null }, value, { amount: null, status: 'unknown', conversion: null }] };
   saved.plan.events[0] = { ...saved.plan.events[0], scheduleIndex: 1, source: value, amountStatus: status, amountPaise: status === 'unknown' ? null : 1043200 };
+  saved.plan.occurrenceAmounts = { rent: [{ amountPaise: 30000, status: 'exact' }, { amountPaise: status === 'unknown' ? null : 1043200, status, source: value }, { amountPaise: null, status: 'unknown' }] };
   projectWorkspace(saved);
   const original = structuredClone(saved);
   const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
@@ -451,7 +461,7 @@ describe('MoneyEdit API patches', () => {
 
   it('leaves the existing INR scalar patch unchanged', async () => {
     const saved = planningSnapshot(); const fetch = open(saved);
-    expect(screen.queryByLabelText('Currency')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Currency')).toHaveValue('INR');
     fireEvent.change(screen.getByLabelText('Amount (₹)'), { target: { value: '12000.10' } });
     await userEvent.click(screen.getByRole('button', { name: 'Save correction' }));
     expect(fetch).toHaveBeenCalledOnce();

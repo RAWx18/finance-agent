@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 .icon-button, button.icon-button { min-width: 44px; width: 44px; min-height: 44px; padding: .6rem; flex-shrink: 0; justify-content: center; }
 .icon-button svg { flex-shrink: 0; }
-main.product-main[data-route^="/money"] { padding-top: .6rem; }
+main.product-main[data-route^="/money"] { padding-top: .6rem; min-width: 0; }
 #root:has(.money-page:not([hidden])) { height: 100dvh; min-height: 0; }
 .money-page { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr); font-size: .9375rem; }
 .money-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem 1rem; padding: .35rem 0 .5rem; }
@@ -44,28 +44,13 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-section-head { justify-content: space-between; margin-bottom: .25rem; }
 .money-section-head h2 { margin: 0; }
 .money-events, .money-records, .money-checks { list-style: none; margin: 0; padding: 0; }
-.money-event { display: grid; grid-template-columns: minmax(0, 1fr) minmax(7.5rem, .55fr); gap: .65rem; padding: .75rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-.money-event:last-child, .money-record:last-child { border-bottom: 0; }
-.money-event-value { text-align: right; font-variant-numeric: tabular-nums; }
-.money-event-value > .money-meta { display: block; }
-.money-event-value > p { margin-top: .25rem; }
 .money-list-tools { display: flex; flex-wrap: wrap; gap: .65rem; margin-block: .5rem .75rem; }
 .money-search, .money-filter { display: flex; flex-direction: row; align-items: center; gap: .5rem; }
 .money-search { flex: 1 1 12rem; }
 .money-search svg, .money-filter svg { flex-shrink: 0; color: var(--muted); }
 .money-filter { flex: 0 1 12rem; }
-.money-record { position: relative; padding: .75rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
-.money-record > .icon-button { position: absolute; top: .75rem; right: 0; }
-.money-record .money-row-actions { margin-right: 46px; flex-shrink: 0; align-self: flex-start; }
-.money-record-head { display: flex; justify-content: space-between; gap: .5rem; }
-.money-record-head > div:first-child { min-width: 0; }
-.money-record-amount { display: flex; flex-wrap: wrap; gap: .3rem .6rem; }
-.money-debt-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .65rem; margin: .5rem 0; }
-.money-debt-values .money-meta { display: block; }
 .money-checks > li { padding-block: .75rem; border-bottom: 1px solid var(--line); }
-.money-views > .money-panel:has(> .money-records), .money-views > .money-panel:has(> .money-events) { display: flex; flex-direction: column; max-height: 100%; }
 .money-content .scroll-region { min-height: 6rem; max-height: min(30rem, 55dvh); overflow: auto; overscroll-behavior: contain; }
-.money-views > .money-panel > :is(.money-records, .money-events) { flex: 1; min-height: 8rem; max-height: none; margin: 0; padding-right: .4rem; }
 .money-panel > :is(.money-list-tools, .money-coverage, .pagination) { flex-shrink: 0; }
 .money-coverage { border-top: 1px solid var(--line); padding-top: .5rem; display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin-top: .5rem; }
 .money-coverage p { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; font-size: .875rem; }
@@ -84,9 +69,6 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-choice-cards p { margin-top: .35rem; }
 .money-changes .choice-editor { max-width: none; margin-block: .65rem; }
 .money-changes .comparison-values dd { font-size: 1rem; }
-.money-list-tools[aria-label="Requirement period"] { gap: .25rem; margin-block: .4rem; }
-.money-list-tools[aria-label="Requirement period"] button { padding: .5rem .8rem; border-radius: 7px; }
-.money-list-tools[aria-label="Requirement period"] [aria-pressed="true"] { color: var(--teal); background: var(--sage); }
 .money-changes .money-section-head { flex-wrap: wrap; }
 .changes-current { padding-block: .75rem; }
 .changes-current h2 { font-size: .9375rem; }
@@ -137,7 +119,6 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
   .money-page button, .money-page .button { min-height: 44px; }
   .money-page .icon-button { min-width: 44px; width: 44px; height: 44px; }
   .money-context button { min-height: 36px; }
-  .money-views > .money-panel > :is(.money-records, .money-events) { max-height: 65dvh; }
   .money-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); gap: .25rem; }
   .money-nav { display: none; }
   .money-mobile-nav { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: .5rem; padding-bottom: .4rem; }
@@ -154,17 +135,15 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
   .money-mobile-nav { gap: 0; }
   .money-mobile-nav select { font-size: .875rem; }
   .money-panel { padding: .85rem; }
-  .money-debt-values { grid-template-columns: minmax(0, 1fr); gap: .35rem; }
-  .money-debt-values > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .5rem; }
   .money-list-tools { gap: .4rem; }
   .money-coverage { gap: .2rem .5rem; }
   .money-coverage p { font-size: .8125rem; }
 }
 @media (max-width: 380px) {
-  .money-record-head { flex-wrap: wrap; }
+  .money-heading { flex-wrap: wrap; }
+  .money-title { flex-basis: 100%; }
+  .money-heading-actions { margin-left: auto; }
   .money-row-actions { margin-left: auto; }
-  .money-event { grid-template-columns: minmax(0, 1fr); gap: .2rem; }
-  .money-event-value { text-align: left; }
 }
 @media (max-width: 360px), (max-height: 560px) {
   #root:has(.money-page:not([hidden])) { height: auto; min-height: 100dvh; }
@@ -172,7 +151,6 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
   .money-nav { display: none; }
   .money-mobile-nav { display: flex; padding-bottom: .5rem; }
   .money-views { overflow: visible; }
-  .money-views > .money-panel > :is(.money-records, .money-events) { max-height: 65dvh; }
 }
 @media print {
   .money-page .money-print[hidden] { display: block !important; }

@@ -94,7 +94,7 @@ test('estimated income, undated items and decimal conflict resolution propagate 
   await page.getByRole('button', { name: 'Confirm selected report' }).click(); const resolved = await response;
   expect(resolved.ok(), await resolved.text()).toBe(true); expect(resolved.request().postDataJSON().operation.changes.resolutions[0].value).toEqual({ id: 'b', amount: '35000.00', status: 'exact' });
   await page.keyboard.press('Escape'); await expect(income).toContainText('₹35,000.00');
-  await browse(page, '/money/upcoming'); await page.getByRole('button', { name: '1 items without dates' }).click();
+  await browse(page, '/money/upcoming'); await page.getByRole('button', { name: '1 item needs a date' }).click();
   await expect(page.getByRole('dialog')).toContainText('Unknown utility'); await page.keyboard.press('Escape');
   await browse(page, '/money/spending'); await expect(page.getByRole('searchbox')).toHaveCount(0);
   await expect(page.getByText('4 of 4 items', { exact: true })).toBeVisible();

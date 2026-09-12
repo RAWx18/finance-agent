@@ -1,0 +1,57 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+.upcoming-toolbar { display: grid; grid-template-columns: minmax(10rem, 1fr) minmax(7rem, auto) minmax(6rem, auto) auto; gap: .5rem; align-items: center; padding-bottom: .65rem; }
+.upcoming-toolbar input, .upcoming-toolbar select { min-height: 36px; font-size: .8125rem; border-color: var(--line); }
+.upcoming-search { display: flex; flex-direction: row; align-items: center; gap: .5rem; }
+.upcoming-search svg { flex-shrink: 0; color: var(--muted); width: 17px; }
+.upcoming-undated { margin: 0 0 .4rem; }
+.money-upcoming .upcoming-undated > button { background: var(--warning-bg); color: var(--warning); border: 0; padding: .3rem .6rem; min-height: 32px; }
+.upcoming-count { color: var(--muted); font-size: .75rem; }
+.money-event { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr) minmax(7.5rem, auto) auto; align-items: center; gap: .75rem; padding: .8rem 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.money-event:last-child { border-bottom: 0; }
+.money-event-date { align-self: start; color: var(--muted); font-size: .8125rem; padding-top: .1rem; font-variant-numeric: tabular-nums; }
+.money-event-identity { min-width: 0; }
+.money-event-identity h3 { margin: 0 0 .2rem; font-weight: 600; }
+.money-event-tags { display: flex; flex-wrap: wrap; gap: .15rem .6rem; color: var(--muted); font-size: .75rem; }
+.money-event-tags .money-warning { font-size: inherit; }
+.money-event-identity > .money-warning { margin: .15rem 0 0; font-size: .75rem; }
+.money-event-value { min-width: 0; text-align: right; font-variant-numeric: tabular-nums; }
+.money-event-value > strong { font-size: 1rem; font-weight: 600; white-space: normal; }
+.money-event-value > span { display: block; font-size: .75rem; }
+.money-event-balance { margin-top: .1rem; color: var(--muted); }
+.money-event-excluded .money-event-value > strong { color: var(--muted); }
+.money-event > .icon-button { border-color: transparent; color: var(--muted); }
+.money-event-detail { grid-column: 1 / -1; }
+.money-upcoming > .money-events.scroll-region { overflow: visible; max-height: none; min-height: 0; padding-right: 0; }
+.money-views > .money-upcoming { display: block; max-height: none; }
+.money-page .money-upcoming .dialog { height: fit-content; }
+@media (max-width: 700px) {
+  .upcoming-toolbar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; }
+  .upcoming-search { grid-column: 1 / -1; }
+  .upcoming-toolbar input, .upcoming-toolbar select { min-height: 44px; }
+  .money-event { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: .3rem .5rem; padding-block: .7rem; }
+  .money-event-date { grid-column: 1 / -1; font-size: .75rem; }
+  .money-event-value { align-self: start; }
+  .money-event > .icon-button { align-self: start; }
+}
+@media (max-width: 380px) {
+  [data-route="/money/upcoming"] .money-title { flex-basis: 100%; }
+  [data-route="/money/upcoming"] .money-heading-actions { margin-left: auto; }
+  .upcoming-toolbar { grid-template-columns: minmax(0, 1fr); }
+  .upcoming-toolbar > button { justify-self: end; }
+  .upcoming-search { gap: .3rem; }
+  .money-event { grid-template-columns: minmax(0, 1fr) auto; }
+  .money-event-identity { grid-column: 1; }
+  .money-event > .icon-button { grid-column: 2; grid-row: 2; }
+  .money-event-value { grid-column: 1 / -1; text-align: left; }
+  .money-event-value > span { display: block; }
+  .money-upcoming .pagination { flex-wrap: wrap; }
+  .money-upcoming .pagination > span { flex-basis: 100%; order: -1; text-align: center; }
+  .money-upcoming .pagination > button { flex: 1 1 7rem; }
+  .money-upcoming .dialog-heading { flex-wrap: wrap; }
+  .money-upcoming .dialog-heading h2 { flex-basis: 100%; }
+  .money-upcoming .dialog-heading > button { order: -1; margin-left: auto; }
+}
+@media print {
+  .money-event { break-inside: avoid; grid-template-columns: 5rem minmax(0, 1fr) auto; }
+}

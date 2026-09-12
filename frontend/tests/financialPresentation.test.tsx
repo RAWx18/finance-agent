@@ -39,8 +39,8 @@ it.each([false, true])('preserves reserve risk on the overview and print (cash g
     ...(cashGap ? [{ id: 'cash:2026-09-13', kind: 'cashExposure' as const, eventIds: ['rent:2026-09-13'], date: '2026-09-13', amountPaise: 100000 }] : []),
     { id: 'reserve:breach', kind: 'reserveBreach', eventIds: [], date: '2026-09-13', amountPaise: 100000 },
   ];
-  saved.plan.decisionAssessment!.outcome = { ...saved.plan.decisionAssessment!.outcome!, branch: cashGap ? 'gap' : 'uncertain',
-    summary: cashGap ? 'Rent needs ₹1,000 on 13 Sept; the cash buffer is also at risk.' : 'Dated payments fit, but the cash buffer is not protected.' };
+  const headline = cashGap ? 'Rent needs ₹1,000 on 13 Sept; the cash buffer is also at risk.' : 'Dated payments fit, but the cash buffer is not protected.';
+  saved.plan.decisionAssessment!.outcome = { ...saved.plan.decisionAssessment!.outcome!, branch: cashGap ? 'gap' : 'uncertain', headline, summary: headline };
   if (!cashGap) { saved.plan.decisionAssessment!.nextActionId = null; saved.workspace!.actions = []; }
   render(<MemoryRouter><MoneyOverview snapshot={saved} blocked={false} onEdit={vi.fn()} onChecks={vi.fn()} onCommand={vi.fn()} /><MoneyPrint snapshot={saved} /></MemoryRouter>);
   const overview = screen.getByRole('region', { name: 'What needs attention' });
@@ -55,7 +55,7 @@ it.each([false, true])('preserves reserve risk on the overview and print (cash g
   expect(printed).not.toHaveTextContent('No gap in the dated figures');
 });
 
-it('shows only accepted occurrence amounts beside unchanged reported facts', () => {
+it('shows only accepted occurrence amounts in details beside unchanged reported facts', async () => {
   const saved = choiceSnapshot('cardMinimum');
   const record = saved.facts.records.find(item => item.kind === 'debt')!;
   const event = saved.plan.events.find(item => item.recordId === record.id)!;
@@ -65,10 +65,15 @@ it('shows only accepted occurrence amounts beside unchanged reported facts', () 
   saved.preview.plan.events = [{ ...event, amountPaise: 225000, amountBasis: 'assumed' }];
   const { rerender } = render(<RecordRow record={record} snapshot={saved} blocked={false} onEdit={vi.fn()} onCommand={vi.fn()} />);
   expect(screen.getByRole('listitem')).toHaveTextContent('Intended · includes minimum₹4,000.00');
-  expect(screen.getByRole('listitem')).toHaveTextContent('Current plan: ₹2,500.00 on 26 Sept 2026 · Saved assumption, not paid');
+  expect(screen.getByText('Saved plan change · not paid')).toBeVisible();
+  expect(screen.getByText(/Current plan: ₹2,500.00/)).not.toBeVisible();
+  await userEvent.click(screen.getByRole('button', { name: `Details for ${record.label}` }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('Current plan: ₹2,500.00 on 26 Sept 2026 · Saved assumption, not paid');
+  expect(screen.getByRole('dialog')).toHaveTextContent('Reported intended payment stays unchanged.');
   expect(screen.getByRole('listitem')).not.toHaveTextContent('₹2,250.00');
   rerender(<RecordRow record={record} snapshot={{ ...saved, accepted: null }} blocked={false} onEdit={vi.fn()} onCommand={vi.fn()} />);
   expect(screen.getByRole('listitem')).not.toHaveTextContent('Current plan:');
+  expect(screen.queryByText('Saved plan change · not paid')).not.toBeInTheDocument();
   expect(record.target!.amountPaise).toBe(400000);
 });
 
