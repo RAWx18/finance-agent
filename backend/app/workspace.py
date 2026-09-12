@@ -720,7 +720,7 @@ def evidence(
                     "conditionalReceipt": "receipt not assured",
                     "pastReceipt": "past receipt not confirmed in opening cash",
                     "approximateDateOutsideWindow": "approximate date outside this period",
-                    "monthlyPatternOutsideWindow": "monthly pattern has no occurrence in this period",
+                    "monthlyPatternOutsideWindow": "monthly pattern has no occurrence here",
                     "outsideHorizon": "outside this period",
                     "afterResultPoint": "after this balance point",
                     "countedReliableIncome": "counted as reliable income instead",

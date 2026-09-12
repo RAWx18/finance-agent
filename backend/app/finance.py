@@ -355,7 +355,9 @@ def calculate(
             partial = True
             if pattern is None:
                 issue(
-                    "unknownDate", "Confirm the next unpaid/future date; no date is assumed.", record
+                    "unknownDate",
+                    "Confirm the next unpaid/future date; no date is assumed.",
+                    record,
                 )
                 continue
             issue(

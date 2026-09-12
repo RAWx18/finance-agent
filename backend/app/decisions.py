@@ -1469,10 +1469,14 @@ def assess(
             )
         if undated.outflow_paise:
             summary += (
-                f" If the undated-payment allowance of {rupees(undated.outflow_paise)} falls "
+                " If the undated-payment allowance for "
+                f"{labels([item.record_id for item in undated.items if item.amount_paise])}, "
+                f"{rupees(undated.outflow_paise)}, falls "
                 f"within this period, the remainder would be {rupees(undated.closing_paise)}"
                 if undated.closing_paise is not None
-                else f" The separate undated-payment allowance is {rupees(undated.outflow_paise)}"
+                else " The separate undated-payment allowance for "
+                f"{labels([item.record_id for item in undated.items if item.amount_paise])} "
+                f"is {rupees(undated.outflow_paise)}"
             )
             summary += (
                 f"; {rupees(-undated.closing_paise)} more would be needed."
