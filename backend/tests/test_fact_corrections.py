@@ -22,7 +22,10 @@ async def test_provider_retraction_preserves_dues_other_reports_and_replay(store
             facts(
                 "1000",
                 [
-                    record("rent", "essential", "2000", "2026-09-14", label="Rent"),
+                    record(
+                        "rent", "essential", "2000", "2026-09-14",
+                        label="Rent", controllability="committed",
+                    ),
                     record("other", "essential", "100", "2026-09-22", label="Rent"),
                 ],
                 providerResponses=[

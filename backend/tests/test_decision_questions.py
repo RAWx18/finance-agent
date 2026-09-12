@@ -217,7 +217,8 @@ def test_undated_protection_uses_required_amounts_not_targets(reverse, basis):
     assert plan.first_gap is None and plan.outflow_paise == 2500
     assert plan.closing_paise == 7500 and plan.reliable_income_paise == 0
     assert not plan.budget_basis.dated_projection_complete
-    assert "affordability cannot yet be established" in plan.decision_assessment.outcome.summary
+    assert "what-if, not proof payments can be made on time" in plan.decision_assessment.outcome.summary
+    assert plan.undated_impact.closing_paise < 0
 
 
 @pytest.mark.parametrize("intent", ["plan30Days", "specificDecision"])
@@ -238,4 +239,4 @@ def test_unknown_outflow_scope_never_gives_positive_assurance_with_dated_records
     assert next_action(plan).kind == "reviewOutcome"
     assert plan.decision_assessment.outcome.readiness == "qualified"
     assert "fit" not in plan.decision_assessment.outcome.summary
-    assert "cannot be established" in plan.decision_assessment.outcome.summary
+    assert "Check remaining living costs and required payments" in plan.decision_assessment.outcome.summary

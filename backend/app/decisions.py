@@ -477,6 +477,8 @@ def assess(
                 if record.kind == "income"
                 else f"When should the evenly spread monthly budget for {record.label} start?"
                 if record.schedule.recurrence == "monthlyBudget"
+                else f"Do you know the usual day of the month for {record.label}?"
+                if record.schedule.recurrence == "monthly"
                 else f"When is {record.label} due?"
             )
             if field == "schedule.date"
@@ -498,7 +500,7 @@ def assess(
             "An expected amount or date would not establish availability; revisit when the "
             "user can confirm receipt."
             if uncertain_receipt
-            else "This unplaced or incomplete obligation can change the next funding decision."
+            else "Knowing whether and when this payment is needed can change the next step."
             if immediate
             else "This qualifies later spending, not the earlier required deadline.",
             day=day,
@@ -1429,11 +1431,10 @@ def assess(
         )
     elif incomplete:
         summary = (
-            f"The dated items leave {rupees(plan.closing_paise)} at the end of this period. "
-            "Unresolved "
+            f"The dated items leave {rupees(plan.closing_paise)} at period end. Check "
             + "; ".join(incomplete[:2])
             + (f" and {len(incomplete) - 2} other details" if len(incomplete) > 2 else "")
-            + "; full-period affordability cannot yet be established."
+            + " before relying on that balance."
         )
     elif scope and not plan.events:
         summary = (
@@ -1443,8 +1444,7 @@ def assess(
     elif needs_scope:
         summary = (
             f"Reported amounts give a minimum balance of {rupees(plan.trough_paise)}. "
-            "Other essential costs, required payments or committed spending are not yet "
-            "confirmed, so affordability cannot be established from the reported amounts alone."
+            "Check remaining living costs and required payments before planning extra spending."
         )
     elif any(event.date_assumption for event in plan.events):
         summary = (
@@ -1469,10 +1469,10 @@ def assess(
             )
         if undated.outflow_paise:
             summary += (
-                " If the undated-payment allowance for "
+                " Allowing for "
                 f"{labels([item.record_id for item in undated.items if item.amount_paise])}, "
-                f"{rupees(undated.outflow_paise)}, falls "
-                f"within this period, the remainder would be {rupees(undated.closing_paise)}"
+                f"{rupees(undated.outflow_paise)}, if due in this period leaves "
+                f"{rupees(undated.closing_paise)}"
                 if undated.closing_paise is not None
                 else " The separate undated-payment allowance for "
                 f"{labels([item.record_id for item in undated.items if item.amount_paise])} "
@@ -1483,13 +1483,7 @@ def assess(
                 if undated.closing_paise is not None and undated.closing_paise < 0
                 else "."
             )
-        summary += (
-            " Timing is not known; this is a what-if, not proof payments can be made on time."
-        )
-        if any(
-            item.recurrence == "monthly" and item.amount_paise is not None for item in undated.items
-        ):
-            summary += " The allowance counts one monthly payment per item, not a maximum."
+        summary += " This is a what-if, not proof payments can be made on time."
         if undated.unknown_record_ids:
             summary += (
                 " Some amounts or occurrence counts remain unknown and may increase the need."
