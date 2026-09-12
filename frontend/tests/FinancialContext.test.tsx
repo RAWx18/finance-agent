@@ -11,11 +11,14 @@ import { planningSnapshot, scenario, snapshot } from './fixtures';
 
 const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>(), stale: false };
 beforeEach(() => { controls.onCommand.mockReset().mockResolvedValue(undefined); });
+/** Creates a reliable monthly salary record for companion presentation fixtures. */
 const salary = (): Snapshot['facts']['records'][number] => ({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 2500000 }, schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact' }, reliability: 'reliable', autoDebit: false });
 
 // Membership is supplied explicitly; financial calculations and ranking belong to the server.
+/** Assigns test-selected companion cards to a snapshot without calculating financial metrics. */
 function companion(saved: Snapshot): Snapshot {
   const cards: components['schemas']['WorkspaceCard'][] = [];
+  /** Appends a card skeleton for the companion fixture's explicit membership. */
   const add = (template: 'cash' | 'timeline' | 'questions' | 'proposal', title: string, section: components['schemas']['WorkspaceCard']['section']) => {
     const card: components['schemas']['WorkspaceCard'] = { id: template, template, title, section, state: 'known', recordIds: [], eventIds: [], resultIds: [], issueIds: [], rows: [], dependencies: [] };
     cards.push(card); return card;
@@ -31,6 +34,7 @@ function companion(saved: Snapshot): Snapshot {
   saved.workspace!.cards = cards;
   return saved;
 }
+/** Builds a rent-and-salary fixture with explicit companion card membership. */
 const picture = () => { const saved = planningSnapshot(); saved.facts.records.push(salary()); return companion(saved); };
 
 describe('financial companion', () => {
@@ -107,7 +111,55 @@ describe('financial companion', () => {
     expect(screen.getByRole('button', { name: 'Edit Rent amount' })).toHaveTextContent('₹0');
     expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('₹25,000.25');
     expect(screen.getByRole('button', { name: 'Edit Salary amount' })).toHaveTextContent('Est.');
-    expect(screen.getByRole('button', { name: 'Edit Salary series start' })).toHaveTextContent('Arrival date needed');
+    expect(screen.getByRole('button', { name: 'Edit Salary series start' })).toHaveTextContent('Arrival date unknown');
+  });
+
+  it('keeps a calculated pattern date separate from source edits and amount certainty', async () => {
+    const saved = picture();
+    saved.facts.records[0].amount.status = 'estimate';
+    saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'dayOfMonth', day: 13 } };
+    saved.plan.events[0].dateAssumption = 'Calculated from monthly day 13 pattern';
+    saved.plan.events[0].amountStatus = 'estimate';
+    const original = structuredClone(saved);
+    const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.facts.records[0].amount.amountPaise = 1250000; receipt.plan.events[0].amountPaise = 1250000;
+    controls.onCommand.mockResolvedValueOnce(receipt);
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} />);
+    const date = screen.getByRole('button', { name: 'Edit Rent series start' });
+    expect(date).toHaveTextContent('Assumed 13 SeptCalculated');
+    expect(date).not.toHaveTextContent(/Unknown|Due|Reported/);
+    expect(screen.getByRole('listitem', { name: 'Rent' })).toHaveTextContent('From your monthly day 13 pattern. Editing timing replaces or removes the pattern for the whole series, not one occurrence.');
+    expect(screen.getByRole('button', { name: 'Edit Rent amount' })).toHaveTextContent('−₹12,000Est.');
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Rent amount' }));
+    expect(screen.getByLabelText('Rent amount certainty')).toHaveValue('estimate');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Rent amount' }), { target: { value: '12500' } });
+    await userEvent.click(screen.getByRole('button', { name: 'Save Rent amount' }));
+    expect(controls.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: 0,
+      records: [{ id: 'rent', delete: false, distinct: false, amount: { amount: '12500', status: 'estimate' } }] } });
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Edit Rent series start' }));
+    expect(screen.getByRole('button', { name: 'Save Rent series start' })).toBeDisabled();
+    await userEvent.selectOptions(screen.getByLabelText('Rent series start timing change'), 'replace');
+    const input = screen.getByLabelText('Rent series start', { selector: 'input' });
+    expect(screen.getByLabelText('Rent series start certainty')).toHaveValue('exact');
+    expect(input).toHaveValue(''); expect(input).toBeEnabled();
+    fireEvent.change(input, { target: { value: '2026-09-18' } });
+    const corrected = structuredClone(receipt); corrected.revision++; corrected.sequence++;
+    corrected.facts.records[0].schedule.date = '2026-09-18'; corrected.facts.records[0].schedule.certainty = 'exact';
+    corrected.facts.records[0].schedule.pattern = null;
+    corrected.plan.events[0] = { ...corrected.plan.events[0], date: '2026-09-18', originalDueDate: '2026-09-18', dateAssumption: null };
+    controls.onCommand.mockResolvedValueOnce(corrected);
+    await userEvent.click(screen.getByRole('button', { name: 'Save Rent series start' }));
+    expect(controls.onCommand).toHaveBeenCalledTimes(2);
+    expect(controls.onCommand).toHaveBeenNthCalledWith(2, { type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: receipt.revision,
+      records: [{ id: 'rent', delete: false, distinct: false, schedule: { date: '2026-09-18', certainty: 'exact', pattern: null } }] } });
+    rerender(<FinancialContext {...controls} snapshot={corrected} />);
+    expect(screen.getByRole('button', { name: 'Edit Rent series start' })).toHaveTextContent('Due 18 Sept');
+    expect(screen.getByRole('button', { name: 'Edit Rent series start' })).not.toHaveTextContent(/Assumed|Calculated|13 Sept/);
+    expect(screen.getByRole('button', { name: 'Edit Rent amount' })).toHaveTextContent('−₹12,500Est.');
+    expect(corrected.facts.records[0].amount).toEqual(receipt.facts.records[0].amount);
+    expect(receipt.facts.records[0].schedule.date).toBeNull();
+    expect(saved).toEqual(original);
   });
 
   it.each(['amount', 'date', 'name'] as const)('sends only the inline %s correction with human provenance', async field => {

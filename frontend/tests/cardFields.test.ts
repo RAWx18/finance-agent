@@ -5,6 +5,7 @@ import type { MoneyInput } from '../src/api';
 import { cardMoney, fieldDraft, fieldError, fieldOperation, fieldSaved, sourceAmount } from '../src/cardFields';
 import { planningSnapshot } from './fixtures';
 
+/** Creates an estimated USD amount fixture with explicit conversion and fee terms. */
 const foreign = (): MoneyInput => ({ amount: '1200.25', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-12', fee: '250.50', feeStatus: 'exact' } });
 
 it('formats Indian grouping without discarding nonzero paise or changing unknown to zero', () => {
@@ -57,6 +58,21 @@ it('edits a repeating series start from the actual schedule, never from a comput
   expect(draft.value).toBe('2026-08-13'); expect(saved.plan.events[0].date).toBe('2026-09-13');
   draft.value = '2026-08-14'; draft.status = 'estimate';
   expect(fieldOperation(saved, target, draft).changes.records).toEqual([{ id: 'rent', delete: false, distinct: false, schedule: { date: '2026-08-14', certainty: 'estimate' } }]);
+});
+
+it.each(['exact', 'unknown'] as const)('explicitly removes the source pattern when saving %s timing', status => {
+  const saved = planningSnapshot();
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  const target = { recordId: 'rent', field: 'schedule.date' as const };
+  const draft = { ...fieldDraft(saved, target), status, value: status === 'exact' ? '2027-01-31' : '' };
+  const operation = fieldOperation(saved, target, draft);
+  expect(operation.changes.records![0].schedule).toEqual({ date: status === 'exact' ? '2027-01-31' : null, certainty: status, pattern: null });
+  const receipt = structuredClone(saved);
+  receipt.facts.records[0].schedule.date = status === 'exact' ? '2027-01-31' : null;
+  receipt.facts.records[0].schedule.certainty = status;
+  expect(fieldSaved(receipt, target, operation)).toBe(false);
+  receipt.facts.records[0].schedule.pattern = null;
+  expect(fieldSaved(receipt, target, operation)).toBe(true);
 });
 
 it.each(['amount', 'target', 'outstanding'] as const)('keeps debt %s corrections on that source field', field => {

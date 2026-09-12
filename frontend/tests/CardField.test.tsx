@@ -10,6 +10,7 @@ import { planningSnapshot } from './fixtures';
 const onCommand = vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>();
 beforeEach(() => { onCommand.mockReset().mockResolvedValue(undefined); });
 const target = { field: 'opening' as const };
+/** Creates the starting-cash field harness with the shared command spy and optional write lock. */
 function field(snapshot: Snapshot, blocked = false) {
   return <CardField snapshot={snapshot} target={target} label="Cash at plan start" blocked={blocked} onCommand={onCommand}>Reported cash</CardField>;
 }
@@ -121,4 +122,46 @@ it('highlights a changed value only, not its mount or unrelated updates', () => 
     rerender(<ChangedValue value="₹5,000" />); expect(animate).not.toHaveBeenCalled();
     rerender(<ChangedValue value="₹6,000" />); expect(animate).toHaveBeenCalledOnce();
   } finally { Reflect.deleteProperty(HTMLElement.prototype, 'animate'); }
+});
+
+it.each(['replace', 'remove'] as const)('requires an explicit whole-series choice to %s a monthly pattern', async timing => {
+  const saved = planningSnapshot();
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+  receipt.facts.records[0].schedule = { ...saved.facts.records[0].schedule, pattern: null,
+    date: timing === 'replace' ? '2027-01-31' : null, certainty: timing === 'replace' ? 'exact' : 'unknown' };
+  onCommand.mockResolvedValue(receipt);
+  render(<CardField snapshot={saved} target={{ recordId: 'rent', field: 'schedule.date' }} label="Rent series start" blocked={false} onCommand={onCommand}>Assumed 31 Jan</CardField>);
+  await userEvent.click(screen.getByRole('button', { name: 'Edit Rent series start' }));
+  const selection = screen.getByRole('combobox', { name: 'Rent series start timing change' });
+  expect(selection).toHaveFocus();
+  expect(selection).toHaveValue('');
+  expect(screen.getByRole('button', { name: 'Save Rent series start' })).toBeDisabled();
+  await userEvent.keyboard('{Enter}');
+  expect(onCommand).not.toHaveBeenCalled();
+  await userEvent.selectOptions(selection, timing);
+  expect(screen.getByText(/whole series/)).toBeVisible();
+  if (timing === 'replace') {
+    expect(screen.queryByRole('option', { name: 'Unknown' })).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Rent series start', { selector: 'input' }), { target: { value: '2027-01-31' } });
+  } else expect(screen.queryByLabelText('Rent series start', { selector: 'input' })).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole('button', { name: 'Save Rent series start' }));
+  expect(onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'updateFacts', source: 'humanCardEdit', changes: { expectedRevision: saved.revision,
+    records: [{ id: 'rent', delete: false, distinct: false, schedule: { date: receipt.facts.records[0].schedule.date, certainty: receipt.facts.records[0].schedule.certainty, pattern: null } }] } });
+  expect(screen.queryByRole('form')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Edit Rent series start' })).toHaveFocus();
+  expect(saved.facts.records[0].schedule.pattern).toEqual({ kind: 'monthEnd' });
+});
+
+it('does not accept a pattern-removal receipt that retains the calculated dates', async () => {
+  const saved = planningSnapshot();
+  saved.facts.records[0].schedule = { date: null, certainty: 'unknown', recurrence: 'monthly', pattern: { kind: 'monthEnd' } };
+  const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+  onCommand.mockResolvedValue(receipt);
+  render(<CardField snapshot={saved} target={{ recordId: 'rent', field: 'schedule.date' }} label="Rent series start" blocked={false} onCommand={onCommand}>Assumed 31 Jan</CardField>);
+  await userEvent.click(screen.getByRole('button', { name: 'Edit Rent series start' }));
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Rent series start timing change' }), 'remove');
+  await userEvent.click(screen.getByRole('button', { name: 'Save Rent series start' }));
+  expect(screen.getByRole('alert')).toHaveTextContent('Save not confirmed');
+  expect(screen.getByRole('form')).toBeVisible();
 });

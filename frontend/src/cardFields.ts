@@ -11,19 +11,24 @@ export type CardTarget = {
 export type CardDraft = { value: string; status: MoneyInput['status']; source: MoneyInput | null; alternative: string };
 
 export const cardStatus = { exact: 'Reported', estimate: 'Est.', unknown: 'Unknown' };
+/** Formats a calendar date as a concise day-and-month card label. */
 export const cardDate = (date: string) => new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', timeZone: 'UTC' }).format(new Date(`${date}T00:00:00Z`));
+/** Formats a paise amount for cards without unnecessary fractional zeros. */
 export const cardMoney = (paise: number | null) => money(paise).replace(/\.00$/, '');
 
+/** Formats a reported source amount in its currency or marks it unknown. */
 export function sourceAmount(source: MoneyInput): string {
   if (source.amount === null || source.status === 'unknown') return 'Unknown';
   const [whole, fraction = ''] = source.amount.split('.');
   return `${source.conversion ? `${source.conversion.currency} ` : '₹'}${BigInt(whole).toLocaleString('en-IN')}${fraction && /[1-9]/.test(fraction) ? `.${fraction.padEnd(2, '0')}` : ''}`;
 }
 
+/** Finds the unresolved conflict for a targeted card field. */
 export function fieldConflict(snapshot: Snapshot, target: CardTarget) {
   return snapshot.facts.conflicts?.find(item => (item.recordId ?? undefined) === target.recordId && item.field === target.field);
 }
 
+/** Creates an editable draft for a card amount, date, name, or conversion term. */
 export function fieldDraft(snapshot: Snapshot, target: CardTarget): CardDraft {
   const record = snapshot.facts.records.find(item => item.id === target.recordId);
   let source: MoneyInput | null = null;
@@ -42,11 +47,13 @@ export function fieldDraft(snapshot: Snapshot, target: CardTarget): CardDraft {
   return { value: value ?? '', status: status ?? 'exact', source, alternative: '' };
 }
 
+/** Creates a card correction draft from a conflicting report. */
 export function conflictDraft(value: components['schemas']['ConflictValue']): CardDraft {
   const source = value.date ? null : value.source ? structuredClone(value.source) : { amount: value.amountPaise == null ? null : decimal(value.amountPaise), status: value.status };
   return { value: value.date ?? source?.amount ?? '', status: value.status, source, alternative: value.id };
 }
 
+/** Produces a money input reflecting a drafted amount or conversion-term correction. */
 function draftMoney(draft: CardDraft, target: CardTarget): MoneyInput {
   const source = draft.source ?? { amount: null, status: 'unknown' };
   const value = draft.status === 'unknown' ? null : draft.value.trim();
@@ -55,6 +62,7 @@ function draftMoney(draft: CardDraft, target: CardTarget): MoneyInput {
   return { ...source, amount: value, status: draft.status };
 }
 
+/** Reports an invalid card correction or an incomplete conflict resolution. */
 export function fieldError(draft: CardDraft, target: CardTarget, disputed = false): string | null {
   if (disputed && (!draft.alternative || draft.status === 'unknown')) return 'Choose a report or enter the correct value.';
   if (target.field === 'label') return draft.value.trim() ? draft.value.trim().length <= 120 ? null : 'Use a name of 120 characters or fewer.' : 'Enter a name.';
@@ -66,6 +74,7 @@ export function fieldError(draft: CardDraft, target: CardTarget, disputed = fals
   return moneyError(draftMoney(draft, target), Number.MAX_SAFE_INTEGER);
 }
 
+/** Builds a fact-update operation for a card correction or conflict resolution. */
 export function fieldOperation(snapshot: Snapshot, target: CardTarget, draft: CardDraft): components['schemas']['UpdateFacts'] {
   const changes: components['schemas']['FactsPatch'] = { expectedRevision: snapshot.revision };
   const conflict = fieldConflict(snapshot, target);
@@ -80,7 +89,8 @@ export function fieldOperation(snapshot: Snapshot, target: CardTarget, draft: Ca
   else {
     const patch: components['schemas']['RecordPatch'] = { id: target.recordId, delete: false, distinct: false };
     if (target.field === 'label') patch.label = draft.value.trim();
-    else if (target.field === 'schedule.date') patch.schedule = { date: draft.status === 'unknown' ? null : draft.value, certainty: draft.status };
+    else if (target.field === 'schedule.date') patch.schedule = { date: draft.status === 'unknown' ? null : draft.value, certainty: draft.status,
+      ...(snapshot.facts.records.find(record => record.id === target.recordId)?.schedule.pattern ? { pattern: null } : {}) };
     else if (target.field === 'amount' && target.index !== undefined) {
       const amounts = structuredClone(snapshot.facts.records.find(item => item.id === target.recordId)!.schedule.amounts!);
       amounts[target.index] = draftMoney(draft, target);
@@ -91,11 +101,14 @@ export function fieldOperation(snapshot: Snapshot, target: CardTarget, draft: Ca
   return { type: 'updateFacts', source: 'humanCardEdit', changes };
 }
 
+/** Compares decimal values without insignificant fractional zeros. */
 function sameDecimal(left: string | null | undefined, right: string | null | undefined): boolean {
+  /** Returns a decimal comparison form with equivalent empty values and fractional zeros. */
   const normalize = (value: string | null | undefined) => value == null ? null : value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
   return normalize(left) === normalize(right);
 }
 
+/** Checks whether monetary amounts, certainty, and conversion terms match. */
 function sameMoney(left: MoneyInput, right: MoneyInput): boolean {
   if (left.status !== right.status || !sameDecimal(left.amount, right.amount)) return false;
   const a = left.conversion; const b = right.conversion;
@@ -103,6 +116,7 @@ function sameMoney(left: MoneyInput, right: MoneyInput): boolean {
     && a.rateStatus === b.rateStatus && a.feeStatus === b.feeStatus && (a.rateDate ?? null) === (b.rateDate ?? null);
 }
 
+/** Checks that saved facts reflect the submitted card correction without a remaining conflict. */
 export function fieldSaved(snapshot: Snapshot, target: CardTarget, operation: components['schemas']['UpdateFacts']): boolean {
   if (fieldConflict(snapshot, target)) return false;
   const changes = operation.changes;
@@ -113,7 +127,8 @@ export function fieldSaved(snapshot: Snapshot, target: CardTarget, operation: co
   if (target.field === 'reserve') return BigInt(snapshot.facts.reservePaise) === parseAmount(changes.reserve ?? '', Number.MAX_SAFE_INTEGER);
   const resolution = changes.resolutions?.[0]?.value;
   if (target.field === 'schedule.date') return record?.schedule.date === (resolution?.date ?? patch?.schedule?.date)
-    && record?.schedule.certainty === (resolution?.status ?? patch?.schedule?.certainty);
+    && record?.schedule.certainty === (resolution?.status ?? patch?.schedule?.certainty)
+    && (patch?.schedule?.pattern !== null || !record?.schedule.pattern);
   if (patch?.schedule?.amounts) return record?.schedule.amounts?.length === patch.schedule.amounts.length
     && patch.schedule.amounts.every((value, index) => sameMoney(record!.schedule.amounts![index], value));
   const expected = resolution ? { amount: resolution.amount ?? null, status: resolution.status, conversion: resolution.conversion }

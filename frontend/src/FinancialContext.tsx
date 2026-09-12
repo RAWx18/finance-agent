@@ -16,6 +16,7 @@ import './financialCards.css';
 
 const changeStates = { created: 'Saved', updated: 'Corrected', deleted: 'Removed', merged: 'Duplicate combined', resolved: 'Conflict resolved', proposed: 'Proposal ready to review', accepted: 'Planning assumptions saved · no payment made', rejected: 'Proposal rejected · refusal saved', invalidated: 'Assumptions need fresh consent', discarded: 'Preview closed · not a refusal' };
 
+/** Summarizes workspace changes, prioritizing consent and cash-gap notices. */
 export function changeNotes(snapshot: Snapshot, change: components['schemas']['WorkspaceChange'] | null | undefined): string[] {
   if (!change) return [];
   const notes: string[] = [];
@@ -25,6 +26,7 @@ export function changeNotes(snapshot: Snapshot, change: components['schemas']['W
       const result = Object.keys(resultLabels).find(id => field.reference.startsWith(`workspace.results.${id}.`));
       const record = snapshot.facts.records.find(record => field.reference === `facts.records.${record.id}` || field.reference.startsWith(`facts.records.${record.id}.`));
       const tail = field.reference.split('.').at(-1)!;
+      /** Formats a changed amount, date, or name for a before-and-after notice. */
       const value = (value: unknown): string => value === null ? 'Unknown' : typeof value === 'number' ? money(value)
         : typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? dateLabel(value)
           : typeof value === 'string' && tail === 'label' ? value : '';
@@ -42,12 +44,14 @@ export function changeNotes(snapshot: Snapshot, change: components['schemas']['W
   if (notes.some(note => note.startsWith('Projected closing cash:'))
     && !notes.some(note => note.startsWith('First cash gap:'))
     && snapshot.workspace?.results?.some(result => result.id === 'firstGap' && result.date)) notes.push('The earlier cash gap amount and date are unchanged.');
+  /** Ranks consent and cash-gap notices ahead of other changes. */
   const priority = (note: string) => /fresh consent|First cash gap:|earlier cash gap/.test(note) ? 0 : 1;
   return [...new Set(notes)].sort((a, b) => priority(a) - priority(b));
 }
 
 type Editing = { snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined> };
 
+/** Displays an editable source amount with its reporting or conflict status. */
 function AmountField({ target, label, prefix = '', suffix = '', reported = false, ...editing }: Editing & { target: CardTarget; label: string; prefix?: string; suffix?: string; reported?: boolean }) {
   const draft = fieldDraft(editing.snapshot, target);
   const conflict = fieldConflict(editing.snapshot, target);
@@ -57,6 +61,7 @@ function AmountField({ target, label, prefix = '', suffix = '', reported = false
   </CardField>;
 }
 
+/** Presents starting cash, the reserve floor, and projected cash risks. */
 function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
   const { snapshot } = editing;
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
@@ -83,6 +88,7 @@ function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
   </>;
 }
 
+/** Offers corrections to a record's reported currency-conversion terms. */
 function SourceTerms({ target, record, ...editing }: Editing & { target: CardTarget; record: Fact }) {
   const conversion = fieldDraft(editing.snapshot, target).source?.conversion;
   if (!conversion || fieldConflict(editing.snapshot, target)) return null;
@@ -99,11 +105,13 @@ function SourceTerms({ target, record, ...editing }: Editing & { target: CardTar
   </div>;
 }
 
+/** Presents an editable commitment or receipt with its timing, amounts, and qualifications. */
 function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?: Plan['events'][number] }) {
   const { snapshot } = editing;
   const variable = !!record.schedule.amounts?.length;
   const budget = record.schedule.recurrence === 'monthlyBudget';
   const debt = record.kind === 'debt';
+  // Visible event positions are not schedule positions; corrections must target the original occurrence index.
   const index = variable ? event?.scheduleIndex ?? undefined : undefined;
   const target: CardTarget = { recordId: record.id, field: debt && record.target?.amountPaise != null && !variable ? 'target' : 'amount', ...(index !== undefined ? { index } : {}) };
   const converted = target.field === 'target' ? record.target : record.amount;
@@ -136,7 +144,7 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
       {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-meta">Committed</span>}
     </div>
     </div>
-    {event?.dateAssumption && <p className="card-row-note card-meta">From your {record.schedule.pattern?.kind === 'monthEnd' ? 'month-end' : `monthly day ${record.schedule.pattern?.day}`} pattern. Correct the date if this occurrence differs.</p>}
+    {event?.dateAssumption && <p className="card-row-note card-meta">From your {record.schedule.pattern?.kind === 'monthEnd' ? 'month-end' : `monthly day ${record.schedule.pattern?.day}`} pattern. Editing timing replaces or removes the pattern for the whole series, not one occurrence.</p>}
     {debt && !variable && <div className="card-secondary"><span className="card-caption">{target.field === 'amount' ? 'Intended payment' : record.debtType === 'card' ? 'Minimum payment' : 'Required payment'}</span>
       <AmountField {...editing} target={{ recordId: record.id, field: target.field === 'amount' ? 'target' : 'amount' }} label={`${record.label} ${target.field === 'amount' ? 'target' : 'required amount'}`} /></div>}
     {assumed && <p className="card-row-note card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</p>}
@@ -157,6 +165,7 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
 }
 
 const issueLabels: Record<string, string> = { opening: 'Cash at plan start', amount: 'Amount', target: 'Target', outstanding: 'Outstanding', 'schedule.date': 'Date', reliability: 'Receipt', controllability: 'Changeability', coverage: 'Unreported commitments', providerResponses: 'Payment agreement', recordIdentity: 'Which commitment', currencyConversion: 'Conversion terms', schedule: 'Schedule' };
+/** Presents an unresolved financial detail and any available inline correction. */
 function UncertaintyCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
   const issue = editing.snapshot.workspace?.issues?.find(issue => card.issueIds?.includes(issue.id));
   if (!issue) return null;
@@ -174,6 +183,7 @@ function UncertaintyCard({ card, ...editing }: Editing & { card: WorkspaceCard }
   </div>;
 }
 
+/** Organizes financial companion cards while keeping focused commitment editors stable. */
 function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActive: boolean }) {
   const { snapshot } = editing;
   const [expanded, setExpanded] = useState(false);
@@ -205,6 +215,7 @@ function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActi
   })}</>;
 }
 
+/** Shows the conversation's financial picture and saved-change notices. */
 export function FinancialContext({ snapshot, stale, locked, onCommand, proposalActive }: {
   snapshot: Snapshot | null; stale: boolean;
   locked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>; proposalActive: boolean;
