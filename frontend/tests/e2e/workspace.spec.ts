@@ -184,7 +184,7 @@ test('progressive HTTP and SSE workspace, corrections, conflicts, proposal decis
   const event = current.plan.events.find(event => event.recordId === purchaseId)!;
   await command(page, { type: 'previewAdjustments', adjustments: [{ eventId: event.id, amount: '0' }] });
   const proposal = picture.getByRole('region', { name: 'Spending change preview' });
-  await expect(proposal.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(proposal.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   saved = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
   await proposal.getByRole('button', { name: 'Reject preview', exact: true }).click();
   expect((await saved).request().postDataJSON().operation.type).toBe('rejectPreview');
@@ -193,7 +193,7 @@ test('progressive HTTP and SSE workspace, corrections, conflicts, proposal decis
   await command(page, { type: 'previewAdjustments', adjustments: [{ eventId: event.id, amount: '500' }] });
   await proposal.getByRole('checkbox').check();
   saved = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
-  await proposal.getByRole('button', { name: 'Accept planning assumptions' }).click(); expect((await saved).ok()).toBe(true);
+  await proposal.getByRole('button', { name: 'Accept changes' }).click(); expect((await saved).ok()).toBe(true);
   await expect(picture.getByRole('article', { name: /Accepted planning assumptions/ })).toContainText('Accepted does not mean paid');
   await command(page, { type: 'updateFacts', changes: { expectedRevision: 0, records: [{ id: purchaseId, delete: false, distinct: false, amount: { amount: '2500', status: 'exact' } }] } });
   await expect(picture.getByRole('article', { name: 'Assumptions need confirmation again' })).toBeVisible();

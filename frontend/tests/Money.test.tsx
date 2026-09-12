@@ -599,7 +599,8 @@ it('lists only authoritative missing-date entries and exempts undated known-zero
 it.each([['none', 'None reported'], ['notDiscussed', 'Not discussed yet'], ['reviewed', 'Review recorded · no listed items']] as const)('preserves empty %s category coverage', (coverage, heading) => {
   const source = snapshot();
   const saved = moneyProjection({ ...source, facts: { ...source.facts, coverage: { ...source.facts.coverage, income: coverage } } });
-  render(<MoneyRecords category="income" snapshot={saved} blocked={false} onEdit={vi.fn()} onCommand={vi.fn()} />);
+  const onEdit = vi.fn();
+  render(<MoneyRecords category="income" snapshot={saved} blocked={false} onEdit={onEdit} onCommand={vi.fn()} />);
   expect(screen.getByRole('heading', { name: heading })).toBeVisible();
   expect(screen.queryByRole('searchbox')).not.toBeInTheDocument();
   expect(screen.queryByText('Nothing shared here yet')).not.toBeInTheDocument();
@@ -633,7 +634,7 @@ it('offers compact server choices and previews the exact set without consent or 
     choices: source.plan.decisionAssessment!.choices!.map(choice => ({ ...choice, metrics: { ...source.plan, closingPaise: 1000000, troughPaise: -87650, peakGapPaise: 87650, peakGapDate: '2026-09-18', firstGap: { date: '2026-09-13', amountPaise: 43210 }, reserveShortfallPaise: 87650 } })),
   } } });
   const onCommand = vi.fn();
-  render(<MoneyChanges snapshot={saved} settings={settings} active blocked={false} pending={false} onCommand={onCommand} />);
+  render(<MoneyChanges snapshot={saved} settings={settings} active blocked={false} pending={false} onCommand={onCommand} onEdit={vi.fn()} />);
   const suggestions = screen.getByRole('region', { name: 'Suggested plan changes' });
   expect(suggestions).toHaveTextContent('Optional purchase'); expect(suggestions).toHaveTextContent('27 Sept 2026');
   expect(suggestions).toHaveTextContent('₹432.10'); expect(suggestions).toHaveTextContent('Not saved');

@@ -20,7 +20,7 @@ it.each([false, true])('excludes payee enquiries from spending comparisons (mixe
     id: 'enquire:rent', kind: 'enquire', eventIds: ['rent:2026-09-13'], prerequisiteIds: [], adjustmentAmounts: [], consequenceIds: [],
     affectsFirstGap: false, affectsPeakGap: false, laterOnly: false,
   }];
-  render(<MoneyChanges snapshot={saved} settings={settings} active blocked={false} pending={false} onCommand={vi.fn()} />);
+  render(<MoneyChanges snapshot={saved} settings={settings} active blocked={false} pending={false} onCommand={vi.fn()} onEdit={vi.fn()} />);
   const suggestions = within(screen.getByRole('region', { name: 'Suggested plan changes' }));
   expect(suggestions.queryAllByRole('button', { name: 'Compare' })).toHaveLength(mixed ? 1 : 0);
   if (mixed) expect(suggestions.getByRole('heading', { name: 'Optional purchase' })).toBeVisible();

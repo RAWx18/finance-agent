@@ -70,7 +70,7 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-coverage { border-top: 1px solid var(--line); padding-top: .5rem; display: flex; flex-wrap: wrap; gap: .25rem 1rem; margin-top: .5rem; }
 .money-coverage p { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem; font-size: .875rem; }
 .money-empty { padding-block: 1.5rem; }
-.money-changes { display: grid; gap: .9rem; }
+.money-changes { display: grid; gap: .65rem; max-width: 68rem; }
 .money-changes .proposal-review { border: 0; margin: 0; padding: 0; }
 .money-changes .comparison { padding: 1rem; }
 .money-changes .plan-comparison { gap: .75rem; }
@@ -82,11 +82,46 @@ main.product-main[data-route^="/money"] { padding-top: .6rem; }
 .money-choice-cards > li { padding: .8rem; margin-bottom: .5rem; border-radius: 8px; background: #f3f7f4; overflow-wrap: anywhere; }
 .money-choice-cards h3 { margin: 0; }
 .money-choice-cards p { margin-top: .35rem; }
-.money-changes .choice-editor { max-width: none; }
+.money-changes .choice-editor { max-width: none; margin-block: .65rem; }
 .money-changes .comparison-values dd { font-size: 1rem; }
 .money-list-tools[aria-label="Requirement period"] { gap: .25rem; margin-block: .4rem; }
 .money-list-tools[aria-label="Requirement period"] button { padding: .5rem .8rem; border-radius: 7px; }
 .money-list-tools[aria-label="Requirement period"] [aria-pressed="true"] { color: var(--teal); background: var(--sage); }
+.money-changes .money-section-head { flex-wrap: wrap; }
+.changes-current { padding-block: .75rem; }
+.changes-current h2 { font-size: .9375rem; }
+.changes-status { min-width: 0; max-width: 100%; padding: .15rem .5rem; border-radius: 5px; background: var(--sage); color: var(--teal); font-size: .75rem; }
+.changes-back { justify-self: start; }
+.changes-empty { padding: .75rem 0; }
+.changes-protection { font-size: .75rem; color: var(--muted); border-bottom: 1px solid var(--line); padding-bottom: .65rem; }
+.changes-pending { font-size: .875rem; padding: .65rem .8rem; background: var(--sage); border-radius: 7px; }
+.money-changes .notice { padding: .75rem; margin-bottom: .65rem; font-size: .875rem; }
+.money-changes .notice button + button { margin-left: .4rem; }
+.money-changes .choice-editor > legend { margin-bottom: .35rem; }
+.money-changes .choice-editor > * + * { margin-top: .65rem; }
+.money-changes .choice-editor > button { width: auto; }
+.money-changes .change-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.25rem; padding: .75rem; }
+.change-identity { flex: 1 1 12rem; min-width: 0; }
+.money-changes .change-identity p { margin: .2rem 0 0; font-size: .75rem; }
+.change-amounts { display: flex; flex-wrap: wrap; gap: .5rem 1.25rem; font-variant-numeric: tabular-nums; }
+.change-amounts dt { font-size: .75rem; }
+.change-amounts dd { font-size: 1.125rem; font-weight: 600; }
+.change-amounts > div:last-child dd { color: var(--teal); }
+.change-original { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .3rem; color: var(--muted); }
+.change-original strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+.money-page .money-changes .dialog { width: min(28rem, calc(100% - 2rem)); height: fit-content; max-height: calc(100dvh - 2rem); }
+.money-changes .scroll-region { min-height: 0; max-height: none; overflow: visible; }
+.money-changes .dialog .choice-editor { margin: 0; }
+.money-changes .dialog input { max-width: 15rem; font-size: 1.125rem; font-variant-numeric: tabular-nums; }
+.money-changes .dialog .hint { font-size: .8125rem; }
+.change-impact { display: grid; gap: .15rem; padding-block: .4rem; }
+.change-impact > strong { font-size: 1.25rem; color: var(--teal); letter-spacing: -.02em; }
+.money-changes .comparison-closing dd { font-size: 1.35rem; color: var(--teal); }
+.money-changes .plan-comparison > section:last-of-type { background: var(--sage); border-color: #b7d5c3; }
+.money-changes .proposal-review > .check { align-items: flex-start; max-width: 54rem; font-size: .8125rem; font-weight: 400; margin-block: .8rem; }
+.money-changes .check input { min-height: 20px; width: 20px; height: 20px; margin-top: .2rem; }
+.money-changes .money-assumption-details, .money-changes .money-comparison-details { font-size: .8125rem; }
+.money-changes summary { color: var(--muted); cursor: pointer; padding-block: .35rem; }
 .money-page .dialog { height: auto; max-height: calc(100dvh - 2rem); }
 .money-page .dialog-wide { width: min(52rem, calc(100% - 2rem)); }
 .money-page .dialog-body { flex: 0 1 auto; max-height: 68dvh; }

@@ -15,6 +15,12 @@ import * as notifications from '../src/Toast';
 import { adjustmentOptions, planningSnapshot, scenario, settings, Stream } from './fixtures';
 import { projectWorkspace } from './workspace';
 
+/** Binds eligible choices to the exact snapshot being displayed. */
+function optionsFor(snapshot: Snapshot): AdjustmentOptions {
+  return { ...adjustmentOptions, sessionId: snapshot.sessionId, revision: snapshot.revision,
+    sequence: snapshot.sequence, today: snapshot.plan.evaluatedOn };
+}
+
 beforeEach(() => {
   mockAuth();
   Stream.instances = [];
@@ -48,7 +54,7 @@ async function open() {
   const initial = await vi.mocked(api.current).mock.results.at(-1)!.value as Snapshot;
   act(() => { Stream.instances.at(-1)!.onopen?.(); Stream.instances.at(-1)!.emit('snapshot', initial); });
   await navigate(user, '/money/changes');
-  await user.click(within(screen.getByRole('region', { name: 'Suggested plan changes' })).getByRole('button', { name: /Choose .*changes/ }));
+  await user.click(within(screen.getByRole('region', { name: 'Suggested plan changes' })).getByRole('button', { name: /Choose payments/ }));
   await screen.findByRole('region', { name: 'Custom changes' });
   return user;
 }
@@ -70,7 +76,7 @@ async function closing(user: ReturnType<typeof userEvent.setup>, amount: string)
 async function add(user: ReturnType<typeof userEvent.setup>, amount = '0', index = 0) {
   const edit = screen.queryByRole('button', { name: 'Edit selections' });
   if (edit) await user.click(edit);
-  await user.click(await screen.findByRole('button', { name: 'Add a change' }));
+  await user.click(await screen.findByRole('button', { name: 'Choose a payment' }));
   await user.selectOptions(await screen.findByLabelText('Payment or expense'), adjustmentOptions.options[index].eventId);
   await user.type(screen.getByLabelText('Planned amount (₹)'), amount);
   await user.click(screen.getByRole('button', { name: 'Add to preview' }));
@@ -98,7 +104,7 @@ describe('integrated spending comparison', () => {
     await navigate(user, '/money/changes');
     expect(screen.getByRole('region', { name: 'Suggested plan changes' })).toBeVisible();
     expect(api.options).not.toHaveBeenCalled();
-    await user.click(screen.getByRole('button', { name: /Choose .*changes/ }));
+    await user.click(screen.getByRole('button', { name: /Choose payments/ }));
     await waitFor(() => expect(api.options).toHaveBeenCalledTimes(1));
     expect(screen.getByRole('region', { name: 'Custom changes' })).toBeVisible();
     expect(screen.queryByRole('region', { name: 'What needs attention' })).not.toBeInTheDocument();
@@ -123,13 +129,13 @@ describe('integrated spending comparison', () => {
     await waitFor(() => expect(Stream.instances).toHaveLength(1));
     const accepted = scenario('acceptedElsewhere');
     accepted.adjustments[0].acceptedRevision = 1;
-    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1 });
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1, sequence: 2 });
     act(() => {
       Stream.instances.at(-1)!.onopen?.();
       Stream.instances.at(-1)!.emit('snapshot', { ...planningSnapshot(), sequence: 2, revision: 1, accepted });
     });
     await navigate(user, '/money/changes');
-    await user.click(screen.getByRole('button', { name: /Choose .*changes/ }));
+    await user.click(screen.getByRole('button', { name: /Choose payments/ }));
     expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Optional purchase');
     await add(user, '2000', 1);
     await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
@@ -143,7 +149,7 @@ describe('integrated spending comparison', () => {
 
   it.each([['1.234', 0, 'up to two decimal places'], ['2000', 0, 'less than'], ['1999.99', 1, 'at least']])('rejects invalid amount %s for option %s', async (value, index, message) => {
     const user = await open();
-    await user.click(await screen.findByRole('button', { name: 'Add a change' }));
+    await user.click(await screen.findByRole('button', { name: 'Choose a payment' }));
     await user.selectOptions(await screen.findByLabelText('Payment or expense'), adjustmentOptions.options[index as number].eventId);
     await user.type(screen.getByLabelText('Planned amount (₹)'), value as string);
     await user.click(screen.getByRole('button', { name: 'Add to preview' }));
@@ -157,7 +163,7 @@ describe('integrated spending comparison', () => {
 
   it('selects a hypothetical card amount without sending consent and explains minimums', async () => {
     const user = await open();
-    await user.click(await screen.findByRole('button', { name: 'Add a change' }));
+    await user.click(await screen.findByRole('button', { name: 'Choose a payment' }));
     await user.selectOptions(await screen.findByLabelText('Payment or expense'), adjustmentOptions.options[1].eventId);
     expect(screen.getByText(/required minimum is not payoff/)).toBeVisible();
     await user.type(screen.getByLabelText('Planned amount (₹)'), '2000');
@@ -179,7 +185,7 @@ describe('integrated spending comparison', () => {
     await user.type(amount, '750');
     await user.click(within(dialog).getByRole('button', { name: 'Add to preview' }));
     expect(screen.queryByRole('dialog', { name: 'Choose a spending change' })).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Add a change' }));
+    await user.click(screen.getByRole('button', { name: 'Choose a payment' }));
     await user.selectOptions(screen.getByLabelText('Payment or expense'), adjustmentOptions.options[1].eventId);
     await user.type(screen.getByLabelText('Planned amount (₹)'), '2000');
     await user.click(screen.getByRole('button', { name: 'Cancel selection' }));
@@ -212,16 +218,18 @@ describe('integrated spending comparison', () => {
     expect(preview).toHaveTextContent('Not all costs are included');
     expect(preview).toHaveTextContent('These balances are not available to spend.');
     expect(screen.queryByRole('region', { name: 'What needs attention' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     await closing(user, '₹10,000.00');
     await navigate(user, '/money/changes');
     vi.mocked(api.save).mockResolvedValueOnce(projectWorkspace({ ...planningSnapshot(), sequence: 2, revision: 1, accepted: scenario() }));
-    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1 });
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1, sequence: 2 });
     await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
     expect(api.save).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
     expect(api.save).toHaveBeenLastCalledWith(expect.objectContaining({ operation: { type: 'acceptPreview', previewId: 'preview-one', confirmed: true, consentScope: 'unconditional' } }));
-    expect(screen.getByRole('region', { name: 'Current planning changes' })).toHaveTextContent('₹2,000.00 less planned spending');
+    await user.click(screen.getByRole('button', { name: 'View saved changes' }));
+    expect(screen.getByRole('dialog', { name: 'View saved changes' })).toHaveTextContent('₹2,000.00 less planned spending');
+    await user.click(screen.getByRole('button', { name: 'Close view saved changes' }));
     await closing(user, '₹12,000.00');
     vi.mocked(api.save).mockResolvedValueOnce(projectWorkspace({ ...planningSnapshot(), sequence: 3, revision: 2 }));
     await navigate(user, '/money/changes');
@@ -238,7 +246,7 @@ describe('integrated spending comparison', () => {
     vi.mocked(api.options).mockResolvedValue(options);
     vi.mocked(api.save).mockResolvedValue(projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: proposal }));
     const user = await open();
-    await user.click(await screen.findByRole('button', { name: 'Add a change' }));
+    await user.click(await screen.findByRole('button', { name: 'Choose a payment' }));
     await user.selectOptions(await screen.findByLabelText('Payment or expense'), options.options[0].eventId);
     expect(screen.getByText(/You can preview while unsure/)).toBeVisible();
     await user.type(screen.getByLabelText('Planned amount (₹)'), '0');
@@ -249,8 +257,8 @@ describe('integrated spending comparison', () => {
     expect(preview).toHaveTextContent('To save, first confirm “Can this spending change?”');
     expect(within(preview).getByRole('checkbox')).toBeDisabled();
     await user.click(within(preview).getByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     expect(api.save).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.save).mock.calls[0][0].operation).toEqual({ type: 'previewAdjustments', adjustments: [{ eventId: options.options[0].eventId, amount: '0' }] });
     const before = within(preview).getByRole('region', { name: 'Before · active plan' });
@@ -268,7 +276,7 @@ describe('integrated spending comparison', () => {
     await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
     expect(screen.getByRole('checkbox')).not.toBeChecked();
     expect(screen.getByRole('checkbox')).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     expect(api.save).not.toHaveBeenCalled();
   });
 
@@ -282,7 +290,8 @@ describe('integrated spending comparison', () => {
     const proposal = { ...scenario(), sourceRevision: 1, adjustments: [accepted.adjustments[1]],
       removedAssumptionIds: [accepted.adjustments[0].eventId] };
     vi.mocked(api.current).mockResolvedValue(saved);
-    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1 });
+    vi.mocked(api.options).mockResolvedValueOnce({ ...adjustmentOptions, revision: 1, sequence: 2 })
+      .mockResolvedValue({ ...adjustmentOptions, revision: 1, sequence: 3 });
     vi.mocked(api.save).mockResolvedValueOnce(projectWorkspace({ ...saved, sequence: 3, preview: proposal }));
     const user = await open();
     expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Card payment');
@@ -308,12 +317,13 @@ describe('integrated spending comparison', () => {
     await navigate(user, '/money/changes');
     expect(vi.mocked(api.save).mock.calls[0][0].operation).toEqual({ type: 'previewAdjustments', adjustments: [{ eventId: accepted.adjustments[1].eventId, amount: '2000.00' }] });
     await user.click(within(preview).getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     expect(api.save).toHaveBeenCalledTimes(1);
     vi.mocked(api.save).mockResolvedValueOnce(projectWorkspace({ ...saved, revision: 2, sequence: 4, accepted: proposal, preview: null }));
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
     expect(vi.mocked(api.save).mock.calls[1][0].operation).toEqual({ type: 'acceptPreview', previewId: proposal.id, confirmed: true, consentScope: 'unconditional' });
-    const assumptions = screen.getByRole('region', { name: 'Current planning changes' });
+    await user.click(screen.getByRole('button', { name: 'View saved changes' }));
+    const assumptions = screen.getByRole('dialog', { name: 'View saved changes' });
     expect(assumptions).toHaveTextContent('Card payment');
     expect(assumptions).not.toHaveTextContent('Optional purchase');
   });
@@ -323,7 +333,7 @@ describe('integrated spending comparison', () => {
     const props = { snapshot: planningSnapshot(), settings, active: true,
       locked: false, pending: false, onCommand: vi.fn() };
     const view = render(<Comparison {...props} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a change' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
     await add(user);
     view.rerender(<Comparison {...props} locked />);
     expect(screen.getByText(/Finish any open correction and wait for live updates/)).toBeVisible();
@@ -352,12 +362,13 @@ describe('integrated spending comparison', () => {
   it.each(['previewAdjustments', 'acceptPreview', 'rejectPreview', 'discardPreview', 'clearAccepted'])('retries %s with the identical command and locks editing', async (operation) => {
     const saved = projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: scenario(), accepted: operation === 'clearAccepted' ? scenario('accepted') : null });
     vi.mocked(api.current).mockResolvedValue(saved);
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, sequence: saved.sequence });
     vi.mocked(api.save).mockRejectedValueOnce(new TypeError('Lost response')).mockResolvedValueOnce({ ...saved, sequence: 2 });
     const user = await open();
     if (operation === 'previewAdjustments') { await add(user); await user.click(screen.getByRole('button', { name: 'Preview selected changes' })); }
-    if (operation === 'acceptPreview') { await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ })); await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' })); }
+    if (operation === 'acceptPreview') { await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ })); await user.click(screen.getByRole('button', { name: 'Accept changes' })); }
     if (operation === 'rejectPreview') await user.click(screen.getByRole('button', { name: 'Reject preview' }));
-    if (operation === 'discardPreview') await user.click(screen.getByRole('button', { name: 'Close preview' }));
+    if (operation === 'discardPreview') await user.click(screen.getByRole('button', { name: 'Discard preview' }));
     if (operation === 'clearAccepted') {
       await user.click(screen.getByRole('button', { name: 'Restore reported amounts' }));
       await user.click(screen.getByRole('button', { name: 'Restore all reported amounts' }));
@@ -365,14 +376,15 @@ describe('integrated spending comparison', () => {
     const notice = await screen.findByRole('alert', { name: 'Save not confirmed' });
     const retry = within(notice).getByRole('button', { name: 'Retry same action' });
     expect(within(screen.getByRole('complementary', { name: 'Notifications' })).getByRole('alert', { name: 'Save not confirmed' })).toBe(notice);
-    expect(within(screen.getByRole('region', { name: 'Plan changes content' })).queryByRole('alert', { hidden: true })).not.toBeInTheDocument();
+    expect(within(screen.getByRole('region', { name: 'Plan changes content' })).queryByRole('alert', { name: 'Save not confirmed', hidden: true })).not.toBeInTheDocument();
+    if (operation === 'previewAdjustments') expect(within(screen.getByRole('region', { name: 'Custom changes' })).getByRole('alert')).toHaveTextContent('Preview not confirmed. Your amounts are kept.');
     expect(within(screen.getByRole('region', { name: 'Plan changes content' })).queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument();
     expect(notice).not.toHaveTextContent('Lost response');
     await navigate(user, '/money');
     expect(screen.getByRole('button', { name: 'Correct starting cash' })).toBeDisabled();
     await navigate(user, '/money/changes');
     expect(screen.queryByRole('dialog', { name: 'Choose a spending change' })).not.toBeInTheDocument();
-    for (const button of screen.getAllByRole('button').filter(button => /Add a change|Edit selections|Review current preview|Accept planning assumptions|Reject preview|Restore reported amounts/.test(button.getAttribute('aria-label') ?? button.textContent ?? ''))) expect(button).toBeDisabled();
+    for (const button of screen.getAllByRole('button').filter(button => /Choose a payment|Edit selections|Review current preview|Accept changes|Reject preview|Restore reported amounts/.test(button.getAttribute('aria-label') ?? button.textContent ?? ''))) expect(button).toBeDisabled();
     await user.click(retry);
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument());
     expect(screen.queryByRole('alert', { name: 'Save not confirmed' })).not.toBeInTheDocument();
@@ -387,11 +399,11 @@ describe('integrated spending comparison', () => {
     vi.mocked(api.current).mockResolvedValue(projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: scenario() }));
     const user = await open();
     await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     act(() => Stream.instances.at(-1)!.emit('snapshot', { ...planningSnapshot(), sequence: 2, preview: scenario('another-preview') }));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
     expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ operation: { type: 'acceptPreview', previewId: 'another-preview', confirmed: true, consentScope: 'unconditional' } }));
   });
 
@@ -401,19 +413,19 @@ describe('integrated spending comparison', () => {
     const user = await open();
     const consent = screen.getByRole('checkbox', { name: /I agree to the exact amounts/ });
     await user.click(consent);
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     const refreshed = structuredClone(saved);
     refreshed.sequence++;
     refreshed.plan.evaluatedOn = '2026-09-12';
     refreshed.preview!.plan.evaluatedOn = '2026-09-12';
     act(() => Stream.instances.at(-1)!.emit('snapshot', refreshed));
     expect(consent).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     act(() => Stream.instances.at(-1)!.emit('snapshot', saved));
     expect(consent).not.toBeChecked();
     expect(api.save).not.toHaveBeenCalled();
     await user.click(consent);
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
     expect(api.save).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: saved.revision,
       operation: { type: 'acceptPreview', previewId: saved.preview!.id, confirmed: true, consentScope: 'unconditional' } }));
   });
@@ -423,11 +435,11 @@ describe('integrated spending comparison', () => {
     vi.mocked(api.current).mockResolvedValue(saved);
     const user = await open();
     await user.click(screen.getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     if (interruption === 'reconnect') {
       act(() => Stream.instances.at(-1)!.onerror?.());
       expect(screen.getByRole('checkbox')).not.toBeChecked();
-      expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
       act(() => Stream.instances.at(-1)!.onopen?.());
       act(() => Stream.instances.at(-1)!.emit('snapshot', saved));
     } else if (interruption === 'correction') {
@@ -448,7 +460,7 @@ describe('integrated spending comparison', () => {
       await navigate(user, '/money/changes');
     }
     expect(screen.getByRole('checkbox')).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     expect(api.save).not.toHaveBeenCalled();
   });
 
@@ -467,8 +479,8 @@ describe('integrated spending comparison', () => {
     expect(within(screen.getByRole('region', { name: 'Plan changes content' })).queryByRole('alert', { hidden: true })).not.toBeInTheDocument();
     expect(within(screen.getByRole('region', { name: 'Custom changes' })).queryByText(/Choices could not be loaded/)).not.toBeInTheDocument();
     expect(screen.queryByText('Loading choices…')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Add a change' })).toBeDisabled();
-    vi.mocked(api.options).mockResolvedValueOnce({ ...adjustmentOptions, revision: 1, options: [] });
+    expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeDisabled();
+    vi.mocked(api.options).mockResolvedValueOnce({ ...adjustmentOptions, revision: 1, sequence: 1, options: [] });
     await user.click(within(notice).getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText(/No eligible spending changes/)).toBeVisible();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
@@ -484,7 +496,7 @@ describe('integrated spending comparison', () => {
     expect(dialog).toHaveTextContent('Saving clears the preview. Affected saved changes need fresh consent; unrelated changes remain.');
     await user.click(within(dialog).getByRole('button', { name: /Close correct cash/ }));
     await navigate(user, '/money/changes');
-    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1,
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1, sequence: 1,
       options: adjustmentOptions.options.map(item => ({ ...item, dependencyKey: `${item.dependencyKey}-corrected` })) });
     act(() => Stream.instances.at(-1)!.emit('snapshot', { ...planningSnapshot(), revision: 1, sequence: 1,
       invalidatedAssumptions: [{ eventId: adjustmentOptions.options[0].eventId, reason: 'Occurrence terms changed; confirm a fresh proposal.' }] }));
@@ -508,7 +520,7 @@ describe('integrated spending comparison', () => {
     vi.mocked(api.save).mockRejectedValueOnce(new ApiError(409, { code: 'stalePreview', message: 'Date passed', snapshot: saved }));
     const user = await open();
     await user.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
-    await user.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await user.click(screen.getByRole('button', { name: 'Accept changes' }));
     const notice = await screen.findByRole('alert', { name: 'Action needs attention' });
     expect(notice).toHaveTextContent(/a date may have passed/);
     expect(within(screen.getByRole('complementary', { name: 'Notifications' })).getByRole('alert', { name: 'Action needs attention' })).toBe(notice);
@@ -536,7 +548,7 @@ describe('spending choice notifications', () => {
     expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Optional purchase');
     view.rerender(<><Comparison {...props} locked={false} /><ToastViewport /></>);
     await user.click(screen.getByRole('button', { name: 'Retry' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a change' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
     expect(api.options).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('Optional purchase');
@@ -575,12 +587,79 @@ describe('spending choice notifications', () => {
 });
 
 describe('Money custom comparison', () => {
+  it('refreshes eligible payments after a calculation-date update without a financial revision', async () => {
+    const saved = planningSnapshot();
+    vi.mocked(api.options).mockResolvedValueOnce({ ...adjustmentOptions, options: [] });
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    await screen.findByText(/No eligible spending changes/);
+    const refreshed = structuredClone(saved);
+    refreshed.sequence++;
+    refreshed.plan.evaluatedOn = '2026-09-12';
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, sequence: refreshed.sequence, today: refreshed.plan.evaluatedOn });
+    view.rerender(<Comparison {...props} snapshot={refreshed} />);
+    await waitFor(() => expect(api.options).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    expect(screen.queryByText(/No eligible spending changes/)).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    await add(user, '500');
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(props.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'previewAdjustments', adjustments: [
+      { eventId: adjustmentOptions.options[0].eventId, amount: '500' },
+    ] });
+  });
+
+  it('retains unchanged historical consent while previewing another eligible payment', async () => {
+    const saved = planningSnapshot();
+    saved.accepted = scenario('accepted');
+    saved.accepted.adjustments[0].acceptedRevision = 0;
+    saved.plan.evaluatedOn = '2026-09-28';
+    const current = { ...adjustmentOptions.options[1], eventId: 'card:2026-09-29', date: '2026-09-29' };
+    vi.mocked(api.options).mockResolvedValue({ sessionId: saved.sessionId, revision: saved.revision, sequence: saved.sequence, today: saved.plan.evaluatedOn, options: [current] });
+    const onCommand = vi.fn();
+    render(<Comparison snapshot={saved} settings={settings} active locked={false} pending={false} onCommand={onCommand} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Choose a payment' }));
+    await user.selectOptions(screen.getByLabelText('Payment or expense'), current.eventId);
+    await user.type(screen.getByLabelText('Planned amount (₹)'), '2500');
+    await user.click(screen.getByRole('button', { name: 'Add to preview' }));
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'previewAdjustments', adjustments: [
+      { eventId: saved.accepted.adjustments[0].eventId, amount: '0.00' },
+      { eventId: current.eventId, amount: '2500' },
+    ] });
+  });
+
+  it.each(['edited amount', 'missing consent'])('rejects a historical selection with %s', async reason => {
+    const saved = planningSnapshot();
+    saved.accepted = scenario('accepted');
+    saved.accepted.adjustments[0].acceptedRevision = 0;
+    const onCommand = vi.fn();
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand };
+    const view = render(<Comparison {...props} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    await add(user, reason === 'edited amount' ? '500' : '0');
+    const refreshed = structuredClone(saved);
+    refreshed.sequence++;
+    refreshed.plan.evaluatedOn = '2026-09-28';
+    if (reason === 'missing consent') refreshed.accepted = null;
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, sequence: refreshed.sequence, today: refreshed.plan.evaluatedOn, options: [] });
+    view.rerender(<Comparison {...props} snapshot={refreshed} />);
+    await screen.findByText(/No eligible spending changes/);
+    if (reason === 'missing consent') await user.click(screen.getByRole('button', { name: 'Review refreshed choices' }));
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('needs review');
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
   it('edits and removes selections with named icon controls and sends the complete replacement set', async () => {
     const accepted = { ...scenario('accepted'), adjustments: adjustmentOptions.options.map(item => ({ ...item, amountPaise: item.minimumPaise, acceptedRevision: 0 })) };
     const saved = projectWorkspace({ ...planningSnapshot(), accepted });
     const onCommand = vi.fn();
     render(<Comparison snapshot={saved} settings={settings} active locked={false} pending={false} onCommand={onCommand} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a change' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
     const selected = screen.getByRole('list', { name: 'Selected changes' });
     expect(selected).toHaveTextContent('Proposed'); expect(selected).toHaveTextContent('Not saved');
     await userEvent.click(within(selected).getByRole('button', { name: 'Remove Optional purchase' }));
@@ -606,9 +685,9 @@ describe('Money custom comparison', () => {
     const removed = within(proposal).getByRole('list', { name: 'Removed assumptions' });
     expect(removed).toHaveTextContent('Optional purchase · 27 Sept 2026 · ₹0.00 Saved → ₹2,000.00 Reported');
     expect(proposal).toHaveTextContent('Replaces all saved assumptions; changes do not stack.');
-    expect(within(proposal).getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(within(proposal).getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     await userEvent.click(within(proposal).getByRole('checkbox', { name: /including removals, unconditionally/ }));
-    await userEvent.click(within(proposal).getByRole('button', { name: 'Accept planning assumptions' }));
+    await userEvent.click(within(proposal).getByRole('button', { name: 'Accept changes' }));
     expect(onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'acceptPreview', previewId: 'replacement', confirmed: true, consentScope: 'unconditional' });
   });
 
@@ -618,7 +697,7 @@ describe('Money custom comparison', () => {
     const view = render(<Comparison {...props} />);
     await waitFor(() => expect(api.options).toHaveBeenCalled());
     await userEvent.click(screen.getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     if (change === 'refresh') await userEvent.click(screen.getByRole('button', { name: 'Refresh choices' }));
     else if (change === 'editing') {
       await userEvent.click(screen.getByRole('button', { name: 'Edit selections' }));
@@ -635,7 +714,7 @@ describe('Money custom comparison', () => {
       view.rerender(<Comparison {...props} snapshot={snapshot} />);
     }
     expect(screen.getByRole('checkbox')).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
     expect(props.onCommand).not.toHaveBeenCalled();
   });
 
@@ -643,14 +722,246 @@ describe('Money custom comparison', () => {
     const saved = projectWorkspace({ ...planningSnapshot(), accepted: scenario() });
     const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
     const view = render(<Comparison {...props} />);
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Add a change' })).toBeEnabled());
-    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1, options: adjustmentOptions.options.map(item => ({ ...item, dependencyKey: `${item.dependencyKey}:different` })) });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Edit Optional purchase' }));
+    await user.clear(screen.getByLabelText('Planned amount (₹)'));
+    await user.type(screen.getByLabelText('Planned amount (₹)'), '500');
+    await user.click(screen.getByRole('button', { name: 'Add to preview' }));
+    vi.mocked(api.options).mockResolvedValue({ ...adjustmentOptions, revision: 1, sequence: 1, options: adjustmentOptions.options.map(item => ({ ...item, dependencyKey: `${item.dependencyKey}:different` })) });
     view.rerender(<Comparison {...props} snapshot={{ ...saved, revision: 1, sequence: 1 }} />);
     expect(screen.getByRole('button', { name: 'Preview selected changes' })).toBeDisabled();
     await waitFor(() => expect(screen.getByRole('button', { name: 'Review refreshed choices' })).toBeEnabled());
     await userEvent.click(screen.getByRole('button', { name: 'Review refreshed choices' }));
     await userEvent.click(screen.getByRole('button', { name: 'Preview selected changes' }));
     expect(screen.getByRole('alert')).toHaveTextContent('needs review');
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+});
+
+describe('plan change draft continuity', () => {
+  it('keeps the edited amount when returning from suggested changes', async () => {
+    const user = await open();
+    await add(user, '750.25');
+    await user.click(screen.getByRole('button', { name: 'Back to suggested changes' }));
+    expect(screen.queryByRole('region', { name: 'Custom changes' })).not.toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Suggested plan changes' })).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Choose payments' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit Optional purchase' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Edit Optional purchase' }));
+    expect(screen.getByLabelText('Planned amount (₹)')).toHaveValue('750.25');
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it('initializes Edit selections from the current proposal rather than accepted amounts', async () => {
+    const saved = projectWorkspace({ ...planningSnapshot(), sequence: 2, accepted: scenario('accepted'), preview: scenario() });
+    saved.preview!.adjustments[0].amountPaise = 75025;
+    vi.mocked(api.current).mockResolvedValue(saved);
+    vi.mocked(api.options).mockResolvedValue(optionsFor(saved));
+    const user = await open();
+    await user.click(screen.getByRole('button', { name: 'Edit selections' }));
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('₹750.25');
+    await user.click(screen.getByRole('button', { name: 'Edit Optional purchase' }));
+    expect(screen.getByLabelText('Planned amount (₹)')).toHaveValue('750.25');
+    expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it('keeps a dirty replacement editor after a definite 422 and reviews only a successful correction', async () => {
+    const saved = projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: scenario() });
+    vi.mocked(api.current).mockResolvedValue(saved);
+    vi.mocked(api.options).mockResolvedValue(optionsFor(saved));
+    vi.mocked(api.save).mockRejectedValueOnce(new ApiError(422, { code: 'invalidAdjustments', message: 'Invalid amount' }));
+    const user = await open();
+    await add(user, '750.25');
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(await screen.findByRole('alert', { name: 'Action needs attention' })).toHaveTextContent('These changes are no longer eligible');
+    expect(within(screen.getByRole('region', { name: 'Custom changes' })).getByRole('alert')).toHaveTextContent('Preview not confirmed. Your amounts are kept.');
+    expect(screen.queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Accept changes' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry same action' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Edit Optional purchase' }));
+    const input = screen.getByLabelText('Planned amount (₹)');
+    expect(input).toHaveValue('750.25');
+    await user.clear(input);
+    await user.type(input, '650.25');
+    await user.click(screen.getByRole('button', { name: 'Add to preview' }));
+    const replacement = projectWorkspace({ ...saved, sequence: 2, preview: { ...scenario('replacement'),
+      adjustments: [{ ...adjustmentOptions.options[0], amountPaise: 65025, acceptedRevision: null }],
+      reducedOutflowPaise: 134975, plan: { ...saved.plan, closingPaise: 1134975, outflowPaise: 2365025 } } });
+    vi.mocked(api.save).mockResolvedValueOnce(replacement);
+    vi.mocked(api.options).mockResolvedValue(optionsFor(replacement));
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    const preview = await screen.findByRole('region', { name: 'Spending change preview' });
+    expect(preview).toHaveTextContent('₹650.25 Proposed');
+    expect(within(preview).getByRole('checkbox')).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
+    expect(api.save).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.save).mock.calls.map(([command]) => command.operation)).toEqual([
+      { type: 'previewAdjustments', adjustments: [{ eventId: adjustmentOptions.options[0].eventId, amount: '750.25' }] },
+      { type: 'previewAdjustments', adjustments: [{ eventId: adjustmentOptions.options[0].eventId, amount: '650.25' }] },
+    ]);
+  });
+
+  it('preserves a dirty draft on same-revision preview replacement until explicit refreshed review', async () => {
+    const saved = projectWorkspace({ ...planningSnapshot(), preview: scenario() });
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Edit selections' })).toBeEnabled());
+    await add(user, '750.25');
+    const replacement = { ...saved, sequence: 1, preview: { ...scenario('external'),
+      adjustments: [{ ...adjustmentOptions.options[0], amountPaise: 50000, acceptedRevision: null }] } };
+    vi.mocked(api.options).mockResolvedValue(optionsFor(replacement));
+    view.rerender(<Comparison {...props} snapshot={replacement} />);
+    expect(screen.getByText(/Your plan changed elsewhere. Your draft is kept./)).toBeVisible();
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('₹750.25');
+    expect(screen.getByRole('button', { name: 'Preview selected changes' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'View latest preview' }));
+    expect(screen.getByRole('region', { name: 'Spending change preview' })).toHaveTextContent('₹500.00 Proposed');
+    expect(screen.getByRole('checkbox')).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review refreshed choices' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Review refreshed choices' }));
+    expect(screen.queryByText(/Your plan changed elsewhere/)).not.toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('₹750.25');
+    expect(props.onCommand).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(props.onCommand).toHaveBeenCalledExactlyOnceWith({ type: 'previewAdjustments', adjustments: [
+      { eventId: adjustmentOptions.options[0].eventId, amount: '750.25' },
+    ] });
+  });
+
+  it('hydrates pristine selections from an externally accepted set', async () => {
+    const saved = projectWorkspace({ ...planningSnapshot(), accepted: scenario('accepted') });
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    const replacement = { ...saved, revision: 1, sequence: 2, accepted: { ...scenario('external'),
+      adjustments: [{ ...adjustmentOptions.options[1], amountPaise: 250025, acceptedRevision: 1 }] } };
+    vi.mocked(api.options).mockResolvedValue(optionsFor(replacement));
+    view.rerender(<Comparison {...props} snapshot={replacement} />);
+    const selected = screen.getByRole('list', { name: 'Selected changes' });
+    expect(selected).toHaveTextContent('Card payment');
+    expect(selected).toHaveTextContent('₹2500.25');
+    expect(selected).not.toHaveTextContent('Optional purchase');
+    expect(screen.queryByText(/Your plan changed elsewhere/)).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Preview selected changes' })).toBeEnabled());
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not repopulate an empty dirty removal set after external acceptance or review', async () => {
+    const saved = projectWorkspace({ ...planningSnapshot(), accepted: scenario('accepted') });
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Remove Optional purchase' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Remove Optional purchase' }));
+    const replacement = { ...saved, revision: 1, sequence: 1, accepted: scenario('external') };
+    vi.mocked(api.options).mockResolvedValue(optionsFor(replacement));
+    view.rerender(<Comparison {...props} snapshot={replacement} />);
+    expect(screen.getByText(/Your plan changed elsewhere. Your draft is kept./)).toBeVisible();
+    expect(screen.queryByRole('list', { name: 'Selected changes' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Review refreshed choices' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Review refreshed choices' }));
+    expect(screen.queryByRole('list', { name: 'Selected changes' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Preview selected changes' })).toBeDisabled();
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('submits once while pending and waits for the actual snapshot before showing review', async () => {
+    const saved = planningSnapshot();
+    let resolve!: (snapshot: Snapshot) => void;
+    const onCommand = vi.fn(() => new Promise<Snapshot>(done => { resolve = done; }));
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand };
+    const view = render(<Comparison {...props} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    await add(user, '0');
+    await user.dblClick(screen.getByRole('button', { name: 'Preview selected changes' }));
+    expect(onCommand).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: 'Calculating…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Edit Optional purchase' })).toBeDisabled();
+    expect(screen.getByRole('region', { name: 'Custom changes' })).toHaveAttribute('aria-busy', 'true');
+    expect(screen.queryByRole('button', { name: 'Accept changes' })).not.toBeInTheDocument();
+    const replacement = projectWorkspace({ ...saved, sequence: 1, preview: scenario() });
+    await act(async () => resolve(replacement));
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('₹0');
+    expect(screen.queryByRole('region', { name: 'Spending change preview' })).not.toBeInTheDocument();
+    vi.mocked(api.options).mockResolvedValue(optionsFor(replacement));
+    view.rerender(<Comparison {...props} snapshot={replacement} />);
+    expect(screen.getByRole('region', { name: 'Spending change preview' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
+    expect(onCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['sessionId', 'revision', 'sequence', 'today'] as const)('recovers from wrong options %s without treating them as empty', async field => {
+    const saved = planningSnapshot();
+    const options = { ...optionsFor(saved), options: [] };
+    if (field === 'sessionId') options.sessionId = 'b1f8c4d2-07ef-43ad-88b1-793a102a374d';
+    if (field === 'revision') options.revision++;
+    if (field === 'sequence') options.sequence++;
+    if (field === 'today') options.today = '2026-09-12';
+    vi.mocked(api.options).mockResolvedValueOnce(options);
+    const onCommand = vi.fn();
+    render(<><Comparison snapshot={saved} settings={settings} active locked={false} pending={false} onCommand={onCommand} /><ToastViewport /></>);
+    const notice = await screen.findByRole('alert', { name: 'Spending choices unavailable' });
+    expect(notice).toHaveTextContent('Your plan changed while payments were loading');
+    expect(screen.queryByText(/No eligible spending changes/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeDisabled();
+    const user = userEvent.setup();
+    await user.click(within(notice).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.options).toHaveBeenCalledTimes(2);
+    expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it.each(['sessionId', 'revision', 'sequence', 'today'] as const)('refreshes options when only snapshot %s changes', async field => {
+    const saved = planningSnapshot();
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    const refreshed = structuredClone(saved);
+    if (field === 'sessionId') refreshed.sessionId = 'b1f8c4d2-07ef-43ad-88b1-793a102a374d';
+    if (field === 'revision') refreshed.revision++;
+    if (field === 'sequence') refreshed.sequence++;
+    if (field === 'today') refreshed.plan.evaluatedOn = '2026-09-12';
+    vi.mocked(api.options).mockResolvedValue(optionsFor(refreshed));
+    view.rerender(<Comparison {...props} snapshot={refreshed} />);
+    await waitFor(() => expect(api.options).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.options).mock.calls[0][0]?.aborted).toBe(true);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    expect(props.onCommand).not.toHaveBeenCalled();
+  });
+
+  it('preserves amount input after validation failure and an external correction', async () => {
+    const saved = planningSnapshot();
+    const props = { snapshot: saved, settings, active: true, locked: false, pending: false, onCommand: vi.fn() };
+    const view = render(<Comparison {...props} />);
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Choose a payment' })).toBeEnabled());
+    await user.click(screen.getByRole('button', { name: 'Choose a payment' }));
+    await user.selectOptions(screen.getByLabelText('Payment or expense'), adjustmentOptions.options[0].eventId);
+    const input = screen.getByLabelText('Planned amount (₹)');
+    await user.type(input, '750.251');
+    await user.click(screen.getByRole('button', { name: 'Add to preview' }));
+    expect(input).toHaveValue('750.251');
+    expect(screen.getByRole('alert')).toHaveTextContent('up to two decimal places');
+    await user.clear(input);
+    await user.type(input, '750.25');
+    const corrected = { ...saved, revision: 1, sequence: 1 };
+    vi.mocked(api.options).mockResolvedValue(optionsFor(corrected));
+    view.rerender(<Comparison {...props} snapshot={corrected} />);
+    await waitFor(() => expect(api.options).toHaveBeenCalledTimes(2));
+    expect(input).toHaveValue('750.25');
+    expect(input).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Add to preview' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Close choose a spending change' }));
+    await user.click(screen.getByRole('button', { name: 'Review refreshed choices' }));
+    await user.click(screen.getByRole('button', { name: 'Choose a payment' }));
+    expect(screen.getByLabelText('Planned amount (₹)')).toHaveValue('750.25');
+    await user.click(screen.getByRole('button', { name: 'Add to preview' }));
+    expect(screen.getByRole('list', { name: 'Selected changes' })).toHaveTextContent('₹750.25');
     expect(props.onCommand).not.toHaveBeenCalled();
   });
 });

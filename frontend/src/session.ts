@@ -279,6 +279,7 @@ export function useSession() {
         // Reuse the command ID and expected revision because an unconfirmed save may already have committed.
         command = state.pending ?? {
           commandId: crypto.randomUUID(), expectedRevision: state.snapshot!.revision, operation: operation!,
+          ...(operation?.type === 'previewAdjustments' ? { expectedSequence: state.snapshot!.sequence } : {}),
         };
         dispatch({ type: 'pending', command });
         const snapshot = await api.save(command);

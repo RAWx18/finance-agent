@@ -68,7 +68,7 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
             {route === '/money' && <MoneyOverview snapshot={snapshot} blocked={blocked} stale={stale} onEdit={openEdit} onChecks={() => setChecks(true)} onCommand={command} />}
             {['/money/income', '/money/spending', '/money/debts'].includes(route) && <MoneyRecords key={route} category={route === '/money/income' ? 'income' : route === '/money/debts' ? 'debts' : 'spending'} snapshot={snapshot} blocked={blocked} onEdit={openEdit} onCommand={command} />}
             {route === '/money/upcoming' && <MoneyUpcoming snapshot={snapshot} />}
-            <div hidden={route !== '/money/changes'}><MoneyChanges key={snapshot.sessionId} snapshot={snapshot} settings={settings} active={active && route === '/money/changes'} blocked={blocked} pending={!!state.pending} onCommand={command} /></div>
+            <div hidden={route !== '/money/changes'}><MoneyChanges key={snapshot.sessionId} snapshot={snapshot} settings={settings} active={active && route === '/money/changes'} blocked={blocked} pending={!!state.pending} onCommand={command} onEdit={openEdit} /></div>
           </div>
         </>}
       </div>

@@ -703,7 +703,7 @@ describe('App voice and financial journey', () => {
     await planChanges();
     const comparison = within(screen.getByRole('region', { name: 'Spending change preview' }));
     await userEvent.click(comparison.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
-    expect(comparison.getByRole('button', { name: 'Accept planning assumptions' })).toBeEnabled();
+    expect(comparison.getByRole('button', { name: 'Accept changes' })).toBeEnabled();
     await userEvent.click(screen.getByRole('link', { name: 'Continue conversation' }));
     expect(screen.getByRole('main')).toHaveAttribute('data-view', 'ready');
     const corrected = structuredClone(saved); corrected.sequence = 1;
@@ -722,8 +722,8 @@ describe('App voice and financial journey', () => {
     await userEvent.click(moneyLink());
     await planChanges();
     expect(proposal).not.toBeVisible();
-    expect(comparison.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
-    expect(comparison.getByText('Review this exact preview before accepting.')).toBeVisible();
+    expect(comparison.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
+    expect(comparison.getByRole('checkbox')).not.toBeChecked();
     const after = comparison.getByRole('region', { name: 'After · preview' });
     await userEvent.click(within(after).getByText('More calculated results', { selector: 'summary' }));
     expect(after).toHaveTextContent('₹2,345.67');
@@ -761,7 +761,7 @@ describe('App voice and financial journey', () => {
     await userEvent.click(moneyLink());
     await planChanges();
     await userEvent.click(screen.getByRole('checkbox', { name: /I agree to the exact amounts and payments or expenses shown/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Accept planning assumptions' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Accept changes' }));
     const notice = await screen.findByRole('alert', { name: 'Save not confirmed' });
     expect(within(notice).getByRole('button', { name: 'Retry same action' })).toBeEnabled();
     await userEvent.click(screen.getByRole('link', { name: 'Continue conversation' }));
