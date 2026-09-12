@@ -19,6 +19,52 @@ function day(anchor: string, offset: number) {
 
 test.afterEach(async ({ context }) => { await context.request.delete('/api/session'); });
 
+test('financial corrections retain rejected drafts and preserve saved payment and reserve meaning', async ({ page }) => {
+  const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
+  let saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    opening: { amount: '3000', status: 'exact' }, reserve: '2000',
+    coverage: { income: 'none', essential: 'none', optional: 'none', debt: 'reviewed' },
+    records: [{ delete: false, distinct: true, kind: 'debt', label: 'Card', debtType: 'card', controllability: 'controllable',
+      amount: { amount: '1000', status: 'exact' }, target: { amount: '5000', status: 'exact' },
+      schedule: { date: day(initial.anchorDate, 2), certainty: 'exact', recurrence: 'once' } }],
+  } });
+  await page.reload(); await page.getByRole('button', { name: 'Review saved picture' }).click();
+  await page.getByRole('button', { name: 'Correct Card', exact: true }).click();
+  const editor = page.getByRole('dialog', { name: 'Correct Card', exact: true });
+  await editor.getByLabel('Amount (₹)').fill('6000');
+  let response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
+  await editor.getByRole('button', { name: 'Save correction' }).click();
+  expect((await response).status()).toBe(422);
+  await expect(editor).toBeVisible(); await expect(editor.getByLabel('Amount (₹)')).toHaveValue('6000');
+  await expect(editor).toContainText('Your entry is kept');
+  await editor.getByLabel('Amount (₹)').fill('1300');
+  response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
+  await editor.getByRole('button', { name: 'Save correction' }).click();
+  expect((await response).ok()).toBe(true); await expect(editor).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Correct Card', exact: true })).toBeFocused();
+  saved = await command(page, { type: 'previewAdjustments', adjustments: [{ eventId: saved.plan.events[0].id, amount: '2000' }] });
+  await command(page, { type: 'acceptPreview', previewId: saved.preview!.id, confirmed: true, consentScope: 'unconditional' });
+  await page.goto('/money');
+  const attention = page.getByRole('region', { name: 'What needs attention', exact: true });
+  await expect(attention).toContainText('Cash to keep aside is not covered');
+  await expect(attention).toContainText('Largest reserve shortfall: ₹1,000.00');
+  await expect(attention).not.toContainText('Some details still need checking');
+  await page.emulateMedia({ media: 'print' });
+  await expect(page.locator('.money-print')).toBeVisible();
+  await expect(page.locator('.money-print')).toContainText('Largest reserve shortfall: ₹1,000.00');
+  await page.emulateMedia({ media: 'screen' });
+  await page.goto('/money/debts');
+  await expect(page.getByRole('listitem', { name: 'Card', exact: true })).toContainText('Current plan: ₹2,000.00');
+  await expect(page.getByRole('listitem', { name: 'Card', exact: true })).toContainText('₹5,000.00');
+  await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    coverage: { essential: 'reviewed', debt: 'none' }, records: [{ id: saved.facts.records[0].id, delete: true, distinct: false },
+      { delete: false, distinct: true, kind: 'essential', label: 'Rent', amount: { amount: '6000', status: 'exact' }, schedule: { date: day(initial.anchorDate, 1) } }],
+  } });
+  await page.goto('/money/changes');
+  await expect(page.getByRole('heading', { name: 'No suggested changes' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Compare', exact: true })).toHaveCount(0);
+});
+
 test('progressive HTTP and SSE workspace, corrections, conflicts, proposal decisions and accessible layouts', async ({ page }, info) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   const requests: string[] = []; page.on('request', request => { if (/daily\.co|openai\.azure|speech\.microsoft/.test(request.url())) requests.push(request.url()); });

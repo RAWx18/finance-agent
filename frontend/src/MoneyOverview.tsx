@@ -36,17 +36,19 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
   const upcoming = plan.events.filter(event => event.date >= plan.evaluatedOn);
   const elapsed = plan.events.length - upcoming.length;
   const conflicts = snapshot.facts.conflicts?.length ?? 0;
-  const headline = plan.firstGap ? 'First funding gap' : plan.closingPaise === null ? 'Your picture needs a check' : outcome?.branch === 'fits' && outcome.readiness === 'ready' ? 'Known dated payments fit' : 'What needs attention';
+  const reserveBreach = assessment?.consequences?.find(item => item.kind === 'reserveBreach');
+  const headline = plan.firstGap ? 'First funding gap' : plan.reserveShortfallPaise ? 'Cash to keep aside is not covered' : plan.closingPaise === null ? 'Your picture needs a check' : outcome?.branch === 'fits' && outcome.readiness === 'ready' ? 'Known dated payments fit' : 'What needs attention';
   const result = (id: string) => {
     const value = snapshot.workspace?.results?.find(item => item.id === id);
     const labels: Record<string, string> = { firstGap: 'Why the shortfall?', reliableIncome: 'Income calculation', closing: 'Closing calculation', peakGap: 'Largest gap calculation' };
     return value && <ResultDetails result={value} snapshot={snapshot} label={labels[id]} />;
   };
   return <div className="money-overview">
-    <section className={`money-panel money-attention${plan.firstGap || conflicts ? ' has-risk' : ''}`} aria-label="What needs attention">
+    <section className={`money-panel money-attention${plan.firstGap || plan.reserveShortfallPaise || conflicts ? ' has-risk' : ''}`} aria-label="What needs attention">
       <div className="money-section-head"><h2>{headline}</h2>{issues.length > 0 && <button className="detail-button money-check-count" onClick={onChecks}>{issues.length} {issues.length === 1 ? 'check' : 'checks'}</button>}</div>
       {plan.firstGap && <p className="money-gap"><strong>{money(plan.firstGap.amountPaise)}</strong><span>short on {dateLabel(plan.firstGap.date)} · Calculated</span></p>}
-      {!plan.firstGap && <p className="money-meta">{plan.closingPaise === null ? 'A starting amount is needed to calculate the balance.' : outcome?.readiness === 'ready' && outcome.branch === 'fits' ? 'Based on the dates and amounts in this plan.' : 'Some details still need checking before relying on the result.'}</p>}
+      {!!plan.reserveShortfallPaise && <p className="money-warning">Cash to keep aside: {money(snapshot.facts.reservePaise)}. Largest reserve shortfall: {money(plan.reserveShortfallPaise)} · Calculated, separate from the funding gap.{reserveBreach?.date && <> First falls below the reserve on {dateLabel(reserveBreach.date)}.</>}</p>}
+      {!plan.firstGap && !plan.reserveShortfallPaise && <p className="money-meta">{plan.closingPaise === null ? 'A starting amount is needed to calculate the balance.' : outcome?.readiness === 'ready' && outcome.branch === 'fits' ? 'Based on the dates and amounts in this plan.' : 'Some details still need checking before relying on the result.'}</p>}
       {!!conflicts && <p className="money-warning">Conflicting reports · no amount chosen for you</p>}
       {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p className="money-warning">Partial calculation · some amounts or dates are missing</p>}
       {action && <div className="money-next"><h3>Next step</h3><p><strong>{action.kind === 'contactPayee' ? 'Discuss payment options' : actionLabels[action.kind] ?? 'Review the next step'}</strong>{actionNames && <> · {actionNames}</>}</p>
@@ -55,7 +57,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
           {action.kind === 'previewChange' && choice?.adjustmentAmounts.length ? <button disabled={blocked || !!snapshot.preview} onClick={() => onCommand({ type: 'previewAdjustments', adjustments: choice.adjustmentAmounts.map(item => ({ eventId: item.eventId, amount: decimal(item.amountPaise) })) })}>Compare change</button>
             : ['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button className="detail-button" disabled={blocked} title="Skip this step; payment dates and amounts stay unchanged" aria-label={['clarify', 'confirmReceipt', 'verifyTerms'].includes(action.kind) ? 'I cannot confirm this now' : 'I cannot take this step now'} onClick={() => onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' })}>Skip this step</button>}</div>
       </div>}
-      <div className="money-detail-actions">{result('firstGap')}<Details label="Plan details">
+      <div className="money-detail-actions">{result(plan.firstGap || !plan.reserveShortfallPaise ? 'firstGap' : 'reserveShortfall')}<Details label="Plan details">
         <dl className="money-detail-values"><div><dt>Cash at plan start · {factStatus(snapshot, 'opening')}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div>
           <div><dt>Included income · Calculated</dt><dd>{money(plan.reliableIncomePaise)}</dd></div>
           <div><dt>Dated payments · Calculated</dt><dd>{money(plan.outflowPaise)}</dd></div>

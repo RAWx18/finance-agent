@@ -11,9 +11,11 @@ export function MoneyPrint({ snapshot }: { snapshot: Snapshot }) {
   const outcome = plan.decisionAssessment?.outcome;
   const actions = snapshot.workspace?.actions ?? [];
   const action = actions.find(item => item.id === plan.decisionAssessment?.nextActionId) ?? actions[0];
+  const reserveBreach = plan.decisionAssessment?.consequences?.find(item => item.kind === 'reserveBreach');
   return <article hidden className="money-print print-only" aria-label="Saved plan for printing">
     <h1>Money</h1><p>{dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</p>
-    <h2>{plan.firstGap ? `First funding gap: ${money(plan.firstGap.amountPaise)} on ${dateLabel(plan.firstGap.date)}` : plan.closingPaise === null ? 'Funding position unknown' : 'No gap in the dated figures'}</h2>
+    <h2>{plan.firstGap ? `First funding gap: ${money(plan.firstGap.amountPaise)} on ${dateLabel(plan.firstGap.date)}` : plan.reserveShortfallPaise ? 'Cash to keep aside is not covered' : plan.closingPaise === null ? 'Funding position unknown' : 'No gap in the dated figures'}</h2>
+    {snapshot.facts.reservePaise > 0 && <p>Cash to keep aside: {money(snapshot.facts.reservePaise)} · Reported, not spending. Largest reserve shortfall: {money(plan.reserveShortfallPaise)} · Calculated, separate from the funding gap.{reserveBreach?.date && <> First falls below the reserve on {dateLabel(reserveBreach.date)}.</>}</p>}
     <p>Calculated outlook</p>{action && <p>Next step: {action.question}</p>}
     <dl><div><dt>Cash at plan start · {dateLabel(snapshot.anchorDate)} · {factStatus(snapshot, 'opening')}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div>
       <div><dt>Income included · Calculated, expected, not received</dt><dd>{money(plan.reliableIncomePaise)}</dd></div>

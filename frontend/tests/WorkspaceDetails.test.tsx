@@ -3,13 +3,13 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, it, vi } from 'vitest';
-import type { Command } from '../src/api';
+import type { Command, Snapshot } from '../src/api';
 import { FinancialContext } from '../src/FinancialContext';
 import { ResultDetails } from '../src/WorkspaceDetails';
 import { planningSnapshot } from './fixtures';
 import { projectWorkspace } from './workspace';
 
-const controls = { locked: false, stale: false, mode: 'live' as const, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => void>() };
+const controls = { locked: false, stale: false, mode: 'live' as const, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>().mockResolvedValue(planningSnapshot()) };
 
 it('explains same-day income after the gap witness without claiming it covered that gap', async () => {
   const saved = planningSnapshot();

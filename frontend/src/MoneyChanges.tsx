@@ -15,7 +15,7 @@ export function MoneyChanges({ snapshot, settings, active, blocked, pending, onC
 }) {
   const [custom, setCustom] = useState(false);
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
-  const choices = snapshot.workspace?.choices ?? [];
+  const choices = snapshot.workspace?.choices?.filter(choice => choice.kind !== 'enquire') ?? [];
   const locked = blocked || pending || !active;
   return <div className="money-changes">
     <section className="money-panel" aria-label="Current planning changes"><h2>{snapshot.accepted ? 'Saved in your plan' : 'Your reported plan is active'}</h2>

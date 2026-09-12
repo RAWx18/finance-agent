@@ -222,7 +222,7 @@ export function useSession() {
         };
         dispatch({ type: 'pending', command });
         const snapshot = await api.save(command);
-        if (current()) dispatch({ type: 'saved', snapshot });
+        if (current()) { dispatch({ type: 'saved', snapshot }); return snapshot; }
       }
     } catch (error) {
       if (!current()) return;

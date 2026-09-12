@@ -8,7 +8,7 @@ import { FinancialContext } from '../src/FinancialContext';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
 import { projectWorkspace } from './workspace';
 
-const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => void>(), stale: false, mode: 'live' as const };
+const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>().mockResolvedValue(planningSnapshot()), stale: false, mode: 'live' as const };
 beforeEach(() => controls.onCommand.mockClear());
 const salary = (): Snapshot['facts']['records'][number] => ({ id: 'salary', label: 'Salary', kind: 'income', amount: { status: 'exact', amountPaise: 2500000 }, schedule: { date: '2026-09-25', recurrence: 'monthly', certainty: 'exact' }, reliability: 'reliable', autoDebit: false });
 const picture = () => { const saved = planningSnapshot(); saved.facts.records.push(salary()); return projectWorkspace(saved); };

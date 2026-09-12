@@ -61,6 +61,7 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
       <div><dt>Outstanding balance</dt><dd>{fieldAmount('outstanding')}</dd></div>
     </dl> : <p className="money-record-amount">{fieldAmount('amount')}
       {record.kind !== 'income' && <span className="money-meta">{record.kind === 'essential' ? 'Essential' : 'Other spending'}</span>}</p>}
+    {events.filter(event => event.amountBasis === 'assumed').map(event => <p className="money-meta" key={event.id}>Current plan: {money(event.amountPaise)} on {dateLabel(event.date)} · Saved assumption, not paid. Reported {record.target ? 'intended payment' : 'amount'} stays unchanged.</p>)}
     {record.kind === 'income' && <p className="money-meta">
       {events.length && events.every(item => item.included) ? 'Included in projected balances · not marked received'
         : events.some(item => item.included) ? 'Some occurrences are not included' : 'Not included in projected balances'}

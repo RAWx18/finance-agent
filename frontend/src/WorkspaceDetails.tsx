@@ -123,9 +123,10 @@ export function ConflictReview({ conflict, snapshot, blocked, onCommand }: {
 }
 
 export function Correction({ snapshot, record, blocked, onCommand }: {
-  snapshot: Snapshot; record?: Fact; blocked: boolean; onCommand: (operation: Command['operation']) => void;
+  snapshot: Snapshot; record?: Fact; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [revision, setRevision] = useState(snapshot.revision);
   const [field, setField] = useState(record ? 'amount' : 'opening');
   const [value, setValue] = useState('');
@@ -141,7 +142,7 @@ export function Correction({ snapshot, record, blocked, onCommand }: {
   const fields = record ? ['amount', 'schedule.date', ...(record.kind === 'income' ? ['reliability'] : ['controllability']),
     ...(record.kind === 'debt' ? ['target', 'outstanding'] : []), 'delete'] : ['opening'];
   const disputed = (name: string) => snapshot.facts.conflicts!.some(item => item.recordId === (record?.id ?? null) && item.field === name);
-  const disabled = blocked || revision !== snapshot.revision || disputed(field);
+  const disabled = blocked || saving || revision !== snapshot.revision || disputed(field);
   function select(name: string) {
     setField(name); setError('');
     if (name === 'schedule.date') { setValue(record!.schedule.date ?? ''); setCertainty(record!.schedule.certainty); }
@@ -157,7 +158,7 @@ export function Correction({ snapshot, record, blocked, onCommand }: {
     <Dialog open={open} title={`Correct ${record?.label ?? 'available cash'}`} onClose={() => setOpen(false)} actions={<button type="submit" form={`correct-${record?.id ?? 'cash'}`} className="primary" disabled={disabled}>Save correction</button>}>
       <p>Correct this reported detail here or by voice. Other figures stay unchanged.</p>
       {revision !== snapshot.revision && <p role="alert">Saved figures changed. Close and reopen this correction to check the current values.</p>}
-      <form id={`correct-${record?.id ?? 'cash'}`} onSubmit={event => {
+      <form id={`correct-${record?.id ?? 'cash'}`} onSubmit={async event => {
         event.preventDefault(); if (disabled) return;
         const patch: components['schemas']['RecordPatch'] = { id: record?.id, delete: false, distinct: false };
         let opening: components['schemas']['MoneyInput'] | undefined;
@@ -169,11 +170,13 @@ export function Correction({ snapshot, record, blocked, onCommand }: {
           const amount = { amount: certainty === 'unknown' ? null : value, status: certainty };
           if (field === 'opening') opening = amount; else Object.assign(patch, { [field]: amount });
         }
-        restoreFocus.current = true;
-        onCommand({ type: 'updateFacts', changes: { expectedRevision: revision, ...(opening ? { opening } : { records: [patch] }) } });
-        setOpen(false);
+        setSaving(true); setError('');
+        const saved = await onCommand({ type: 'updateFacts', changes: { expectedRevision: revision, ...(opening ? { opening } : { records: [patch] }) } }).catch(() => undefined);
+        setSaving(false);
+        if (saved) { restoreFocus.current = true; setOpen(false); }
+        else setError('Correction not confirmed. Your entry is kept; check the save status before retrying.');
       }}>
-        <fieldset disabled={blocked || revision !== snapshot.revision}><legend className="sr-only">Correction</legend>
+        <fieldset disabled={blocked || saving || revision !== snapshot.revision}><legend className="sr-only">Correction</legend>
           <label>Detail<select value={field} onChange={event => select(event.target.value)}>{fields.map(name => <option key={name} value={name} disabled={disputed(name)}>{name === 'delete' ? 'Remove this item' : fieldLabels[name]}</option>)}</select></label>
           {disputed(field) ? <p>Resolve the conflicting reports instead of overwriting this field.</p> : field === 'delete' ? <p>Remove <strong>{record?.label}</strong> from the plan? This removes this exact item, not other items with the same name.</p>
             : field === 'reliability' || field === 'controllability' ? <label>{fieldLabels[field]}<select value={value} onChange={event => setValue(event.target.value)}>

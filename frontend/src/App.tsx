@@ -72,7 +72,7 @@ function Workspace() {
       if (uncertain.current === state.pending.commandId) notify({ id: 'session:pending', severity: 'critical', duration: null, dismissible: false,
         title: 'Save not confirmed', message: 'Keep this page open. Retry the same action before making another change.',
         action: { label: state.pending.operation.type === 'replaceFacts' ? 'Retry same save' : 'Retry same action', disabled: stale || state.busy, dismiss: false,
-          onClick: () => actions.current.perform('save') } });
+          onClick: async () => { await actions.current.perform('save'); } } });
     } else {
       uncertain.current = null; dismiss('session:pending');
       if (state.messageKind === 'error' && state.message && state.phase === 'ready') notify({ id: 'session:action', severity: 'error', duration: null,
@@ -194,7 +194,7 @@ function Workspace() {
         </aside>}
         {view !== 'landing' && <div className="financial-pane">
           <FinancialContext snapshot={snapshot} stale={!!snapshot && stale} mode={reviewing ? view as 'review' | 'finished' : 'live'}
-            locked={locked} onCommand={operation => void perform('save', operation)} proposalActive={conversationVisible} />
+            locked={locked} onCommand={operation => perform('save', operation)} proposalActive={conversationVisible} />
         </div>}
       </div>
 

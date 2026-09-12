@@ -33,7 +33,7 @@ function FinancialCard({ card, changed, fingerprint, children }: { card: Workspa
   </article>;
 }
 
-function FactRow({ record, snapshot, blocked, onCommand }: { record: Fact; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => void }) {
+function FactRow({ record, snapshot, blocked, onCommand }: { record: Fact; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined> }) {
   const conflicts = snapshot.facts.conflicts!.filter(item => item.recordId === record.id);
   const checks = record.kind === 'income' ? incomeChecks(record) : [];
   const exclusions = [...new Set(snapshot.workspace?.contributions?.filter(item => item.recordId === record.id && !item.included && !item.id.startsWith('proposal:')).map(item => reasons[item.reason]).filter(reason => !!reason))];
@@ -51,6 +51,7 @@ function FactRow({ record, snapshot, blocked, onCommand }: { record: Fact; snaps
       <p>{record.controllability === 'committed' ? 'Already committed' : record.controllability === 'controllable' ? 'Changeable and not committed' : 'Whether this can change is not confirmed'}</p>
     </>}
     {record.target && <p>Selected target: {money(record.target.amountPaise)}{record.target.status === 'estimate' && ' · Estimated'} · Includes the minimum, not an extra payment.</p>}
+    {(snapshot.accepted?.plan.events ?? []).filter(event => event.recordId === record.id && event.amountBasis === 'assumed').map(event => <p key={event.id}>Current plan: {money(event.amountPaise)} on {dateLabel(event.date)} · Saved assumption, not paid. Reported {record.target ? 'intended payment' : 'amount'} stays unchanged.</p>)}
     {record.outstanding && <p>Reported outstanding: {money(record.outstanding.amountPaise)}{record.outstanding.status === 'estimate' && ' · Estimated'} · Not reduced by planning assumptions.</p>}
     {conflicts.map(conflict => <ConflictReview key={conflict.id} conflict={conflict} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />)}
     {issues.length > 0 && <Details label={`Checks for ${record.label}`}><PagedList label={`${record.label} checks`} className="evidence-list">{issues.map(issue => <li key={issue.id}><p>{issue.question}</p><p>{issue.reason}</p></li>)}</PagedList></Details>}
@@ -90,7 +91,7 @@ export function changeNotes(snapshot: Snapshot, change: components['schemas']['W
 
 export function FinancialContext({ snapshot, stale, mode, locked, onCommand, proposalActive }: {
   snapshot: Snapshot | null; stale: boolean; mode: 'live' | 'review' | 'finished';
-  locked: boolean; onCommand: (operation: Command['operation']) => void; proposalActive: boolean;
+  locked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>; proposalActive: boolean;
 }) {
   const proposalHeading = useRef<HTMLHeadingElement>(null);
   const workspace = snapshot?.workspace;
@@ -143,9 +144,12 @@ export function FinancialContext({ snapshot, stale, mode, locked, onCommand, pro
         <p>Payments come before income on the same day. Balances show requirements, not completed payments.</p>
         <PagedList label="Dated requirements" className="timeline-rows" ordered>{plan.events.filter(event => card.eventIds?.includes(event.id)).map(event => {
           const record = snapshot.facts.records.find(record => record.id === event.recordId);
+          const amount = event.amountBasis === 'requiredOnly' ? record?.amount : record?.target ?? record?.amount;
           return <li key={event.id}><div className="timeline-date">{dateLabel(event.date)}{record?.schedule.certainty !== 'exact' && <span>Estimated date</span>}</div>
             <div><strong>{event.label}</strong><p>{event.kind === 'income' ? 'Expected income' : 'Payment due'} · {money(event.amountPaise)}</p>
-              <p>{event.included ? event.amountBasis === 'assumed' ? 'Saved assumption · not paid' : 'Reported requirement' : 'Excluded from balances'}{event.overdue && ' · Overdue'}</p>
+              <p>{event.included ? event.amountBasis === 'assumed' ? 'Saved assumption · not paid' : amount?.status === 'estimate' ? 'Estimated requirement' : 'Reported requirement' : 'Excluded from balances'}{event.overdue && <> · Originally due {dateLabel(event.originalDueDate)}</>}</p>
+              {record?.kind === 'debt' && <p>{event.amountBasis === 'requiredOnly' ? 'Required / minimum only · intended payment unknown' : record.target ? 'Intended payment · includes minimum' : 'Required / minimum payment'}</p>}
+              {event.autoDebit && <p>Automatic debit reported</p>}
               {!event.included && record?.kind === 'income' && <p>{reasons[workspace.contributions?.find(item => item.eventId === event.id && !item.id.startsWith('proposal:'))?.reason ?? '']} {incomeChecks(record).join('; ')}</p>}
               <p>Balance after: <strong>{money(event.balancePaise)}</strong></p>
             </div></li>;
