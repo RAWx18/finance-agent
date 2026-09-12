@@ -43,15 +43,22 @@ async def stop(process, seconds):
     if process is None:
         return True
     if process.returncode is None:
-        process.terminate()
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            await process.wait()
+            return True
         try:
             async with asyncio.timeout(seconds):
                 await process.wait()
         except TimeoutError:
-            if os.name == "posix":
-                os.killpg(process.pid, signal.SIGKILL)
-            else:
-                process.kill()
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:
+                    process.kill()
+            except ProcessLookupError:
+                pass
             await process.wait()
             return False
     return True
@@ -188,7 +195,7 @@ async def verify(cycles, mode):
             browser_stopped = await stop(browser, 8)
             server_stopped = await stop(server, 12)
             if logs:
-                await logs
+                await asyncio.gather(logs, return_exceptions=True)
             rooms = []
             try:
                 async with asyncio.timeout(20):

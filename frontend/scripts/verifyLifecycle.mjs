@@ -16,6 +16,17 @@ export function observeLifecycle() {
   let firstActiveAt = null;
   let firstEnergyAt = null;
   let peak = 0;
+  // Chromium omits unload keepalive requests from Playwright's network events.
+  const fetch = globalThis.fetch;
+  globalThis.fetch = function (input, init) {
+    const response = fetch.call(this, input, init);
+    if (input === '/api/session/call' && init?.method === 'DELETE') {
+      const { callId } = JSON.parse(init.body);
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(callId))
+        sessionStorage.setItem('voice-lifecycle-end', JSON.stringify({ callId, keepalive: init.keepalive === true, cancellable: !!init.signal }));
+    }
+    return response;
+  };
   const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia = async constraints => {
     pending++;
@@ -75,6 +86,7 @@ export function observeLifecycle() {
     reset() {
       firstActiveAt = firstEnergyAt = null;
       peak = 0;
+      sessionStorage.removeItem('voice-lifecycle-end');
       for (const entry of performance.getEntriesByType('mark'))
         if (entry.name.startsWith('voice:')) performance.clearMarks(entry.name);
     },
@@ -117,7 +129,8 @@ async function run(values) {
   const requests = [];
   const errors = [];
   const report = (check, details = {}) => console.log(JSON.stringify({ check, cycle, mode: values.mode, ...details }));
-  const abort = () => { void page?.close().catch(() => undefined); };
+  let aborted = false;
+  const abort = () => { aborted = true; void page?.close().catch(() => undefined); };
   process.once('SIGTERM', abort);
   process.once('SIGINT', abort);
   const deadline = setTimeout(abort, values.cycles * 180000 - 50000);
@@ -230,6 +243,7 @@ async function run(values) {
         const observed = (await probe()).callsObserved;
         if (values.mode === 'prompt') await context.clearPermissions();
         else await permission(values.mode === 'denied' ? 'denied' : 'granted');
+        await expect(page.getByRole('button', { name: /^(Start conversation|Start talking|Reconnect)$/ })).toBeVisible();
         if (await page.getByRole('button', { name: 'Start conversation', exact: true }).isVisible())
           await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
         await Promise.all(page.frames().map(frame => frame.evaluate(() => globalThis.lifecycle?.reset()).catch(() => undefined)));
@@ -273,9 +287,11 @@ async function run(values) {
           const endAt = Date.now();
           if (values.mode === 'refresh') await page.reload({ waitUntil: 'domcontentloaded' });
           else await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+          const termination = await page.evaluate(() => JSON.parse(sessionStorage.getItem('voice-lifecycle-end') ?? 'null'));
+          assert.deepEqual(termination, { callId, keepalive: true, cancellable: false });
           await until(released, (settings.voiceShutdownSeconds + 5) * 1000);
           assert.equal(callIds.size, admitted + 1);
-          report(stage, { passed: true, releaseMs: Date.now() - endAt, callId,
+          report(stage, { passed: true, ownedEndRequest: true, releaseMs: Date.now() - endAt, callId,
             ...measurements(await media()), lifecycle: await probe() });
         }
         assert.deepEqual(errors, []);
@@ -297,7 +313,7 @@ async function run(values) {
     for (const id of callIds) {
       try {
         const response = await context.request.delete('/api/session/call', {
-          data: { callId: id }, timeout: 14000,
+          data: { callId: id }, timeout: aborted ? 750 : 14000,
         });
         const state = await response.json();
         cleanup &&= response.status() === 200 && state.callId === id && state.cleanupConfirmed === true;
