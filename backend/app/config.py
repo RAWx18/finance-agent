@@ -72,7 +72,6 @@ class VoiceConfig(BaseModel):
     tts_gender: Literal["Female", "Male"]
     tts_first_audio_seconds: float = Field(ge=1, le=60)
     tts_progress_seconds: float = Field(ge=1, le=60)
-    tts_total_seconds: float = Field(ge=1, le=180)
     vad_confidence: float = Field(ge=0, le=1)
     vad_start_seconds: float = Field(ge=0.1, le=1)
     vad_stop_seconds: float = Field(ge=0.1, le=1)

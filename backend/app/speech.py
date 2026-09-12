@@ -202,7 +202,8 @@ class SpeechSynthesis(AzureTTSService):
         self.config = config or load_config().voice
         # Provider deadlines must expire before Pipecat can retire a pending context.
         kwargs["stop_frame_timeout_s"] = (
-            self.config.tts_total_seconds + self.config.shutdown_seconds
+            max(self.config.tts_first_audio_seconds, self.config.tts_progress_seconds)
+            + self.config.shutdown_seconds
         )
         super().__init__(**kwargs)
         self._retire_synthesis: Any = None
@@ -252,54 +253,53 @@ class SpeechSynthesis(AzureTTSService):
         words: list[tuple[str, float]] = []
         deadline = loop.time() + self.config.tts_first_audio_seconds
         try:
-            async with asyncio.timeout(self.config.tts_total_seconds):
-                synthesizer.speak_ssml_async(self._construct_ssml(text))
-                await self.start_tts_usage_metrics(text)
-                while active:
-                    async with asyncio.timeout_at(deadline):
-                        kind, event = await events.get()
-                    if kind == "audio":
-                        chunk = event.result.audio_data
-                        if not isinstance(chunk, bytes):
-                            raise ValueError("Invalid synthesis audio")
-                        if not chunk:
-                            continue
-                        audio = True
-                        deadline = loop.time() + self.config.tts_progress_seconds
-                        yield TTSAudioRawFrame(
-                            audio=chunk,
-                            sample_rate=self.sample_rate,
-                            num_channels=1,
-                            context_id=context_id,
-                        )
-                    elif kind == "word":
-                        word, offset = event.text, event.audio_offset / 10_000_000
-                        if not isinstance(word, str) or offset < 0:
-                            raise ValueError("Invalid synthesis word")
-                        if words and self._is_punctuation_only(word):
-                            words[-1] = (words[-1][0] + word, words[-1][1])
-                        elif word:
-                            words.append((word, self._cumulative_audio_offset + offset))
-                    elif kind == "canceled":
-                        code = event.result.cancellation_details.error_code
-                        if code in {
-                            CancellationErrorCode.ConnectionFailure,
-                            CancellationErrorCode.ServiceTimeout,
-                            CancellationErrorCode.ServiceUnavailable,
-                            CancellationErrorCode.TooManyRequests,
-                        }:
-                            raise SynthesisFailure("Speech generation unavailable")
-                        raise RuntimeError("Speech synthesis rejected")
-                    elif kind == "completed":
-                        if not audio:
-                            raise SynthesisFailure("Speech generation produced no audio")
-                        await self.add_word_timestamps(words, context_id)
-                        self._cumulative_audio_offset += event.result.audio_duration.total_seconds()
-                        complete = True
-                        break
-                    if audio and len(words) > 1:
-                        await self.add_word_timestamps(words[:-1], context_id)
-                        words[:] = words[-1:]
+            synthesizer.speak_ssml_async(self._construct_ssml(text))
+            await self.start_tts_usage_metrics(text)
+            while active:
+                async with asyncio.timeout_at(deadline):
+                    kind, event = await events.get()
+                if kind == "audio":
+                    chunk = event.result.audio_data
+                    if not isinstance(chunk, bytes):
+                        raise ValueError("Invalid synthesis audio")
+                    if not chunk:
+                        continue
+                    audio = True
+                    deadline = loop.time() + self.config.tts_progress_seconds
+                    yield TTSAudioRawFrame(
+                        audio=chunk,
+                        sample_rate=self.sample_rate,
+                        num_channels=1,
+                        context_id=context_id,
+                    )
+                elif kind == "word":
+                    word, offset = event.text, event.audio_offset / 10_000_000
+                    if not isinstance(word, str) or offset < 0:
+                        raise ValueError("Invalid synthesis word")
+                    if words and self._is_punctuation_only(word):
+                        words[-1] = (words[-1][0] + word, words[-1][1])
+                    elif word:
+                        words.append((word, self._cumulative_audio_offset + offset))
+                elif kind == "canceled":
+                    code = event.result.cancellation_details.error_code
+                    if code in {
+                        CancellationErrorCode.ConnectionFailure,
+                        CancellationErrorCode.ServiceTimeout,
+                        CancellationErrorCode.ServiceUnavailable,
+                        CancellationErrorCode.TooManyRequests,
+                    }:
+                        raise SynthesisFailure("Speech generation unavailable")
+                    raise RuntimeError("Speech synthesis rejected")
+                elif kind == "completed":
+                    if not audio:
+                        raise SynthesisFailure("Speech generation produced no audio")
+                    await self.add_word_timestamps(words, context_id)
+                    self._cumulative_audio_offset += event.result.audio_duration.total_seconds()
+                    complete = True
+                    break
+                if audio and len(words) > 1:
+                    await self.add_word_timestamps(words[:-1], context_id)
+                    words[:] = words[-1:]
         except (TimeoutError, SynthesisFailure) as error:
             retire()
             await self.push_error_frame(

@@ -65,6 +65,7 @@ tone = "Warm, calm and practical. Speak to an adult as a capable financial assis
 # Use an exact verified Azure deployment name for an approved model.
 model = "gpt-5.6-luna"
 reasoning_effort = "none"
+# Maximum inactivity during model generation; content and tool chunks refresh this deadline.
 model_timeout_seconds = 35
 max_completion_tokens = 1600
 max_tool_rounds = 6
@@ -78,10 +79,9 @@ stt_phrases = ["rupees", "paise", "lakh", "lakhs", "crore", "crores", "EMI", "eq
 tts_voice = "en-IN-Aarti:DragonHDLatestNeural"
 tts_locale = "en-IN"
 tts_gender = "Female"
-# Bound initial audio, stalled streaming, and each complete synthesis request separately.
+# Bound initial audio and gaps in audio progress; the overall call remains time-limited.
 tts_first_audio_seconds = 10
 tts_progress_seconds = 5
-tts_total_seconds = 45
 # VAD detects speech; the turn timeout separately gives the user time to continue.
 vad_confidence = 0.5
 # Brief onsets and a moderate volume gate retain short corrections and hesitations.

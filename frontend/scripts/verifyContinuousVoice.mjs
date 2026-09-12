@@ -359,6 +359,7 @@ async function run(values) {
       stage = 'pausedMultifactAndFiller';
       const pausedAt = Date.now();
       const beforePauses = (await api('/__test/voice')).metrics;
+      const revision = (await api('/api/session')).revision;
       await play([{ name: 'cash', gap: 1.2 }, { name: 'filler', gap: 2 }, { name: 'rent' }]);
       const afterPauses = (await api('/__test/voice')).metrics;
       assert.equal(afterPauses.model_requests ?? 0, beforePauses.model_requests ?? 0,
@@ -367,7 +368,7 @@ async function run(values) {
         'Assistant spoke during the paused thought');
       await facts(600000, values.phase !== 'demo');
       await spoken(pausedAt);
-      assert.equal((await api('/api/session')).revision, 1, 'Multi-fact capture was not atomic');
+      assert.equal((await api('/api/session')).revision, revision + 1, 'Multi-fact capture was not atomic');
       if (values.phase === 'demo') assert.equal((await api('/api/session')).facts.decision.responses
         .some(response => response.response === 'unavailable' && response.actionId.endsWith(':schedule.date')), false,
       'Unclear recognition was incorrectly treated as an unavailable answer');
@@ -413,6 +414,8 @@ async function run(values) {
     assert.equal((await api('/__test/voice')).metrics.model_requests, beforeThinking.metrics.model_requests);
     assert.equal((await api('/__test/voice')).waiting, false);
     await expect(page.locator('.voice-status')).toHaveText('Listening');
+    assert.ok(!(await page.locator('.conversation').innerText()).toLowerCase().includes('svgsvg'),
+      'Unexpected SVG text in the conversation');
     await checkpoint(stage);
 
     const exercised = await api('/__test/voice');

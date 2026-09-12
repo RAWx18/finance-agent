@@ -77,7 +77,9 @@ def test_native_services_and_hd_ssml(config):
     assert all(word not in ssml for word in ("mstts", "prosody", "emphasis", "express-as"))
     tts._settings.voice = "label'\"<&"
     assert ElementTree.fromstring(tts._construct_ssml(text))[0].attrib["name"] == "label'\"<&"
-    assert tts._stop_frame_timeout_s > config.voice.tts_total_seconds
+    assert tts._stop_frame_timeout_s > max(
+        config.voice.tts_first_audio_seconds, config.voice.tts_progress_seconds
+    )
 
 
 async def test_synthesis_scopes_callbacks_and_streams_native_audio(monkeypatch):

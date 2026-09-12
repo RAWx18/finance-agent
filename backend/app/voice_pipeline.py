@@ -107,6 +107,7 @@ class VoicePipeline:
         self.tool_rounds = 0
         self.model_requests = 0
         self.needs_tools = True
+        self.response: object | None = None
         self.waiting = False
         self.wait_reason: str | None = None
         self.state_sequence = 0
@@ -145,6 +146,7 @@ class VoicePipeline:
         self.revoked = True
         self.generation += 1
         self.initiative = None
+        self.response = None
         if self.opening != "delivered":
             self.opening = "preempted"
         if self.output is not None and self.started.is_set():
@@ -262,6 +264,7 @@ class VoicePipeline:
             remaining: int = 0
             stopped: bool = False
             failure: Exception | None = None
+            deadline: asyncio.Timeout | None = None
 
         completion: ContextVar[Completion | None] = ContextVar("voice_completion", default=None)
         calls: dict[str, Completion] = {}
@@ -487,6 +490,24 @@ class VoicePipeline:
                     async with stream:
                         async for chunk in stream:
                             for choice in chunk.choices or []:
+                                if (
+                                    choice.delta
+                                    and (
+                                        choice.delta.content
+                                        or any(
+                                            call.id
+                                            or call.function
+                                            and (call.function.name or call.function.arguments)
+                                            for call in choice.delta.tool_calls or []
+                                        )
+                                    )
+                                    and response.deadline is not None
+                                    and not response.deadline.expired()
+                                ):
+                                    response.deadline.reschedule(
+                                        asyncio.get_running_loop().time()
+                                        + voice.model_timeout_seconds
+                                    )
                                 if choice.delta and choice.delta.content:
                                     pipeline.mark("firstModelText")
                                     count("model_stream_text")
@@ -526,20 +547,21 @@ class VoicePipeline:
                     generation.reset(token)
 
             async def _process_context(self, context: LLMContext) -> None:
+                response = completion.get()
+                assert response is not None
                 try:
-                    async with asyncio.timeout(voice.model_timeout_seconds):
+                    async with asyncio.timeout(voice.model_timeout_seconds) as deadline:
+                        response.deadline = deadline
                         await super()._process_context(context)
                 except asyncio.CancelledError:
                     count("model_cancelled")
                     raise
                 except Exception as error:
                     count("model_failed")
-                    response = completion.get()
-                    if response is not None:
-                        response.failure = error
+                    response.failure = error
                     raise
-                response = completion.get()
-                assert response is not None
+                finally:
+                    response.deadline = None
                 response.complete = True
                 count("model_completed")
 
@@ -624,7 +646,7 @@ class VoicePipeline:
                                     and message.get("content") == RESUME
                                     or initiative is None
                                     and str(message.get("content", "")).startswith(
-                                        "The user chose Continue after a quiet pause."
+                                        "The user chose Continue after "
                                     )
                                 )
                             )
@@ -668,6 +690,7 @@ class VoicePipeline:
                     response = Completion(
                         pipeline.generation, pipeline.needs_tools, allow_tools=initiative is None
                     )
+                    pipeline.response = response
                     response_token = completion.set(response)
                     count("model_requests")
                     try:
@@ -713,7 +736,7 @@ class VoicePipeline:
                             failed()
                         elif empty:
                             self.create_task(
-                                user_idle(aggregators.user(), pipeline.generation),
+                                user_idle(aggregators.user(), pipeline.generation, response),
                                 "empty-response",
                             )
                         else:
@@ -1048,7 +1071,11 @@ class VoicePipeline:
         async def user_stopped(aggregator: Any, strategy: Any, message: Any) -> None:
             count("user_turns")
 
-        async def user_idle(aggregator: Any, expected_generation: int | None = None) -> None:
+        async def user_idle(
+            aggregator: Any,
+            expected_generation: int | None = None,
+            expected_response: Completion | None = None,
+        ) -> None:
             async with self.state_lock:
                 if (
                     self.revoked
@@ -1057,12 +1084,19 @@ class VoicePipeline:
                     or not self.client_ready.is_set()
                     or expected_generation is not None
                     and expected_generation != self.generation
+                    or expected_response is not None
+                    and expected_response is not self.response
                 ):
                     return
                 self.waiting = True
                 self.wait_reason = "response" if expected_generation is not None else None
                 self.state_sequence += 1
                 count("waiting")
+                if expected_response is not None:
+                    logger.warning(
+                        "Voice response paused source=GuardedLLM reason=empty generation=%s",
+                        self.generation,
+                    )
                 await self.interrupt()
                 await self.send_state()
 
@@ -1084,19 +1118,25 @@ class VoicePipeline:
                         failed()
                         return
                     self.waiting = False
-                    self.wait_reason = None
                     self.state_sequence += 1
                     self.initiative = "continue"
                     count("continued")
                     self.context.add_message(
                         {
                             "role": "developer",
-                            "content": "The user chose Continue after a quiet pause. "
+                            "content": "The user chose Continue after an unfinished response. "
+                            "Finish addressing the last completed user turn using retained "
+                            "dialogue and current canonical state. Distinguish confirmed saved "
+                            "changes from unfinished requests. Do not repeat tool actions, "
+                            "restart intake, or skip ahead to a different question."
+                            if self.wait_reason == "response"
+                            else "The user chose Continue after a quiet pause. "
                             "Keep the existing facts, briefly welcome them back, "
                             "and ask the current useful question. "
                             "Do not restart intake or claim any payments happened.",
                         }
                     )
+                    self.wait_reason = None
                     await self.send_state()
                     await self.worker.queue_frame(LLMRunFrame())
                 else:

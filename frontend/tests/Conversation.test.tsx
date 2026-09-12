@@ -730,6 +730,13 @@ describe('server-controlled conversation waiting', () => {
     expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
     expect(sdk.sendClientMessage).not.toHaveBeenCalled();
     expect(screen.queryByText(/check your connection/i)).not.toBeInTheDocument();
+    for (const name of ['Continue', 'End conversation']) {
+      const button = panel().getByRole('button', { name });
+      expect(button.textContent).toBe('');
+      expect(button.querySelectorAll('svg')).toHaveLength(1);
+      expect(button.querySelector('svg')!.namespaceURI).toBe('http://www.w3.org/2000/svg');
+    }
+    expect(view.container).not.toHaveTextContent('svgsvg');
     await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
     state('active', 3);
     expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);

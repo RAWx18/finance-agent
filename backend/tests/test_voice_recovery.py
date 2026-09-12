@@ -20,8 +20,6 @@ from pipecat.frames.frames import (
     TTSTextFrame,
 )
 
-from app.speech import SpeechSynthesis
-
 from .conftest import money
 from .test_voice_errors import text_reply
 from .test_voice_opening import render
@@ -39,7 +37,6 @@ pytestmark = pytest.mark.parametrize(
             "model_timeout_seconds": 0.3,
             "tts_first_audio_seconds": 0.15,
             "tts_progress_seconds": 0.15,
-            "tts_total_seconds": 0.5,
         }
     ],
     indirect=True,
@@ -85,6 +82,7 @@ async def test_response_failure_continues_once_without_replaying_writes(
             )
         assert body["tool_choice"] == "none"
         assert len(requests) == int(committed) + 2
+        assert "last completed user turn" in body["messages"][-1]["content"]
         assert not any(message.get("role") == "tool" for message in body["messages"])
         return text_reply("What payment would you like to review next?")
 
@@ -284,33 +282,6 @@ async def test_native_shutdown_deadline_retires_recognizer_first(voice):
             await asyncio.wait_for(asyncio.shield(voice.stt._native_stop), 2)
     await voice.stt._disconnect()
     assert voice.stt._speech_recognizer is None and voice.stt._audio_stream is None
-
-
-async def test_overall_synthesis_deadline_is_independent_of_audio_progress(voice, synthesis):
-    tts = next(item for item in voice.pipeline.processors if isinstance(item, SpeechSynthesis))
-    tts.config = tts.config.model_copy(update={"tts_total_seconds": 0.04})
-    voice.pipeline.client_ready.set()
-    voice.responses.put_nowait(text_reply("Hello, how can I help?"))
-    await voice.pipeline.worker.rtvi._call_event_handler("on_client_ready")
-    # The fixture's ready flag skips opening; an explicit initiative uses the same path.
-    voice.pipeline.initiative = "opening"
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    loop = asyncio.get_running_loop()
-    handles = []
-    for offset in (0, 0.01, 0.02, 0.03):
-        handles.append(
-            loop.call_later(
-                offset,
-                instance.synthesizing.connect.call_args.args[0],
-                SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)),
-            )
-        )
-    assert (await next_state(voice))["reason"] == "response"
-    for handle in handles:
-        handle.cancel()
-    assert voice.pipeline.metrics["synthesis_audio"] >= 1
-    instance.stop_speaking_async.assert_called_once()
 
 
 @pytest.mark.parametrize("status", [400, 401, 403, 404])
