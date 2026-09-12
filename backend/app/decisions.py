@@ -393,17 +393,19 @@ def assess(
             plan.first_gap and field == "target" and record.amount.amount_paise is not None
         )
         uncertain_receipt = record.kind == "income" and record.reliability == "uncertain"
+        unneeded_receipt = (
+            record.kind == "income"
+            and facts.decision.intent == "specificDecision"
+            and plan.closing_paise is not None
+            and plan.first_gap is None
+            and not plan.reserve_shortfall_paise
+        )
         immediate = (
             (day is None or day <= deadline)
             and not minimum_short
             and not uncertain_receipt
             and (required or record.kind == "income" or record.id in focus)
-            and not (
-                record.kind == "income"
-                and facts.decision.intent == "specificDecision"
-                and plan.first_gap is None
-                and not plan.reserve_shortfall_paise
-            )
+            and not unneeded_receipt
         )
         action = question(
             f"{record.id}:{field}",
@@ -435,12 +437,13 @@ def assess(
             else "This qualifies later spending, not the earlier required deadline.",
             day=day,
             immediate=immediate,
-            ask=not uncertain_receipt,
+            ask=not uncertain_receipt and not unneeded_receipt,
         )
         if (
             not immediate
             and not minimum_short
             and not uncertain_receipt
+            and not unneeded_receipt
             and (facts.decision.intent == "plan30Days" or required or record.id in focus)
         ):
             deferred.append(action)
@@ -513,20 +516,34 @@ def assess(
                 assessment.actions.append(action)
                 followups.append(action)
         elif selected.status == "estimate" or record.amount.status == "estimate":
+            field = (
+                "target"
+                if record.target is not None and selected.status == "estimate"
+                else "amount"
+            )
+            selected = selected if field == "target" else record.amount
+            description = (
+                "intended payment"
+                if field == "target"
+                else "required payment"
+                if record.kind == "debt"
+                else "amount"
+            )
             exposed = bool(
                 plan.first_gap and any(today <= event.date <= deadline for event in events)
             )
             question(
                 f"{record.id}:estimate",
-                "amount",
+                field,
                 f"{record.label} is estimated at {rupees(selected.amount_paise)} on "
                 f"{events[0].date}. Could you hold off before committing, or confirm a smaller "
                 "planned amount? The estimate stays in the plan until you report a decision."
                 if exposed and record.kind == "optional"
-                else f"Can you confirm {record.label}'s estimated amount of "
+                else f"Can you confirm {record.label}'s estimated {description} of "
                 f"{rupees(selected.amount_paise)} before its exposed deadline?"
                 if exposed
-                else f"{record.label} uses a reported estimate of {rupees(selected.amount_paise)}.",
+                else f"{record.label} uses a reported {description} estimate of "
+                f"{rupees(selected.amount_paise)}.",
                 [record.id],
                 "This estimate contributes to the imminent shortfall; a confirmed amount or "
                 "a controllable spending decision can change affordability."
@@ -1179,9 +1196,15 @@ def assess(
     )
     incomplete.extend(
         f"{records[item.record_id].label} "
-        f"({'opening cash basis' if item.code == 'pastIncome' else 'recurrence dates'})"
+        + (
+            "(opening cash basis)"
+            if item.code == "pastIncome"
+            else "(estimated date)"
+            if item.code == "uncertainDate"
+            else "(recurrence dates)"
+        )
         for item in plan.issues
-        if item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome"}
+        if item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome", "uncertainDate"}
         and item.record_id in records
     )
     if plan.first_gap:
@@ -1292,7 +1315,7 @@ def assess(
     if facts.decision.ambiguous_record_ids:
         conditions += " The correction target remains unresolved; no candidate was changed."
     if any(
-        item.field in {"amount", "opening"} and item.kind == "uncertain"
+        item.field in {"amount", "target", "opening"} and item.kind == "uncertain"
         for item in assessment.uncertainties
     ):
         conditions += " Reported estimates qualify the result; no error range is assumed."

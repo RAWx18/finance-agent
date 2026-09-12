@@ -95,7 +95,18 @@ unknown money is {amount:null,status:'unknown'}, unknown date is null. Estimates
 For a new partial record, omit an unmentioned amount or date and let the application retain it as
 missing. Supply explicit unknown money or a null date only when the user actually says it is unknown
 or unavailable: that also records their answer so the application will not ask it again unchanged.
+Garbled or unrecognized speech is not an unavailable answer. Omit the unclear field from
+update_facts, retain the clear facts, and ask only that clarification before broader intake.
 Money inputs, including competing reports and resolutions, are decimal rupee strings, not paise.
+Income may come from salary, freelance work, business, gigs, bonuses or several sources. Record
+usable net receipts, not gross earnings or business turnover as spendable funds. If a source amount
+is in another currency, ask for the expected net INR available to use; never copy foreign-currency
+digits into a rupee amount or invent an exchange rate. Keep the amount unknown until supplied.
+A monthly living-cost total is not automatically one payment on an invented date. Clarify the
+unpaid amounts and when money is needed. Recurrence repeats the same amount throughout this window;
+use separately reported one-off receipts/payments for differing amounts or finite schedules.
+Ask whether a component is already included in a household total or card payment before counting
+both. Paid items already included in starting cash must not be counted again.
 For approximate dates use schedule.certainty:'estimate'; reliable income with an estimated amount
 or date is not assured cash. Never change certainty merely to make a calculation possible.
 Use exact existing IDs for corrections/deletions; omit IDs for new records. Preserve minimum
@@ -294,7 +305,8 @@ TOOL_DEFINITIONS: tuple[tuple[str, type[Model], str], ...] = (
         "update_facts",
         FactsPatch,
         "Save only explicitly supplied facts from a final turn. "
-        "Omit unchanged fields; null dates or unknown money express unknowns. "
+        "Omit unchanged, unmentioned or unclear fields. Use null dates or unknown money only "
+        "when the user explicitly says they do not know; garbled speech needs clarification. "
         "Omit id for new records, use existing id for corrections, delete=true to delete. "
         "Use distinct=true only for an explicitly separate new item with a matching label. "
         "Conflicts retain competing amount/date reports; nested record conflicts support new "

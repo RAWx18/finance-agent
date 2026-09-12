@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import sqlite3
+from datetime import timedelta
 from uuid import uuid4, uuid5
 
 import pytest
@@ -44,6 +45,54 @@ async def test_omitted_unknowns_remain_questions(store, schedule):
         f"clarify:{identity}:amount",
         f"clarify:{identity}:schedule.date",
     }
+
+
+async def test_clarification_then_correction_keeps_current_thirty_day_outcome(store):
+    await store.create("owner")
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    result = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 0,
+            "opening": money("6000"),
+            "records": [{"kind": "essential", "label": "Rent", "amount": money("2000")}],
+        },
+        "unclear-date",
+    )
+    assert "code" not in result
+    saved = await store.get("owner")
+    rent = saved.facts.records[0]
+    assert saved.facts.decision.responses == []
+    assert any(
+        question.action_id == f"clarify:{rent.id}:schedule.date"
+        for question in saved.workspace.questions
+    )
+    date = (saved.anchor_date + timedelta(days=3)).isoformat()
+    await tools.update_facts(
+        {
+            "expectedRevision": saved.revision,
+            "records": [{"id": rent.id, "schedule": {"date": date, "certainty": "exact"}}],
+            "coverage": {
+                "income": "none",
+                "essential": "reviewed",
+                "debt": "none",
+                "optional": "none",
+            },
+        },
+        "clarified-date",
+    )
+    saved = await store.get("owner")
+    assert saved.plan.closing_paise == 400000 and not saved.plan.projection_partial
+    await tools.update_facts(
+        {"expectedRevision": saved.revision, "opening": money("6500")}, "cash-correction"
+    )
+    saved = await store.get("owner")
+    review = await tools.review_plan({"expectedRevision": saved.revision})
+    assert saved.plan.closing_paise == 450000 and len(saved.facts.records) == 1
+    assert saved.facts.records[0].id == rent.id
+    assert saved.plan.decision_assessment.outcome.readiness == "ready"
+    assert review["outcome"]["branch"] == "fits"
+    assert review["snapshot"] == saved.model_dump(mode="json", by_alias=True)
 
 
 async def test_explicit_unknowns_save_all_matching_answers_in_one_revision(store):

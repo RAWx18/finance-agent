@@ -507,6 +507,7 @@ def evidence(
         "preview.plan" if prefix else "accepted.plan" if snapshot.accepted else "plan"
     )
     records = {record.id: record for record in facts.records}
+    events = {event.id: event for event in plan.events}
     contributions = [
         Contribution(
             id=f"{prefix}opening",
@@ -691,7 +692,11 @@ def evidence(
         estimated = estimated or any(
             item.record_id is not None
             and (
-                (records[item.record_id].target or records[item.record_id].amount).status
+                (
+                    records[item.record_id].amount
+                    if item.event_id and events[item.event_id].amount_basis == "requiredOnly"
+                    else records[item.record_id].target or records[item.record_id].amount
+                ).status
                 == "estimate"
                 or records[item.record_id].schedule.certainty == "estimate"
             )
