@@ -23,6 +23,7 @@ from .test_workspace import result, update
 def test_same_day_risk_keeps_conservative_money_and_explains_remaining_gap(
     salary, remaining, closing, automatic
 ):
+    """Verify same-day guidance distinguishes receipt timing exposure from residual funding gaps."""
     plan = project(
         facts(
             "0",
@@ -73,6 +74,7 @@ def test_same_day_risk_keeps_conservative_money_and_explains_remaining_gap(
 def test_no_timing_risk_without_counted_same_day_receipt_and_exposure(
     day, reliability, opening, first_gap
 ):
+    """Verify timing risks require counted same-day receipts and exposed outflows."""
     plan = project(
         facts(
             opening,
@@ -93,6 +95,7 @@ def test_no_timing_risk_without_counted_same_day_receipt_and_exposure(
 
 
 async def test_read_only_timing_guidance_can_be_deferred_without_confirming_order(store):
+    """Verify deferring receipt guidance preserves timing risk without confirming payment order."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -127,6 +130,7 @@ async def test_read_only_timing_guidance_can_be_deferred_without_confirming_orde
 
 
 async def test_named_undated_exclusion_is_replaced_by_real_dated_gap(store):
+    """Verify supplying an excluded obligation's date replaces its qualification with a real gap."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -160,6 +164,7 @@ async def test_named_undated_exclusion_is_replaced_by_real_dated_gap(store):
 
 
 async def test_focus_and_current_correction_remain_visible_with_first_exposed_need(store):
+    """Verify timeline priority retains the first exposed need, decision focus, and corrected record."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -208,6 +213,7 @@ async def test_focus_and_current_correction_remain_visible_with_first_exposed_ne
 
 
 def test_positive_closing_does_not_hide_earlier_need_or_assume_grocery_creditor():
+    """Verify positive closing cash does not hide earlier grocery needs or invent a creditor."""
     plan = project(
         facts(
             "5000",
@@ -231,6 +237,7 @@ def test_positive_closing_does_not_hide_earlier_need_or_assume_grocery_creditor(
 
 @pytest.mark.parametrize("automatic", [False, True])
 async def test_residual_support_deferral_never_turns_into_a_timing_question(store, automatic):
+    """Verify deferring residual-gap support preserves the gap without reasking receipt timing."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -256,7 +263,63 @@ async def test_residual_support_deferral_never_turns_into_a_timing_question(stor
     assert deferred.facts.coverage == baseline.facts.coverage
 
 
+@pytest.mark.parametrize("purchase_day", ["2026-09-14", "2026-09-15"])
+async def test_timing_risk_keeps_a_cut_that_funds_later_essentials_after_deferrals(
+    store, purchase_day
+):
+    """Verify effective optional cuts remain available after timing and support deferrals."""
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "0",
+                [
+                    record("rent", "essential", "1000", "2026-09-14"),
+                    record("salary", "income", "10000", "2026-09-14"),
+                    record("purchase", "optional", "6000", purchase_day),
+                    record("food", "essential", "5000", "2026-09-16"),
+                ],
+            )
+        ),
+    )
+    assert next_action(baseline.plan).id == f"preview:purchase:{purchase_day}"
+    assert baseline.plan.closing_paise == -200000
+    choice = next(
+        item for item in baseline.plan.decision_assessment.choices if item.kind == "reduceOptional"
+    )
+    assert choice.metrics.closing_paise == 400000
+    assert choice.metrics.first_gap.amount_paise == 100000
+    current = baseline
+    for action_id in ("clarify:schedule:sameDayTiming:2026-09-14", "contact:food:2026-09-16"):
+        current = await store.command("owner", response_command(current, "unavailable", action_id))
+        assert next_action(current.plan).id == f"preview:purchase:{purchase_day}"
+        assert current.facts.records == baseline.facts.records
+        assert current.accepted is None and current.preview is None
+    declined = await store.command("owner", response_command(current, "declined"))
+    assert next_action(declined.plan).kind == "reviewOutcome"
+    assert declined.facts.records == baseline.facts.records
+
+
+def test_optional_cut_after_first_funding_gap_does_not_displace_earlier_help():
+    """Verify a late optional cut does not displace earlier receipt confirmation."""
+    plan = project(
+        facts(
+            "0",
+            [
+                record("rent", "essential", "6000", "2026-09-14"),
+                record("salary", "income", "10000", "2026-09-14"),
+                record("food", "essential", "5000", "2026-09-16"),
+                record("trip", "optional", "1500", "2026-09-17"),
+            ],
+        )
+    )
+    assert next_action(plan).kind == "confirmReceipt"
+    assert plan.closing_paise == -250000
+
+
 def test_timing_only_does_not_push_an_optional_cut_but_later_funding_need_is_named():
+    """Verify timing-only exposure avoids forced cuts while later essential funding needs stay named."""
     data = facts(
         "0",
         [
@@ -283,6 +346,7 @@ def test_timing_only_does_not_push_an_optional_cut_but_later_funding_need_is_nam
 
 
 async def test_qualifications_keep_minimum_estimate_and_result_sources_separate(store):
+    """Verify result qualifications distinguish card minimums, estimates, and excluded obligations."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -332,6 +396,7 @@ async def test_qualifications_keep_minimum_estimate_and_result_sources_separate(
 
 
 async def test_qualifications_follow_exact_gap_witness_and_conditional_branch(store):
+    """Verify qualifications follow the exact gap witness and conditional income branch."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -371,6 +436,7 @@ async def test_qualifications_follow_exact_gap_witness_and_conditional_branch(st
 
 
 async def test_exposed_recurrence_shows_its_actual_occurrence_not_first_funded_one(store):
+    """Verify recurring timeline rows show the exposed occurrence rather than the first funded one."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -403,6 +469,7 @@ async def test_exposed_recurrence_shows_its_actual_occurrence_not_first_funded_o
 
 
 async def test_funded_recurring_card_moves_to_today_without_claiming_earlier_payment(store):
+    """Verify funded recurring timeline cards advance to today without changing prior projections."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",

@@ -36,6 +36,7 @@ from .models import (
 
 
 def paise(value: str, config: Config) -> int:
+    """Convert a rupee amount to paise within the configured per-amount limit."""
     whole, _, fraction = value.partition(".")
     amount = int(whole) * 100 + int(fraction.ljust(2, "0"))
     if amount > config.max_money_paise:
@@ -44,6 +45,7 @@ def paise(value: str, config: Config) -> int:
 
 
 def money(value: MoneyInput, config: Config) -> Money:
+    """Normalize money to paise while retaining certainty and currency-conversion terms."""
     amount, status = money_value(value, config.max_money_paise)
     return Money(
         amount_paise=amount,
@@ -53,6 +55,7 @@ def money(value: MoneyInput, config: Config) -> Money:
 
 
 def normalize(source: FactsInput, config: Config) -> Facts:
+    """Validate financial input relationships and normalize stored money values."""
     if len(source.records) > config.max_records:
         raise ValueError("Too many financial records")
     if len({record.id for record in source.records}) != len(source.records):
@@ -112,6 +115,7 @@ def normalize(source: FactsInput, config: Config) -> Facts:
 
 
 def debt_balance_conflict(record: Record) -> bool:
+    """Detect a reported zero debt balance that conflicts with a nonzero required payment."""
     return (
         record.kind == "debt"
         and record.outstanding is not None
@@ -128,6 +132,7 @@ def debt_balance_conflict(record: Record) -> bool:
 
 
 def dependency_key(record: Record, event: Event) -> str:
+    """Identify the obligation terms that a proposal or provider report depends on."""
     return hashlib.sha256(
         (
             record.model_dump_json(exclude={"label", "outstanding"})
@@ -140,6 +145,7 @@ def dependency_key(record: Record, event: Event) -> str:
 def adjustment_options(
     facts: Facts, events: list[Event], anchor: date, end: date, today: date
 ) -> list[AdjustmentOption]:
+    """Find eligible future spending reductions and card minimum-payment comparisons."""
     records = {record.id: record for record in facts.records}
     options = []
     for event in events:
@@ -194,6 +200,7 @@ def adjustment_options(
 def resolve_adjustments(
     inputs: list[AdjustmentInput], options: list[AdjustmentOption], config: Config
 ) -> list[Adjustment]:
+    """Validate requested reductions against eligible occurrences and payment minimums."""
     if not inputs or len(inputs) > config.max_occurrences:
         raise ValueError("Provide between one and max_occurrences adjustments")
     if len({item.event_id for item in inputs}) != len(inputs):
@@ -219,6 +226,7 @@ def calculate(
     adjustments: list[Adjustment] | None = None,
     today: date | None = None,
 ) -> Plan:
+    """Project cashflow, conditional scenarios, and decisions from reported financial facts."""
     # Source terms are authoritative, including after persisted-cache or in-memory corrections.
     normalized = normalize(facts_input(facts), config)
     facts.records = normalized.records
@@ -270,6 +278,7 @@ def calculate(
     def issue(
         code: str, message: str, record: Record | None = None, day: date | None = None
     ) -> None:
+        """Record a projection qualification for an optional record and date."""
         issues.append(
             Issue(code=code, message=message, record_id=record.id if record else None, date=day)
         )
@@ -380,6 +389,7 @@ def calculate(
         def active(
             day: date, index: int, count: int | None = count, end_date: date | None = end_date
         ) -> bool:
+            """Check whether an occurrence is within its schedule's count and end date."""
             return (count is None or index < count) and (end_date is None or day <= end_date)
 
         if pattern is not None:
@@ -632,7 +642,11 @@ def calculate(
         computable = (
             record.schedule.recurrence in {"once", "monthly"}
             and not record.schedule.amounts
-            and record.schedule.count is None
+            and (
+                record.schedule.count is None
+                or record.schedule.recurrence == "once"
+                and record.schedule.count == 1
+            )
         )
         assumption = (
             f"One monthly payment within this {config.horizon_days}-day period; unpaid status "
@@ -910,12 +924,15 @@ def reconcile(
 
 
 def export_text(snapshot: Snapshot) -> str:
+    """Render a cashflow review with decisions, supporting facts, and qualified scenarios."""
     def rupees(amount: int | None) -> str:
+        """Format a paise amount as INR text, preserving unknown amounts."""
         if amount is None:
             return "unknown"
         return f"INR {'-' if amount < 0 else ''}{abs(amount) // 100}.{abs(amount) % 100:02}"
 
     def source_details(source: MoneyInput) -> str:
+        """Describe reported money and any conversion rate, fee, and certainty terms."""
         conversion = source.conversion
         if conversion is None:
             return f"INR {source.amount or 'unknown'} ({source.status}, reported)"
@@ -928,6 +945,7 @@ def export_text(snapshot: Snapshot) -> str:
         )
 
     def amount_details(record: Record) -> str:
+        """Describe a record's planned amounts, required payments, and outstanding balance."""
         selected = record.target if record.target is not None else record.amount
         text = f"{rupees(selected.amount_paise)} ({selected.status}, reported)"
         if record.schedule.amounts:

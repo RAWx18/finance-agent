@@ -18,6 +18,7 @@ from .test_finance import project
 
 
 def scheduled(kind="income", recurrence="weekly", amount="1000", **schedule):
+    """Build a recurring record with overridable schedule terms."""
     return record(
         "item",
         kind,
@@ -32,6 +33,7 @@ def scheduled(kind="income", recurrence="weekly", amount="1000", **schedule):
 
 
 def variable(kind="income", amounts=None, **schedule):
+    """Build a recurring record with explicit per-occurrence amounts and an unknown scalar."""
     return scheduled(
         kind,
         amount=None,
@@ -53,12 +55,14 @@ def variable(kind="income", amounts=None, **schedule):
     ],
 )
 def test_finite_weekly_receipts_stop_at_either_bound(schedule, expected):
+    """Verify finite weekly receipts stop at the earliest count or end-date bound."""
     plan = project(facts("0", [scheduled(**schedule)]))
     assert [event.date.isoformat() for event in plan.events] == expected
     assert plan.reliable_income_paise == 100000 * len(expected)
 
 
 def test_variable_occurrences_are_not_scalar_duplicates():
+    """Verify variable schedules preserve each occurrence's amount and index in complete projections."""
     plan = project(facts("0", [variable()]))
     assert [event.amount_paise for event in plan.events] == [100000, 150000, 80000]
     assert [event.schedule_index for event in plan.events] == [0, 1, 2]
@@ -69,6 +73,7 @@ def test_variable_occurrences_are_not_scalar_duplicates():
 
 @pytest.mark.parametrize("kind", ["income", "essential", "optional", "debt"])
 def test_variable_amount_status_is_per_occurrence(kind, config):
+    """Verify each variable occurrence retains its own exact, estimated, or unknown amount status."""
     item = variable(kind, [money("100"), money("200", "estimate"), money(None, "unknown")])
     data = facts("0", [item])
     plan = project(data)
@@ -99,6 +104,7 @@ def test_variable_amount_status_is_per_occurrence(kind, config):
 
 
 def test_variable_foreign_receipts_convert_each_currency():
+    """Verify variable foreign receipts convert each occurrence using its own currency metadata."""
     plan = project(facts("0", [variable(amounts=[foreign(), foreign("100", "EUR", "90", "0")])]))
     assert plan.reliable_income_paise == 8700000
     assert [event.source.conversion.currency for event in plan.events] == ["USD", "EUR"]
@@ -106,6 +112,7 @@ def test_variable_foreign_receipts_convert_each_currency():
 
 @pytest.mark.parametrize("kind", ["income", "debt"])
 def test_overdue_sequence_index_does_not_shift(kind):
+    """Verify overdue and omitted past occurrences do not shift later sequence amounts or indexes."""
     item = variable(kind, date="2026-09-01")
     plan = project(facts("0", [item]), anchor=date(2026, 9, 12))
     if kind == "debt":
@@ -119,6 +126,7 @@ def test_overdue_sequence_index_does_not_shift(kind):
 
 
 def test_invalid_month_day_remains_unresolved_without_shifting_sequence():
+    """Verify invalid monthly dates stay unresolved without shifting later occurrence amounts."""
     item = variable(date="2028-01-31", recurrence="monthly")
     plan = project(facts("0", [item]), anchor=date(2028, 2, 1))
     assert plan.events == []
@@ -145,11 +153,13 @@ def test_invalid_month_day_remains_unresolved_without_shifting_sequence():
     ],
 )
 def test_invalid_schedule_combinations(schedule):
+    """Verify invalid count, end-date, recurrence, and amount-sequence combinations are rejected."""
     with pytest.raises(ValueError):
         project(facts("0", [scheduled(**schedule)]))
 
 
 def test_patch_omitted_null_and_empty_semantics():
+    """Verify schedule patches distinguish omitted fields, nullable bounds, and empty amount lists."""
     assert SchedulePatch().model_dump(exclude_unset=True) == {}
     patch = SchedulePatch.model_validate({"endDate": None, "count": None, "amounts": []})
     assert patch.model_dump(exclude_unset=True) == {"end_date": None, "count": None, "amounts": []}
@@ -159,6 +169,7 @@ def test_patch_omitted_null_and_empty_semantics():
 
 @pytest.mark.parametrize("kind", ["income", "debt"])
 def test_budget_kind_guards(kind):
+    """Verify monthly-budget schedules reject income and debt categories."""
     with pytest.raises(ValueError):
         project(facts("0", [scheduled(kind, "monthlyBudget")]))
 
@@ -174,12 +185,14 @@ def test_budget_kind_guards(kind):
     ],
 )
 def test_ambiguous_or_incompatible_amounts_are_rejected(item):
+    """Verify ambiguous scalar, variable, budget, target, and currency combinations are rejected."""
     with pytest.raises(ValueError):
         project(facts("0", [item]))
 
 
 @pytest.mark.parametrize("year,month", [(2026, 9), (2026, 10), (2026, 2), (2028, 2)])
 def test_monthly_budget_totals_use_actual_calendar_month(year, month):
+    """Verify monthly budgets distribute exact totals across the actual calendar month's days."""
     start = date(year, month, 1)
     days = calendar.monthrange(year, month)[1]
     item = scheduled("essential", "monthlyBudget", amount="3000", date=str(start), count=1)
@@ -200,6 +213,7 @@ def test_monthly_budget_totals_use_actual_calendar_month(year, month):
 
 
 def test_budget_clips_without_redistribution_or_overdue_month():
+    """Verify clipped monthly budgets retain daily allocations without overdue carry-forward."""
     item = scheduled(
         "essential",
         "monthlyBudget",
@@ -219,6 +233,7 @@ def test_budget_clips_without_redistribution_or_overdue_month():
 
 @pytest.mark.parametrize("start", ["2026-09-01", "2026-09-12"])
 def test_budget_early_gap_survives_positive_closing(start):
+    """Verify monthly budgets expose early gaps despite positive closing cash without inventing bills."""
     item = scheduled("essential", "monthlyBudget", amount="3000", date=start)
     plan = project(
         facts("500", [item, record("pay", "income", "3000", "2026-09-20")]),
@@ -239,6 +254,7 @@ def test_budget_early_gap_survives_positive_closing(start):
 
 
 def test_missing_budget_start_and_amount_remain_useful_questions():
+    """Verify missing monthly-budget starts and amounts produce useful clarification questions."""
     item = scheduled("essential", "monthlyBudget", amount=None, date=None)
     item["amount"] = money(None, "unknown")
     plan = project(facts("0", [item]))
@@ -250,6 +266,7 @@ def test_missing_budget_start_and_amount_remain_useful_questions():
 @pytest.mark.parametrize("start", ["2026-10-10", "2026-10-11"])
 @pytest.mark.parametrize("certainty", ["exact", "estimate"])
 def test_budget_start_certainty_qualifies_even_without_occurrences(start, certainty):
+    """Verify estimated budget starts qualify outcomes even when no occurrences enter the horizon."""
     item = scheduled("essential", "monthlyBudget", amount="3100", date=start, certainty=certainty)
     plan = project(facts("100", [item]))
     outcome = plan.decision_assessment.outcome
@@ -264,7 +281,8 @@ def test_budget_start_certainty_qualifies_even_without_occurrences(start, certai
         issue = next(issue for issue in plan.issues if issue.code == "uncertainDate")
         assert issue.record_id == "item" and "budget start is approximate" in issue.message
         assert "item:uncertainDate" in outcome.uncertain
-        assert "full-period affordability cannot yet be established" in outcome.summary
+        assert "Check item (estimated date) before relying on that balance" in outcome.summary
+        assert outcome.readiness == "qualified"
     else:
         assert not any(issue.code == "uncertainDate" for issue in plan.issues)
     if certainty == "estimate" or plan.events:
@@ -275,6 +293,7 @@ def test_budget_start_certainty_qualifies_even_without_occurrences(start, certai
 
 
 async def test_voice_store_budget_variable_corrections_and_sse(store):
+    """Verify voice schedule corrections persist, publish snapshots, and reject budget payee reports."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     stream = await store.subscribe("owner")
@@ -370,6 +389,7 @@ async def test_voice_store_budget_variable_corrections_and_sse(store):
 
 
 def test_variable_whole_currency_entries_and_clearing_bounds(config):
+    """Verify variable currency entries retain metadata and clearing a sequence requires a scalar."""
     saved = normalize(
         FactsInput.model_validate(
             facts(
@@ -433,6 +453,7 @@ def test_variable_whole_currency_entries_and_clearing_bounds(config):
     ],
 )
 def test_merge_preserves_undated_finite_and_variable_terms(config, reverse, terms):
+    """Verify record merges preserve finite bounds and variable amounts while supplying a known date."""
     source = variable(date=None, **terms) if "amounts" in terms else scheduled(date=None, **terms)
     target = scheduled() | {"id": "dated"}
     if "amounts" in terms:
@@ -487,6 +508,7 @@ def test_merge_preserves_undated_finite_and_variable_terms(config, reverse, term
 def test_merge_rejects_conflicting_schedule_terms_in_either_direction(
     config, reverse, source, target
 ):
+    """Verify conflicting schedule merges fail in either direction without mutating source facts."""
     saved = normalize(
         FactsInput.model_validate(facts("0", [source, target | {"id": "dated"}])), config
     )
@@ -520,6 +542,7 @@ def test_merge_rejects_conflicting_schedule_terms_in_either_direction(
     ],
 )
 def test_sequence_replacement_never_inherits_currency_by_index(config, amounts, expected):
+    """Verify replacement sequences use explicit currency metadata rather than inheriting by index."""
     saved = normalize(
         FactsInput.model_validate(
             facts("0", [variable(amounts=[foreign(), foreign("100", "EUR", "90", "0")])])
@@ -555,6 +578,7 @@ def test_sequence_replacement_never_inherits_currency_by_index(config, amounts, 
     ],
 )
 async def test_sequence_replacement_requires_explicit_source_metadata_atomically(store, amounts):
+    """Verify ambiguous replacement currency metadata rejects the complete update atomically."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     item = variable(amounts=[foreign(), foreign("100", "EUR", "90", "0")])
@@ -582,6 +606,7 @@ async def test_sequence_replacement_requires_explicit_source_metadata_atomically
 
 @pytest.mark.parametrize("recurrence,days", [("daily", [12, 13, 14]), ("fortnightly", [12, 26])])
 def test_other_finite_cadences(recurrence, days):
+    """Verify finite daily and fortnightly schedules preserve expected dates and sequence indexes."""
     plan = project(facts("0", [scheduled(recurrence=recurrence, count=len(days))]))
     assert [event.date.day for event in plan.events] == days
     assert [event.schedule_index for event in plan.events] == list(range(len(days)))

@@ -35,6 +35,7 @@ UNAVAILABLE_ACTIONS = frozenset(
 
 
 def rupees(amount: int | None) -> str:
+    """Format a paise amount as INR text, preserving unknown amounts."""
     if amount is None:
         return "unknown"
     return f"INR {'-' if amount < 0 else ''}{abs(amount) // 100}.{abs(amount) % 100:02}"
@@ -219,6 +220,7 @@ def assess(
     *,
     today: date,
 ) -> DecisionAssessment:
+    """Assess funding risks, qualified choices, and the next actionable decision."""
     assessment = DecisionAssessment()
     records = {record.id: record for record in facts.records}
     timing_risks = {item.date: item for item in plan.timing_risks}
@@ -260,6 +262,7 @@ def assess(
     deferred: list[Action] = []
 
     def semantic(action: Action) -> tuple[date, bool, list[tuple[str, str]]]:
+        """Rank actions by deadline, decision focus, and the affected records."""
         return (
             action.before_date or date.max,
             not bool(focus & set(action.record_ids)),
@@ -270,6 +273,7 @@ def assess(
         )
 
     def labels(identities: list[str]) -> str:
+        """Summarize record labels, abbreviating groups larger than two items."""
         names = [records[identity].label for identity in identities]
         return ", ".join(names[:2]) + (
             f" and {len(names) - 2} other items" if len(names) > 2 else ""
@@ -287,6 +291,7 @@ def assess(
         immediate: bool = False,
         ask: bool = True,
     ) -> Action:
+        """Record an uncertainty and optionally offer its clarification as an action."""
         assessment.uncertainties.append(
             Uncertainty(
                 id=identity,
@@ -478,6 +483,10 @@ def assess(
                 else f"When should the evenly spread monthly budget for {record.label} start?"
                 if record.schedule.recurrence == "monthlyBudget"
                 else f"Do you know the usual day of the month for {record.label}?"
+                if record.schedule.recurrence == "monthly"
+                and record.schedule.count is None
+                and not record.schedule.amounts
+                else f"When is the first of those {record.label} payments due?"
                 if record.schedule.recurrence == "monthly"
                 else f"When is {record.label} due?"
             )
@@ -1060,13 +1069,25 @@ def assess(
                 comparison_id=comparison.id,
             )
         )
+    funding_risks = [
+        item
+        for item in assessment.consequences
+        if item.kind == "cashExposure"
+        and item.date is not None
+        and (item.date not in timing_risks or timing_risks[item.date].remaining_gap_paise)
+    ]
     for option in options:
         impact = impacts[option.event_id]
         first = plan.first_gap is not None and impact.first_gap != plan.first_gap
         peak = impact.peak_gap_paise != plan.peak_gap_paise
         useful = (
-            first
-            and not (deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0)
+            bool(
+                funding_risks
+                and funding_risks[0].date is not None
+                and option.date <= funding_risks[0].date
+            )
+            if deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0
+            else first
             if plan.first_gap
             else impact.reserve_shortfall_paise != plan.reserve_shortfall_paise
         )
@@ -1381,13 +1402,6 @@ def assess(
         if item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome", "uncertainDate"}
         and item.record_id in records
     )
-    funding_risks = [
-        item
-        for item in assessment.consequences
-        if item.kind == "cashExposure"
-        and item.date is not None
-        and (item.date not in timing_risks or timing_risks[item.date].remaining_gap_paise)
-    ]
     if plan.first_gap:
         exposed_ids = list(
             dict.fromkeys(event.record_id for event in dues if event.date == plan.first_gap.date)
