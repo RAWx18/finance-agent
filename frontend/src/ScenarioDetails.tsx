@@ -3,7 +3,7 @@
 import { useId, useState } from 'react';
 import type { Ref } from 'react';
 import type { Command, Plan, Scenario, Snapshot } from './api';
-import { Details } from './Dialog';
+import { Details, Dialog } from './Dialog';
 import { dateLabel, money } from './money';
 import { PagedList } from './PagedList';
 
@@ -18,7 +18,6 @@ export const actionLabels: Record<string, string> = {
   previewChange: 'Compare a change', followUp: 'Follow up', seekSupport: 'Seek support',
   resolveGroup: 'Review shared commitments', confirmReceipt: 'Confirm a receipt', reconcileStatus: 'Check payment status',
 };
-const recurrence = { once: 'One time', weekly: 'Every week', fortnightly: 'Every two weeks', monthly: 'Every month' };
 
 export function ActionDetails({ action, plan, facts }: { action: Action; plan: Plan; facts: Snapshot['facts'] }) {
   const choice = plan.decisionAssessment?.choices?.find(item => item.id === action.choiceId);
@@ -45,110 +44,79 @@ export function ActionDetails({ action, plan, facts }: { action: Action; plan: P
   </>;
 }
 
-export function NextSteps({ plan, facts }: { plan: Plan; facts: Snapshot['facts'] }) {
-  const assessment = plan.decisionAssessment;
-  const actions = assessment?.actions ?? [];
-  const selected = actions.find(action => action.id === assessment?.nextActionId);
-  const ordered = selected ? [selected, ...actions.filter(action => action.id !== selected.id)] : actions;
-  const meaningful = ordered.filter((action, index) => action.question.trim() && ordered.findIndex(item => item.question === action.question) === index);
-  if (!meaningful.length) return null;
-  return <section className="plan-actions" aria-label="Next steps"><h3>Next steps</h3><ol>
-    {meaningful.slice(0, 3).map(action => <li key={action.id}><h4>{actionLabels[action.kind] ?? 'Next step'}</h4><ActionDetails action={action} plan={plan} facts={facts} /></li>)}
-  </ol></section>;
-}
-
-export function BudgetDetails({ plan, facts }: { plan: Plan; facts: Snapshot['facts'] }) {
+export function Assumptions({ scenario, proposed = false }: { scenario: Scenario; proposed?: boolean }) {
   return <>
-    {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p className="hint">Some figures need checking. These balances are not available to spend.</p>}
-    {plan.budgetBasis.unresolvedAmounts.length > 0 && <Details label="Missing amounts or dates">
-      <PagedList label="Unresolved amounts and dates" className="saved-items">
-        {plan.budgetBasis.unresolvedAmounts.map((item, index) => <li key={`${item.recordId}:${item.reason}:${index}`}>
-          <strong>{facts.records.find(record => record.id === item.recordId)?.label ?? 'Reported item'}</strong>
-          <p>{money(item.amount.amountPaise)}{item.amount.status === 'estimate' && ' · Estimate'} · {recurrence[item.recurrence]}</p>
-          <p>{item.reason === 'missingDate' ? 'Date unknown · not included in dated totals.' : item.reason === 'unknownTarget' ? 'Selected target unknown · only the known required payment is included.' : 'Amount unknown · not fully included in dated totals.'}</p>
-        </li>)}
-      </PagedList>
-    </Details>}
-  </>;
-}
-
-export function AssessmentDetails({ plan }: { plan: Plan }) {
-  const assessment = plan.decisionAssessment;
-  const outcome = assessment?.outcome;
-  const uncertainties = assessment?.uncertainties ?? [];
-  const checks = outcome ? uncertainties.filter(item => outcome.uncertain.includes(item.id)) : uncertainties;
-  return <div className="detail-actions">
-    {outcome && <Details label="Plan details">
-      <p>{outcome.summary}</p>
-      <p>{outcome.covered}</p><p>{outcome.notCovered}</p>
-      <p><strong>Next step:</strong> {outcome.nextStep}</p>
-      <p>{outcome.conditions}</p>
-      <PagedList label="What is known now" className="saved-items">{outcome.trueNow.filter(text => ![outcome.summary, outcome.covered, outcome.notCovered, outcome.conditions, outcome.nextStep].includes(text)).map((text, index) => <li key={index}>{text}</li>)}</PagedList>
-      {outcome.revisit && <p>{outcome.revisit}</p>}
-    </Details>}
-    {checks.length > 0 && <Details label="Open questions">
-      <PagedList label="Remaining checks" className="saved-items">{checks.map(item => <li key={item.id}>
-        <p>{item.question}</p><p className="hint">{item.reason}</p>
-        {item.beforeDate && <p>Before {dateLabel(item.beforeDate)}</p>}
-      </li>)}</PagedList>
-    </Details>}
-    {!!plan.incomeComparisons?.length && <Details label="Income possibilities">
-      <p>These receipts are unconfirmed and excluded from your current balances.</p>
-      <PagedList label="Conditional income comparisons" className="saved-items">{plan.incomeComparisons.map(comparison => <li key={comparison.id}>
-        {comparison.conditions.map(condition => {
-          const event = plan.events.find(item => item.id === condition.eventId);
-          return <p key={condition.eventId}>If {event?.label ?? 'the uncertain receipt'}{event?.amountPaise != null && <> ({money(event.amountPaise)})</>} {condition.arrival === 'reportedDate' ? <>arrives on {event ? dateLabel(event.date) : 'its reported date'}</> : 'does not arrive within these 30 days'}.</p>;
-        })}
-        <p>First cash gap: {comparison.metrics.firstGap ? <>{money(comparison.metrics.firstGap.amountPaise)} on {dateLabel(comparison.metrics.firstGap.date)}</> : comparison.metrics.closingPaise === null ? 'Unknown' : 'None under these conditions'}</p>
-        <p>Conditional closing cash: {money(comparison.metrics.closingPaise)}</p>
-      </li>)}</PagedList>
-    </Details>}
-  </div>;
-}
-
-export function Assumptions({ scenario }: { scenario: Scenario }) {
-  return <>
-    <p><strong>{money(scenario.reducedOutflowPaise)} less planned spending</strong> than reported. Not a completed change or payment.</p>
-    <PagedList className="saved-items" label="Planning assumptions">
+    <p><strong>{money(scenario.reducedOutflowPaise)} less planned spending</strong> · Calculated against reported amounts.</p>
+    <p className="money-meta">{proposed ? 'Proposed full set · not saved' : 'Saved changes'} · {scenario.adjustments.length} {scenario.adjustments.length === 1 ? 'occurrence' : 'occurrences'}. Dates unchanged. No payments made.</p>
+    <PagedList className="money-choice-cards" label="Planning assumptions" pageSize={6}>
       {scenario.adjustments.map((item) => <li key={item.eventId}>
-        <h3>{item.label} · {dateLabel(item.date)}</h3>
-        <p>{money(item.originalPaise)} reported → {money(item.amountPaise)} assumed</p>
-        <p className="hint">This occurrence only; dates stay unchanged.</p>
-        <p className="hint">{item.acceptedRevision != null ? 'Consent saved for this occurrence; not a completed action.' : item.acceptanceReady ? 'Not saved · requires explicit, unconditional consent.' : 'Not ready to save · confirm this spending is changeable and uncommitted first.'}</p>
-        {item.kind === 'card' && <p className="hint">Required minimum {money(item.minimumPaise)}. Minimum is not payoff; interest and fees may apply. Outstanding debt is unchanged.</p>}
+        <div className="money-section-head"><h3>{item.label}</h3><span className="money-meta">{dateLabel(item.date)}</span></div>
+        <p>{money(item.originalPaise)} Reported → <strong>{money(item.amountPaise)} {proposed ? 'Proposed' : 'Saved'}</strong>{item.kind === 'card' && ' · includes minimum'}</p>
+        {!item.acceptanceReady && <p className="money-warning">Not ready to save · confirm this spending is changeable and uncommitted first.</p>}
+        {item.kind === 'card' && <p className="money-meta">Required minimum {money(item.minimumPaise)} · Reported. Not payoff.</p>}
+        <details className="money-assumption-details"><summary>Terms for this change</summary>
+          <p>This occurrence only; dates stay unchanged.</p>
+          <p>{item.acceptedRevision != null ? 'Consent saved for this occurrence; not a completed action.' : 'Not saved · requires explicit, unconditional consent.'}{proposed && ' Review and consent to this whole proposal again.'}</p>
+          {item.kind === 'card' && <p>Interest and fees may apply. Outstanding debt is unchanged.</p>}
+        </details>
       </li>)}
     </PagedList>
   </>;
 }
 
-export function PlanComparison({ baseline, assumed, reserve, label }: { baseline: Plan; assumed: Plan; reserve: number; label: string }) {
+export function PlanComparison({ baseline, assumed, reserve, label, beforeLabel = 'Before · reported figures' }: { baseline: Plan; assumed: Plan; reserve: number; label: string; beforeLabel?: string }) {
   return <div className="plan-comparison" aria-label={label}>
-    {[baseline, assumed].map((plan, index) => <section key={index} aria-label={index ? label : 'Before · reported figures'}>
-      <h3>{index ? label : 'Before · reported figures'}</h3>
+    {[baseline, assumed].map((plan, index) => <section key={index} aria-label={index ? label : beforeLabel}>
+      <h3>{index ? label : beforeLabel}</h3>
       <p className="hint">{plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete ? 'Not all costs are included' : plan.decisionAssessment?.outcome?.readiness === 'qualified' ? 'Some figures need checking' : 'Based on what you shared'}</p>
       {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p>These balances are not available to spend.</p>}
+      <p className="money-meta">Calculated</p>
       <dl className="comparison-values">
         <div><dt>First cash gap</dt><dd>{plan.firstGap ? <>{money(plan.firstGap.amountPaise)} · {dateLabel(plan.firstGap.date)}</> : plan.closingPaise === null ? 'Unknown' : 'None in dated figures'}</dd></div>
+      </dl>
+      <details className="money-comparison-details"><summary>More calculated results</summary><dl className="comparison-values">
         <div><dt>Largest cash gap</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div>
         <div><dt>{index ? 'Assumed closing cash' : 'Projected closing cash'}</dt><dd>{money(plan.closingPaise)}</dd></div>
         {(reserve > 0 || (plan.reserveShortfallPaise !== null && plan.reserveShortfallPaise > 0)) && <>
-          <div><dt>Reserve floor · not an expense</dt><dd>{money(reserve)}</dd></div>
+          <div><dt>Reserve floor · Reported, not an expense</dt><dd>{money(reserve)}</dd></div>
           <div><dt>Reserve shortfall</dt><dd>{money(plan.reserveShortfallPaise)}</dd></div>
         </>}
-      </dl>
+      </dl></details>
     </section>)}
     {(baseline.firstGap || assumed.firstGap) && <p className="hint">A higher closing balance does not remove an earlier cash gap.</p>}
-    {assumed.firstGap && <p className="hint">A cash gap remains on {dateLabel(assumed.firstGap.date)}.</p>}
   </div>;
+}
+
+export function RestoreReported({ snapshot, active, locked, onCommand }: {
+  snapshot: Snapshot; active: boolean; locked: boolean; onCommand: (operation: Command['operation']) => void;
+}) {
+  const key = `${snapshot.sessionId}:${snapshot.revision}:${snapshot.sequence}:${snapshot.accepted?.id}:${snapshot.preview?.id}:${active}:${locked}`;
+  const [review, setReview] = useState({ key, open: false });
+  if (review.key !== key) setReview({ key, open: false });
+  if (!snapshot.accepted) return null;
+  const blocked = !active || locked;
+  return <>
+    <button className="detail-button" disabled={blocked} onClick={() => setReview({ key, open: true })}>Restore reported amounts</button>
+    <Dialog open={review.key === key && review.open} title="Restore reported amounts?" onClose={() => setReview({ key, open: false })} actions={<>
+      <button onClick={() => setReview({ key, open: false })}>Keep saved changes</button>
+      <button className="danger" disabled={blocked} onClick={() => {
+        if (blocked || review.key !== key) return;
+        setReview({ key, open: false }); onCommand({ type: 'clearAccepted' });
+      }}>Restore all reported amounts</button>
+    </>}>
+      <p>Remove every saved planning change below and clear the current preview? Your reported facts stay unchanged. No payment is made.</p>
+      <PagedList label="Amounts to restore" className="money-choice-cards" pageSize={6}>{snapshot.accepted.adjustments.map(item => <li key={item.eventId}><h3>{item.label}</h3><p>{dateLabel(item.date)} · {money(item.amountPaise)} Saved → {money(item.originalPaise)} Reported</p></li>)}</PagedList>
+    </Dialog>
+  </>;
 }
 
 export function RemovedAssumptions({ preview, accepted }: { preview: Scenario; accepted: Snapshot['accepted'] }) {
   if (!preview.removedAssumptionIds?.length) return null;
   return <section aria-label="Assumptions removed by this proposal">
     <p>This proposal would remove these saved assumptions, restoring their reported amounts:</p>
-    <PagedList label="Removed assumptions" className="saved-items">{preview.removedAssumptionIds.map(id => {
+    <PagedList label="Removed assumptions" className="money-choice-cards" pageSize={6}>{preview.removedAssumptionIds.map(id => {
       const item = accepted?.adjustments.find(adjustment => adjustment.eventId === id);
-      return <li key={id}>{item ? <>{item.label} · {dateLabel(item.date)} · {money(item.amountPaise)} assumed → {money(item.originalPaise)} reported</> : 'A saved assumption would be removed.'}</li>;
+      return <li key={id}>{item ? <>{item.label} · {dateLabel(item.date)} · {money(item.amountPaise)} Saved → {money(item.originalPaise)} Reported</> : 'A saved assumption would be removed.'}</li>;
     })}</PagedList>
   </section>;
 }
@@ -170,13 +138,13 @@ export function ProposalReview({ snapshot, active, locked, onCommand, headingRef
 
   return <section className="preview proposal-review" aria-labelledby={headingId} hidden={!active}>
     <h2 id={headingId} tabIndex={-1} ref={headingRef}>Spending change preview</h2>
-    <p className="hint">Not saved or included in downloads.</p>
-    {snapshot.accepted && <p>Accepting replaces all saved assumptions; changes do not stack.</p>}
-    <Assumptions scenario={preview} />
+    <p className="money-meta">Not saved or included in downloads.{snapshot.accepted && ' Replaces all saved assumptions; changes do not stack.'}</p>
+    <Assumptions scenario={preview} proposed />
     <RemovedAssumptions preview={preview} accepted={snapshot.accepted} />
-    <PlanComparison baseline={snapshot.plan} assumed={preview.plan} reserve={snapshot.facts.reservePaise} label="After · preview" />
-    {preview.sourceRevision !== snapshot.revision && <p className="notice warning">Your figures changed. Ask for a fresh proposal or refresh choices in Your figures before accepting.</p>}
-    {!acceptanceReady && <p className="notice warning">To save, first confirm “Can this spending change?” for each item by voice or in Edit figures, then preview again.</p>}
+    <PlanComparison baseline={snapshot.accepted?.plan ?? snapshot.plan} assumed={preview.plan} reserve={snapshot.facts.reservePaise} label="After · preview" beforeLabel="Before · active plan" />
+    {snapshot.accepted && <Details label="Reported baseline"><PlanComparison baseline={snapshot.plan} assumed={snapshot.accepted.plan} reserve={snapshot.facts.reservePaise} label="With saved assumptions" /></Details>}
+    {preview.sourceRevision !== snapshot.revision && <p className="notice warning">Your figures changed. Ask for a fresh proposal or refresh choices in Plan changes before accepting.</p>}
+    {!acceptanceReady && <p className="notice warning">To save, first confirm “Can this spending change?” for each item by voice or by editing it in Money, then preview again.</p>}
     <p>Accepting saves this whole proposal, including removals. No payment is made.</p>
     <label className="check"><input type="checkbox" checked={checked} disabled={blocked || !acceptanceReady}
       onChange={event => setReview({ key, checked: event.target.checked })} />I agree to the exact amounts and payments or expenses shown, including removals, unconditionally—not dependent on uncertain income or payee agreement.</label>
@@ -189,10 +157,15 @@ export function ProposalReview({ snapshot, active, locked, onCommand, headingRef
       <button type="button" disabled={blocked} onClick={() => {
         if (blocked) return;
         setReview({ key, checked: false });
-        onCommand({ type: 'discardPreview', previewId: preview.id });
+        onCommand({ type: 'rejectPreview', previewId: preview.id });
       }}>Reject preview</button>
+      <button type="button" disabled={blocked} onClick={() => {
+        if (blocked) return;
+        setReview({ key, checked: false });
+        onCommand({ type: 'discardPreview', previewId: preview.id });
+      }}>Close preview</button>
     </div>
-    <p className="hint">Rejecting this preview does not mark any suggested cut as declined.</p>
+    <p className="hint">Reject saves your refusal of this proposal. Close preview only puts it aside; it is not a refusal.</p>
     {!checked && <p className="hint">Review this exact preview before accepting.</p>}
   </section>;
 }

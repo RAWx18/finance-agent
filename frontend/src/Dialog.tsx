@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { registerToastHost } from './Toast';
+import { MoneyIcon } from './MoneyIcon';
 
 export function Dialog({ open, title, onClose, children, wide = false, actions }: {
   open: boolean; title: string; onClose: () => void; children: ReactNode; wide?: boolean; actions?: ReactNode;
@@ -42,18 +43,18 @@ export function Dialog({ open, title, onClose, children, wide = false, actions }
   return <dialog ref={dialog} className={`dialog${wide ? ' dialog-wide' : ''}`} aria-labelledby={titleId}
     onCancel={event => { event.preventDefault(); event.stopPropagation(); onClose(); }}>
     <header className="dialog-heading"><h2 id={titleId} ref={heading} tabIndex={-1}>{title}</h2>
-      <button type="button" className="quiet" onClick={onClose} aria-label={`Close ${title.toLowerCase()}`}>Close</button>
+      <button type="button" className="icon-button" onClick={onClose} aria-label={`Close ${title.toLowerCase()}`} title="Close"><MoneyIcon name="close" /></button>
     </header>
     <div className="dialog-body" tabIndex={0}>{children}</div>
     {actions && <div className="dialog-actions">{actions}</div>}
   </dialog>;
 }
 
-export function Details({ label, title = label, children, wide = false }: {
-  label: string; title?: string; children: ReactNode; wide?: boolean;
+export function Details({ label, title = label, children, wide = false, compact = false }: {
+  label: string; title?: string; children: ReactNode; wide?: boolean; compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  return <><button type="button" className="detail-button" aria-haspopup="dialog" onClick={() => setOpen(true)}>{label}</button>
+  return <><button type="button" className={compact ? 'icon-button' : 'detail-button'} aria-label={compact ? label : undefined} title={compact ? label : undefined} aria-haspopup="dialog" onClick={() => setOpen(true)}>{compact ? <MoneyIcon name="expand" /> : label}</button>
     <Dialog open={open} title={title} onClose={() => setOpen(false)} wide={wide}>{children}</Dialog>
   </>;
 }

@@ -26,7 +26,8 @@ export function draftFacts(snapshot: Snapshot): FactsInput {
     opening: moneyInput(snapshot.facts.opening),
     reserve: decimal(snapshot.facts.reservePaise),
     coverage: { ...snapshot.facts.coverage },
-    decision: snapshot.facts.decision && { ...snapshot.facts.decision, focusRecordIds: [...(snapshot.facts.decision.focusRecordIds ?? [])] },
+    decision: snapshot.facts.decision && structuredClone(snapshot.facts.decision),
+    conflicts: structuredClone(snapshot.facts.conflicts),
     providerResponses: snapshot.facts.providerResponses?.map(({ eventId, status, reportedOn, paymentDate, payment, cost }) => ({
       eventId, status, reportedOn, paymentDate,
       payment: payment ? moneyInput(payment) : null,

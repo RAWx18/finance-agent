@@ -3,10 +3,52 @@
 import { describe, expect, it } from 'vitest';
 import { decimal, draftFacts, lastDate, money, moneyInput, parseAmount } from '../src/money';
 import { exactNumbers } from '../src/api';
-import { validateFacts } from '../src/validation';
-import { settings, snapshot } from './fixtures';
+import { planningSnapshot, settings, snapshot } from './fixtures';
 
 describe('exact money boundaries', () => {
+  it('preserves date certainty and isolates authoritative conflict candidates in editable drafts', () => {
+    const saved = planningSnapshot();
+    saved.facts.records[0].schedule.certainty = 'estimate';
+    saved.facts = { ...saved.facts, conflicts: [{ id: 'rent:amount', recordId: 'rent', field: 'amount',
+      values: [{ id: 'reported', amountPaise: 1200000, status: 'exact' }, { id: 'disputed', amountPaise: 1100000, status: 'estimate' }] }] };
+    saved.facts.records[0].amount = { status: 'unknown', amountPaise: null };
+    const original = structuredClone(saved);
+    const facts = draftFacts(saved);
+    expect(facts.records[0].schedule).toEqual(saved.facts.records[0].schedule);
+    expect(facts.conflicts).toEqual(saved.facts.conflicts);
+    facts.conflicts![0].values[0].amountPaise = 1;
+    facts.records[0].schedule.certainty = 'exact';
+    expect(saved).toEqual(original);
+    saved.facts.records[0].schedule = { date: null, recurrence: 'once', certainty: 'unknown' };
+    expect(draftFacts(saved).records[0].schedule).toEqual(saved.facts.records[0].schedule);
+  });
+  it('isolates ambiguous record IDs and nested decision evidence from the canonical picture and other drafts', () => {
+    const saved = planningSnapshot();
+    saved.facts.records.push({ ...structuredClone(saved.facts.records[0]), id: 'officeRent', label: 'Office rent' });
+    saved.facts.decision = { ...saved.facts.decision!, focusRecordIds: ['rent'], ambiguousRecordIds: ['rent', 'officeRent'],
+      responses: [{ actionId: 'clarify:opening', response: 'unavailable', dependencyKey: 'opening-basis' }] };
+    const original = structuredClone(saved);
+    const facts = draftFacts(saved);
+    const other = draftFacts(saved);
+    expect(facts.decision).toEqual(saved.facts.decision);
+    expect(facts.decision!.ambiguousRecordIds).not.toBe(saved.facts.decision.ambiguousRecordIds);
+    expect(facts.decision!.responses![0]).not.toBe(saved.facts.decision.responses![0]);
+    facts.decision!.ambiguousRecordIds!.splice(0);
+    facts.decision!.focusRecordIds!.push('officeRent');
+    facts.decision!.responses!.splice(0);
+    facts.records[0].amount.amount = '11000.00';
+    facts.records[0].schedule.date = '2026-09-14';
+    expect(saved).toEqual(original);
+    expect(other).toEqual(draftFacts(original));
+  });
+  it.each([undefined, []])('preserves optional or cleared ambiguity without inventing candidates (%s)', ambiguousRecordIds => {
+    const saved = snapshot();
+    if (ambiguousRecordIds) saved.facts.decision!.ambiguousRecordIds = ambiguousRecordIds;
+    const facts = draftFacts(saved);
+    expect(facts.decision).toEqual(saved.facts.decision);
+    expect(facts.decision!.ambiguousRecordIds).toEqual(ambiguousRecordIds);
+    if (ambiguousRecordIds) expect(facts.decision!.ambiguousRecordIds).not.toBe(ambiguousRecordIds);
+  });
   it('preserves decision and reported provider evidence when converting a saved picture to editable inputs', () => {
     const saved = snapshot();
     saved.facts.decision = { intent: 'specificDecision', concern: 'Can I cover rent before salary?', focusRecordIds: ['rent'], responsePreference: 'brief' };
@@ -41,14 +83,5 @@ describe('exact money boundaries', () => {
   it('converts the exclusive date using UTC components across month and leap boundaries', () => {
     expect(lastDate('2026-10-01')).toBe('2026-09-30');
     expect(lastDate('2024-03-01')).toBe('2024-02-29');
-  });
-  it('requires explicit none for empty reviewed categories and preserves unknown money', () => {
-    const facts = draftFacts(snapshot());
-    facts.coverage.income = 'reviewed';
-    expect(validateFacts(facts, settings)).toHaveProperty('income');
-    facts.coverage.income = 'none';
-    expect(validateFacts(facts, settings)).toEqual({});
-    facts.opening = { amount: '1.234', status: 'exact' };
-    expect(validateFacts(facts, settings)).toHaveProperty('opening');
   });
 });

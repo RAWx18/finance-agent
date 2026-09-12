@@ -5,14 +5,15 @@ import { api } from './api';
 import type { AdjustmentOptions, Command, Settings, Snapshot } from './api';
 import { dateLabel, decimal, money, parseAmount } from './money';
 import { PagedList } from './PagedList';
-import { ProposalReview } from './ScenarioDetails';
+import { ProposalReview, RestoreReported } from './ScenarioDetails';
 import { Dialog } from './Dialog';
 import { dismiss, notify } from './Toast';
+import { MoneyIcon } from './MoneyIcon';
 
 type Choice = AdjustmentOptions['options'][number] & { amount: string };
 
-export function Comparison({ snapshot, settings, active, locked, draft, pending, onCommand }: {
-  snapshot: Snapshot; settings: Settings; active: boolean; locked: boolean; draft: boolean;
+export function Comparison({ snapshot, settings, active, locked, pending, onCommand }: {
+  snapshot: Snapshot; settings: Settings; active: boolean; locked: boolean;
   pending: boolean; onCommand: (operation: Command['operation']) => void;
 }) {
   const [initialized, setInitialized] = useState(active);
@@ -32,7 +33,7 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
   const option = options?.options.find((item) => item.eventId === eventId);
   const staleChoices = choices.length > 0 && choiceRevision !== snapshot.revision;
   const preview = snapshot.preview;
-  const blocked = !active || locked || pending || draft;
+  const blocked = !active || locked || pending;
 
   if (active && !initialized) {
     setInitialized(true);
@@ -104,17 +105,15 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
 
   const errorNotice = error && <div className="notice warning" role="alert" tabIndex={-1} ref={errorRef}><p>{error}</p></div>;
 
-  return <section className="card comparison no-print" aria-labelledby="compare-heading" hidden={!active}>
-    <h2 id="compare-heading">Spending changes</h2>
-    <p>Try a change before saving it.</p>
-    {draft && <p className="notice">Save or discard your figure edits before comparing. Saving clears the preview; changes affecting saved assumptions need fresh consent.</p>}
-    {locked && !draft && !pending && <p className="hint">Please wait for your figures to reconnect or your action to finish.</p>}
-    {snapshot.accepted && <div className="actions"><button type="button" disabled={blocked} onClick={() => onCommand({ type: 'clearAccepted' })}>Clear saved assumptions</button>
-      <span className="hint">Restores your original amounts and clears the preview.</span></div>}
+  return <section className="money-panel money-custom-changes no-print" aria-labelledby="compare-heading" hidden={!active}>
+    <div className="money-section-head"><h2 id="compare-heading">Custom changes</h2>
+      <button type="button" className="icon-button" disabled={blocked} aria-label="Refresh choices" title="Refresh choices" onClick={() => setRefresh(value => value + 1)}><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" /></svg></button></div>
+    <p className="money-meta">Choose payments, set proposed amounts, then compare. Nothing is saved yet.</p>
+    {locked && !pending && <p className="hint">Finish any open correction and wait for live updates before comparing.</p>}
+    <RestoreReported {...{ snapshot, active, onCommand }} locked={blocked} />
     {!loadError && !options && <p role="status">Loading choices…</p>}
+    {loadError && <p className="money-warning">Choices unavailable. Your selections are kept; refresh to retry.</p>}
     {options && !options.options.length && <p className="notice">No eligible spending changes are available. Essentials, loans, automatic debits and uncertain amounts cannot be reduced here.</p>}
-    {(staleChoices || preview) && <button type="button" className="quiet" disabled={blocked} onClick={() => setRefresh(value => value + 1)}>
-      Refresh choices</button>}
     {!selecting && errorNotice}
     {staleChoices && <div className="notice warning"><p>Your figures changed. Check your selections; reselect any payment or expense whose amount or terms changed.</p>
       <button type="button" disabled={blocked || !options} onClick={() => {
@@ -123,18 +122,20 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
     {(editing || !preview) && <fieldset disabled={blocked || !options || staleChoices} className="choice-editor">
       <legend>Selected changes</legend>
       {snapshot.accepted && <p className="hint">Your next preview replaces the saved set. Removing a change restores that item’s original amount.</p>}
-      <button type="button" aria-haspopup="dialog" disabled={!options?.options.length} onClick={() => setSelecting(true)}>Add a change</button>
-      {!!choices.length && <PagedList className="saved-items" label="Selected changes">
-        {choices.map((choice) => <li key={choice.eventId}><strong>{choice.label} · {dateLabel(choice.date)}</strong>
-          <p>{money(choice.originalPaise)} → ₹{choice.amount}{!choice.acceptanceReady ? ' · Changeability not confirmed' : ''}</p>
-          <div className="actions"><button type="button" aria-haspopup="dialog" onClick={() => { setEventId(choice.eventId); setAmount(choice.amount); setError(''); setSelecting(true); }}>Edit {choice.label}</button>
-            <button type="button" onClick={() => setChoices(choices.filter((item) => item.eventId !== choice.eventId))}>Remove {choice.label}</button></div>
+      <button type="button" className="icon-button" aria-label="Add a change" title="Add a change" aria-haspopup="dialog" disabled={!options?.options.length} onClick={() => setSelecting(true)}><MoneyIcon name="add" /></button>
+      {!choices.length && <p className="money-meta">No selections. Add an eligible payment to compare.</p>}
+      {!!choices.length && <PagedList className="money-choice-cards" label="Selected changes" pageSize={6}>
+        {choices.map((choice) => <li key={choice.eventId}><div className="money-section-head"><h3>{choice.label}</h3><span className="money-meta">{dateLabel(choice.date)}</span></div>
+          <p>{money(choice.originalPaise)} Reported → <strong>₹{choice.amount} Proposed</strong>{choice.kind === 'card' && ' · includes minimum'}</p>
+          <p className="money-meta">Not saved{!choice.acceptanceReady ? ' · Changeability not confirmed' : ''}</p>
+          <div className="money-row-actions"><button type="button" className="icon-button" aria-label={`Edit ${choice.label}`} title={`Edit ${choice.label}`} aria-haspopup="dialog" onClick={() => { setEventId(choice.eventId); setAmount(choice.amount); setError(''); setSelecting(true); }}><MoneyIcon name="edit" /></button>
+            <button type="button" className="icon-button" aria-label={`Remove ${choice.label}`} title={`Remove ${choice.label}`} onClick={() => setChoices(choices.filter((item) => item.eventId !== choice.eventId))}><MoneyIcon name="remove" /></button></div>
         </li>)}
       </PagedList>}
       <button type="button" className="primary" onClick={previewChoices}>Preview selected changes</button>
     </fieldset>}
-    {preview && <div className="actions"><button type="button" disabled={blocked} onClick={() => setEditing(!editing)}>
-      {editing ? 'Review current preview' : 'Edit selections'}</button></div>}
+    {preview && <div className="actions"><button type="button" className="icon-button" disabled={blocked} aria-label={editing ? 'Review current preview' : 'Edit selections'} title={editing ? 'Review current preview' : 'Edit selections'} onClick={() => setEditing(!editing)}>
+      <MoneyIcon name={editing ? 'back' : 'edit'} /></button></div>}
     <ProposalReview key={refresh} snapshot={snapshot} active={active && !editing} locked={blocked || staleChoices} onCommand={onCommand} />
     <Dialog open={active && selecting} title="Choose a spending change" onClose={() => { setSelecting(false); setError(''); }}>
       {selecting && errorNotice}
@@ -148,7 +149,7 @@ export function Comparison({ snapshot, settings, active, locked, draft, pending,
           <label>Planned amount (₹)<input id="change-amount" inputMode="decimal" value={amount} aria-invalid={!!error} aria-describedby="change-guidance" onChange={(event) => setAmount(event.target.value)} /></label>
           <p className="hint" id="change-guidance">{option ? <>At least {money(option.minimumPaise)} and less than {money(option.originalPaise)}. Only {dateLabel(option.date)} changes.</> : 'This payment or expense is no longer eligible. Cancel this selection and choose another.'}</p>
           {option?.kind === 'card' && <p className="notice warning">The required minimum is not payoff. Interest and fees may apply; outstanding debt stays unchanged.</p>}
-          {option && !option.acceptanceReady && <p className="notice">You can preview while unsure. To save a reduction, confirm “Can this spending change?” in Edit figures first.</p>}
+          {option && !option.acceptanceReady && <p className="notice">You can preview while unsure. To save a reduction, edit this item in Money and confirm “Can this spending change?” first.</p>}
           <div className="actions"><button type="button" onClick={addChoice}>Add to preview</button><button type="button" onClick={() => { setEventId(''); setAmount(''); setError(''); setSelecting(false); }}>Cancel selection</button></div>
         </>}
       </fieldset>

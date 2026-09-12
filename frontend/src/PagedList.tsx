@@ -3,11 +3,10 @@
 import { useState } from 'react';
 import type { ReactNode } from 'react';
 
-const pageSize = 20;
-
 // Pagination bounds mobile page length; desktop lists also retain their own scroll region.
-export function PagedList({ children, label, className, ordered = false }: {
+export function PagedList({ children, label, className, ordered = false, printable = true, pageSize = 20 }: {
   children: ReactNode[]; label: string; className: string; ordered?: boolean;
+  printable?: boolean; pageSize?: number;
 }) {
   const [page, setPage] = useState(0);
   const pages = Math.max(1, Math.ceil(children.length / pageSize));
@@ -23,6 +22,6 @@ export function PagedList({ children, label, className, ordered = false }: {
       <span role="status">Page {current + 1} of {pages}</span>
       <button type="button" disabled={current === pages - 1} onClick={() => setPage(current + 1)}>Next</button>
     </nav>}
-    {pages > 1 && <List className={`${className} print-only`}>{children}</List>}
+    {pages > 1 && printable && <List className={`${className} print-only`}>{children}</List>}
   </>;
 }
