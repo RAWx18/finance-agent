@@ -19,6 +19,64 @@ function day(anchor: string, offset: number) {
 
 test.afterEach(async ({ context }) => { await context.request.delete('/api/session'); });
 
+test('financial decisions and third-value resolutions use the same saved facts', async ({ page }) => {
+  const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
+  let saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    opening: { amount: '3000', status: 'exact' }, coverage: { income: 'none', essential: 'none', optional: 'none', debt: 'reviewed' },
+    records: [{ delete: false, distinct: true, label: 'Loan', kind: 'debt', debtType: 'loan', controllability: 'controllable',
+      amount: { amount: '2000', status: 'exact' }, target: { amount: '5000', status: 'exact' },
+      schedule: { date: day(initial.anchorDate, 2), recurrence: 'once', certainty: 'exact' } }],
+  } });
+  const loan = saved.facts.records[0].id;
+  await page.goto('/money');
+  await page.getByRole('button', { name: 'What to check', exact: true }).click();
+  const guidance = page.getByRole('dialog', { name: 'What to check', exact: true });
+  await expect(guidance).toContainText('required payment of INR 2000.00');
+  await expect(guidance).toContainText('fits at that deadline');
+  await expect(guidance).toContainText('does not apply a reduction');
+  await page.keyboard.press('Escape');
+  await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    conflicts: [{ recordId: loan, field: 'target', values: [{ id: 'second', amount: '5500', status: 'exact' }] }],
+  } });
+  await page.goto('/app'); await page.getByRole('button', { name: 'Review saved picture' }).click();
+  await page.getByRole('button', { name: 'Resolve Loan · Intended payment', exact: true }).click();
+  const resolution = page.getByRole('dialog', { name: 'Resolve Loan · Intended payment', exact: true });
+  await resolution.getByRole('radio', { name: 'Neither report — enter the correct value' }).check();
+  await resolution.getByLabel('Correct amount (₹)').fill('4500');
+  const response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
+  await resolution.getByRole('button', { name: 'Confirm entered value' }).click();
+  expect((await response).ok()).toBe(true);
+  await expect(resolution).toBeHidden();
+  await expect(page.getByRole('listitem', { name: 'Loan', exact: true })).toContainText('Selected target: ₹4,500.00');
+  saved = await (await page.request.get('/api/session')).json() as Snapshot;
+  expect(saved.facts.conflicts).toEqual([]); expect(saved.plan.outflowPaise).toBe(450000);
+  saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    opening: { amount: '100', status: 'exact' }, coverage: { essential: 'reviewed', debt: 'none' },
+    records: [{ id: loan, delete: true, distinct: false }, { delete: false, distinct: true, label: 'Groceries', kind: 'essential',
+      controllability: 'controllable', amount: { amount: '1000', status: 'exact' }, schedule: { date: day(initial.anchorDate, 1) } }],
+  } });
+  expect(saved.workspace!.actions![0].kind).toBe('seekSupport');
+  await page.goto('/money'); await page.getByRole('button', { name: 'What to check', exact: true }).click();
+  await expect(guidance).toContainText('Protect Groceries as an essential need');
+  await expect(guidance).not.toContainText('Original dues remain');
+  await page.keyboard.press('Escape');
+  const need = saved.facts.records[0].id;
+  saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    records: [{ id: need, delete: false, distinct: false, controllability: 'committed' },
+      { delete: false, distinct: true, label: 'Later loan', kind: 'debt', debtType: 'loan', amount: { amount: '1000', status: 'exact' },
+        schedule: { date: day(initial.anchorDate, 40) }, outstanding: { amount: '50000', status: 'exact' } }],
+    coverage: { debt: 'reviewed' },
+  } });
+  saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
+    conflicts: [{ recordId: saved.facts.records.find(record => record.label === 'Later loan')!.id, field: 'outstanding',
+      values: [{ id: 'different', amount: '60000', status: 'exact' }] }],
+  } });
+  expect(saved.workspace!.actions![0].kind).toBe('contactPayee');
+  expect(saved.workspace!.actions![0].recordIds).toEqual([need]);
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'What needs attention', exact: true })).toContainText('Discuss payment options · Groceries');
+});
+
 test('financial corrections retain rejected drafts and preserve saved payment and reserve meaning', async ({ page }) => {
   const initial = await (await page.request.post('/api/session', { data: {} })).json() as Snapshot;
   let saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,

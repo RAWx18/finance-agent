@@ -34,7 +34,7 @@ export function needsCheck(record: Fact, snapshot: Snapshot) {
 
 export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
   record: Fact; snapshot: Snapshot; blocked: boolean; onEdit: (target: EditTarget) => void;
-  onCommand: (operation: Command['operation']) => void;
+  onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
   const conflicts = snapshot.facts.conflicts?.filter(item => item.recordId === record.id) ?? [];
@@ -91,7 +91,7 @@ export function RecordRow({ record, snapshot, blocked, onEdit, onCommand }: {
 
 export function MoneyRecords({ category, snapshot, blocked, onEdit, onCommand }: {
   category: 'income' | 'spending' | 'debts'; snapshot: Snapshot; blocked: boolean;
-  onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => void;
+  onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState('all');

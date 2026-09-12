@@ -50,7 +50,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
       {!!plan.reserveShortfallPaise && <p className="money-warning">Cash to keep aside: {money(snapshot.facts.reservePaise)}. Largest reserve shortfall: {money(plan.reserveShortfallPaise)} · Calculated, separate from the funding gap.{reserveBreach?.date && <> First falls below the reserve on {dateLabel(reserveBreach.date)}.</>}</p>}
       {!plan.firstGap && !plan.reserveShortfallPaise && <p className="money-meta">{plan.closingPaise === null ? 'A starting amount is needed to calculate the balance.' : outcome?.readiness === 'ready' && outcome.branch === 'fits' ? 'Based on the dates and amounts in this plan.' : 'Some details still need checking before relying on the result.'}</p>}
       {!!conflicts && <p className="money-warning">Conflicting reports · no amount chosen for you</p>}
-      {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p className="money-warning">Partial calculation · some amounts or dates are missing</p>}
+      {(plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete) && <p className="money-warning">Partial calculation · some figures, dates or category coverage are unresolved</p>}
       {action && <div className="money-next"><h3>Next step</h3><p><strong>{action.kind === 'contactPayee' ? 'Discuss payment options' : actionLabels[action.kind] ?? 'Review the next step'}</strong>{actionNames && <> · {actionNames}</>}</p>
         {action?.beforeDate && <p className="money-meta">Before {dateLabel(action.beforeDate)}</p>}
         <div className="money-detail-actions"><Details label="What to check"><ActionDetails action={action} plan={plan} facts={snapshot.facts} /></Details>

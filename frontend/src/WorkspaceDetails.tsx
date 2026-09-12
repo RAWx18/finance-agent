@@ -22,6 +22,11 @@ export const resultLabels: Record<string, string> = {
   datedOutflow: 'Dated payments', closing: 'Projected closing cash', trough: 'Lowest projected balance',
   firstGap: 'First cash gap', peakGap: 'Largest cash gap', reserveShortfall: 'Reserve shortfall',
 };
+export const resultStates: Record<WorkspaceResult['state'], string> = {
+  known: 'Calculated', estimated: 'Calculated · Estimated', uncertain: 'Calculated · Needs checking',
+  missing: 'Unknown', conflicting: 'Conflicting reports', proposed: 'Proposed · not saved',
+  accepted: 'Saved assumption', unresolved: 'Needs checking',
+};
 const rules: Record<string, string> = {
   reportedAvailableOpening: 'The available cash you reported at the start, not credit or future income.',
   sumIncludedDatedReceipts: 'Only dated, reliable receipts with confirmed amounts and dates count towards balances.',
@@ -78,7 +83,7 @@ export function ResultDetails({ result, snapshot, label = 'Why this result?' }: 
   const excluded = workspace.contributions!.filter(item => result.excludedIds.includes(item.id));
   const questions = workspace.issues?.filter(item => result.issueIds.includes(item.id)) ?? [];
   return <Details label={label} title={`Why: ${resultLabels[result.id] ?? 'Proposed result'}`} wide>
-    <p className="hint">Calculated · {resultLabels[result.id] ?? 'Proposed result'}</p>
+    <p className="hint">{resultStates[result.state]} · {resultLabels[result.id] ?? 'Proposed result'}</p>
     <p className="result-value">{money(result.amountPaise)}{result.date && <> · {dateLabel(result.date === result.untilDateExclusive ? lastDate(result.date) : result.date)}</>}</p>
     <p>{rules[result.rule] ?? 'A conditional projection using the reported timing and stated assumptions.'}</p>
     <p className="hint">{dateLabel(result.fromDate)} – {dateLabel(lastDate(result.untilDateExclusive))}</p>
@@ -91,33 +96,48 @@ export function ResultDetails({ result, snapshot, label = 'Why this result?' }: 
 }
 
 export function ConflictReview({ conflict, snapshot, blocked, onCommand }: {
-  conflict: Conflict; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => void;
+  conflict: Conflict; snapshot: Snapshot; blocked: boolean; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const [open, setOpen] = useState(false);
-  const key = `${snapshot.sessionId}:${snapshot.revision}:${snapshot.sequence}:${blocked}:${open}`;
-  const [selection, setSelection] = useState({ key, id: '' });
-  if (selection.key !== key) setSelection({ key, id: '' });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const key = `${snapshot.sessionId}:${snapshot.revision}:${snapshot.sequence}:${open}`;
+  const [selection, setSelection] = useState({ key, id: '', other: false, value: '', status: 'exact' as 'exact' | 'estimate' });
+  if (selection.key !== key) setSelection({ key, id: '', other: false, value: '', status: 'exact' });
   const record = snapshot.facts.records.find(item => item.id === conflict.recordId);
   const label = `${record ? `${record.label} · ` : ''}${fieldLabels[conflict.field]}`;
   const valueLabel = (value: Conflict['values'][number]) => `${conflict.field === 'schedule.date'
     ? value.date ? dateLabel(value.date) : 'Date unknown' : money(value.amountPaise ?? null)} · ${value.status === 'estimate' ? 'Estimated' : 'Reported'}`;
   const selected = selection.key === key ? conflict.values.find(item => item.id === selection.id) : undefined;
+  const valid = selection.other ? conflict.field === 'schedule.date'
+    ? /^\d{4}-\d{2}-\d{2}$/.test(selection.value) && Number.isFinite(Date.parse(selection.value)) && new Date(selection.value).toISOString().slice(0, 10) === selection.value
+    : parseAmount(selection.value, Number.MAX_SAFE_INTEGER) !== null : !!selected;
   return <div className="conflict-row">
     <p><strong>{label}</strong> · Conflicting reports</p>
     <ul>{conflict.values.map((value, index) => <li key={value.id}>Report {index + 1}: {valueLabel(value)}</li>)}</ul>
     <p className="hint">Neither alternative is treated as confirmed. You can also clarify this by voice.</p>
-    <button type="button" disabled={blocked} onClick={() => setOpen(true)}>Resolve {label}</button>
-    <Dialog open={open} title={`Resolve ${label}`} onClose={() => setOpen(false)} actions={<button className="primary" disabled={blocked || !selected} onClick={() => {
-      if (blocked || !selected) return;
-      onCommand({ type: 'updateFacts', changes: { expectedRevision: snapshot.revision, resolutions: [{ conflictId: conflict.id,
-        value: { id: selected.id, status: selected.status, ...(conflict.field === 'schedule.date'
-          ? { date: selected.date } : { amount: selected.amountPaise == null ? null : decimal(selected.amountPaise) }) } }] } });
-      setOpen(false);
-    }}>Confirm selected report</button>}>
-      <fieldset disabled={blocked}><legend>Which report should the plan use?</legend>
-        {conflict.values.map((value, index) => <label className="check" key={value.id}><input type="radio" name={`resolve-${conflict.id}`} checked={selected?.id === value.id}
-          onChange={() => setSelection({ key, id: value.id })} />Report {index + 1}: {valueLabel(value)}</label>)}
-      </fieldset><p>The picture changes only after this is saved. No payment is made.</p>
+    <button type="button" disabled={blocked} onClick={() => { setError(''); setOpen(true); }}>Resolve {label}</button>
+    <Dialog open={open} title={`Resolve ${label}`} onClose={() => { if (!saving) setOpen(false); }} actions={<button className="primary" disabled={blocked || saving || !valid} onClick={async () => {
+      if (blocked || saving || !valid) return;
+      setSaving(true); setError('');
+      const value = selection.other
+        ? { id: crypto.randomUUID(), status: selection.status, ...(conflict.field === 'schedule.date' ? { date: selection.value } : { amount: selection.value }) }
+        : { id: selected!.id, status: selected!.status, ...(conflict.field === 'schedule.date'
+          ? { date: selected!.date } : { amount: selected!.amountPaise == null ? null : decimal(selected!.amountPaise) }) };
+      const saved = await onCommand({ type: 'updateFacts', changes: { expectedRevision: snapshot.revision, resolutions: [{ conflictId: conflict.id, value }] } }).catch(() => undefined);
+      setSaving(false);
+      if (saved) setOpen(false);
+      else setError('Resolution not confirmed. Your entry is kept; check the save status before retrying.');
+    }}>{selection.other ? 'Confirm entered value' : 'Confirm selected report'}</button>}>
+      <fieldset disabled={blocked || saving}><legend>Which report should the plan use?</legend>
+        {conflict.values.map((value, index) => <label className="check" key={value.id}><input type="radio" name={`resolve-${conflict.id}`} checked={!selection.other && selected?.id === value.id}
+          onChange={() => setSelection({ ...selection, key, id: value.id, other: false })} />Report {index + 1}: {valueLabel(value)}</label>)}
+        <label className="check"><input type="radio" name={`resolve-${conflict.id}`} checked={selection.other} onChange={() => setSelection({ ...selection, key, id: '', other: true })} />Neither report — enter the correct value</label>
+        {selection.other && <>
+          <label>{conflict.field === 'schedule.date' ? 'Correct date' : 'Correct amount (₹)'}<input type={conflict.field === 'schedule.date' ? 'date' : 'text'} inputMode={conflict.field === 'schedule.date' ? undefined : 'decimal'} value={selection.value} onChange={event => setSelection({ ...selection, value: event.target.value })} /></label>
+          <label>Value certainty<select value={selection.status} onChange={event => setSelection({ ...selection, status: event.target.value as 'exact' | 'estimate' })}><option value="exact">Confirmed</option><option value="estimate">Estimated</option></select></label>
+        </>}
+      </fieldset>{error && <p role="alert">{error}</p>}<p>The picture changes only after this is saved. No payment is made.</p>
     </Dialog>
   </div>;
 }

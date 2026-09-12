@@ -8,7 +8,7 @@ import { Details } from './Dialog';
 import { dateLabel, decimal, lastDate, money } from './money';
 import { PagedList } from './PagedList';
 import { ActionDetails, actionLabels, Assumptions, outcomeLabels, ProposalReview } from './ScenarioDetails';
-import { ConflictReview, Correction, fieldLabels, incomeChecks, reasons, ResultDetails, resultLabels } from './WorkspaceDetails';
+import { ConflictReview, Correction, fieldLabels, incomeChecks, reasons, ResultDetails, resultLabels, resultStates } from './WorkspaceDetails';
 import type { Fact, WorkspaceCard } from './WorkspaceDetails';
 import './financialCards.css';
 
@@ -108,6 +108,7 @@ export function FinancialContext({ snapshot, stale, mode, locked, onCommand, pro
     if (id === 'reserveShortfall' && !snapshot!.facts.reservePaise && !result.amountPaise) return null;
     return <div className="workspace-result" key={id}><p>{resultLabels[id] ?? 'Proposed result'}</p>
       <p className="result-value">{money(result.amountPaise)}{result.date && id !== 'closing' && <span> · {dateLabel(result.date)}</span>}</p>
+      {result.state !== 'known' && <p className="hint">{resultStates[result.state]}</p>}
       <ResultDetails result={result} snapshot={snapshot!} />
     </div>;
   });
@@ -128,7 +129,7 @@ export function FinancialContext({ snapshot, stale, mode, locked, onCommand, pro
           return <FactRow key={id} record={record} snapshot={snapshot} blocked={blocked} onCommand={onCommand} />;
         })}</PagedList>
         <div className="detail-actions">{card.resultIds?.map(id => workspace.results?.find(result => result.id === id)).filter(result => !!result).map(result =>
-          <Details key={result.id} label={resultLabels[result.id] ?? 'Dated figures'}><p>{money(result.amountPaise)}</p><ResultDetails snapshot={snapshot} result={result} /></Details>)}</div>
+          <Details key={result.id} label={resultLabels[result.id] ?? 'Dated figures'}><p>{money(result.amountPaise)} · {resultStates[result.state]}</p><ResultDetails snapshot={snapshot} result={result} /></Details>)}</div>
       </>;
       case 'questions': return <ol className="workspace-questions">{workspace.questions?.filter(question => card.issueIds?.includes(question.id)).map(question => {
         const action = workspace.actions?.find(action => action.id === question.actionId);
@@ -176,7 +177,7 @@ export function FinancialContext({ snapshot, stale, mode, locked, onCommand, pro
         return <>{outcome && <>
           <p className="question-title">{outcome.readiness === 'qualified' ? 'Your picture is still taking shape' : outcomeLabels[outcome.branch]}</p>
           <p>{outcome.summary}</p><p>{outcome.notCovered}</p>
-          <Details label="Plan details"><p>{outcome.covered}</p><p>{outcome.conditions}</p><p>{outcome.nextStep}</p><ul>{outcome.trueNow.map(text => <li key={text}>{text}</li>)}</ul><p>{outcome.revisit}</p></Details>
+          <Details label="Plan details"><p>{outcome.covered}</p><p>{outcome.conditions}</p><p>{outcome.nextStep}</p><p>{outcome.revisit}</p></Details>
         </>}
           {!!snapshot.facts.decision?.responses?.length && <p aria-label="Saved answers">{snapshot.facts.decision.responses.some(item => item.response === 'unavailable') && 'Unconfirmed details remain open.'}{snapshot.facts.decision.responses.some(item => item.response === 'declined') && ' Declined cuts are not assumed.'}</p>}
           {workspace.actions && workspace.actions.some(action => !workspace.questions?.some(question => question.actionId === action.id)) && <section aria-label="Next steps"><h5>Next steps</h5><ol className="workspace-questions">{workspace.actions.filter(action => !workspace.questions?.some(question => question.actionId === action.id)).map(action => {

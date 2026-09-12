@@ -21,7 +21,7 @@ const issueFields: Partial<Record<string, EditTarget['field']>> = {
 
 export function MoneyChecks({ snapshot, open, blocked, onClose, onEdit, onCommand }: {
   snapshot: Snapshot; open: boolean; blocked: boolean; onClose: () => void;
-  onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => void;
+  onEdit: (target: EditTarget) => void; onCommand: (operation: Command['operation']) => Promise<Snapshot | undefined>;
 }) {
   const issues = moneyIssues(snapshot);
   return <Dialog open={open} title="Needs your check" onClose={onClose}>

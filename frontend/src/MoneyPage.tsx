@@ -39,7 +39,7 @@ export function MoneyPage({ session, active, voiceBusy, onEditing }: {
   const route = isMoneyRoute(pathname) ? pathname : '/money';
   const title = moneyRoutes[route];
   const notes = snapshot ? changeNotes(snapshot, snapshot.workspace?.change) : [];
-  const command = (operation: Parameters<typeof perform>[1]) => { if (!blocked && operation) void perform('save', operation); };
+  const command = async (operation: Parameters<typeof perform>[1]) => { if (!blocked && operation) return perform('save', operation); };
   const openEdit = (target: EditTarget) => { if (!blocked) setEdit(target); };
   return <section className="money-page" hidden={!active} aria-labelledby="money-heading">
     <header className="money-heading"><div className="money-title">

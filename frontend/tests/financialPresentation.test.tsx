@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router';
 import { expect, it, vi } from 'vitest';
@@ -10,7 +10,7 @@ import { MoneyChanges } from '../src/MoneyChanges';
 import { MoneyOverview } from '../src/MoneyOverview';
 import { MoneyPrint } from '../src/MoneyPrint';
 import { RecordRow } from '../src/MoneyRecords';
-import { Correction } from '../src/WorkspaceDetails';
+import { ConflictReview, Correction, ResultDetails } from '../src/WorkspaceDetails';
 import { choiceSnapshot, planningSnapshot, scenario, settings } from './fixtures';
 import { projectWorkspace } from './workspace';
 
@@ -105,4 +105,59 @@ it('keeps a pending correction open and prevents another submission', async () =
   expect(onCommand).toHaveBeenCalledOnce();
   await act(async () => confirm(saved));
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+it.each(['amount', 'schedule.date'] as const)('resolves %s with another reported value and preserves estimate certainty after rejection', async field => {
+  const saved = planningSnapshot();
+  const conflict = { id: `conflict:rent:${field}`, recordId: 'rent', field, values: field === 'amount'
+    ? [{ id: 'a', amountPaise: 1200000, status: 'exact' as const }, { id: 'b', amountPaise: 1250000, status: 'exact' as const }]
+    : [{ id: 'a', date: '2026-09-13', status: 'exact' as const }, { id: 'b', date: '2026-09-15', status: 'exact' as const }] };
+  const onCommand = vi.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(saved);
+  render(<ConflictReview snapshot={saved} conflict={conflict} blocked={false} onCommand={onCommand} />);
+  await userEvent.click(screen.getByRole('button', { name: /^Resolve Rent/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Neither report — enter the correct value' }));
+  expect(screen.getByRole('button', { name: 'Confirm entered value' })).toBeDisabled();
+  const input = screen.getByLabelText(field === 'amount' ? 'Correct amount (₹)' : 'Correct date');
+  if (field === 'amount') {
+    await userEvent.type(input, '-1');
+    expect(screen.getByRole('button', { name: 'Confirm entered value' })).toBeDisabled();
+    await userEvent.clear(input); await userEvent.type(input, '12250');
+  } else {
+    fireEvent.change(input, { target: { value: '2026-09-14' } });
+  }
+  await userEvent.selectOptions(screen.getByLabelText('Value certainty'), 'estimate');
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm entered value' }));
+  expect(input).toHaveValue(field === 'amount' ? '12250' : '2026-09-14');
+  expect(screen.getByRole('alert')).toHaveTextContent('Your entry is kept');
+  await userEvent.click(screen.getByRole('button', { name: 'Confirm entered value' }));
+  expect(onCommand).toHaveBeenLastCalledWith({ type: 'updateFacts', changes: { expectedRevision: saved.revision,
+    resolutions: [{ conflictId: conflict.id, value: { id: expect.any(String), status: 'estimate', ...(field === 'amount' ? { amount: '12250' } : { date: '2026-09-14' }) } }],
+  } });
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+it('resets third-value confirmation when the saved revision changes', async () => {
+  const saved = planningSnapshot();
+  const conflict = { id: 'conflict:rent:amount', recordId: 'rent', field: 'amount' as const,
+    values: [{ id: 'a', amountPaise: 1200000, status: 'exact' as const }, { id: 'b', amountPaise: 1250000, status: 'exact' as const }] };
+  const onCommand = vi.fn();
+  const { rerender } = render(<ConflictReview snapshot={saved} conflict={conflict} blocked={false} onCommand={onCommand} />);
+  await userEvent.click(screen.getByRole('button', { name: /^Resolve Rent/ }));
+  await userEvent.click(screen.getByRole('radio', { name: 'Neither report — enter the correct value' }));
+  await userEvent.type(screen.getByLabelText('Correct amount (₹)'), '12250');
+  rerender(<ConflictReview snapshot={{ ...saved, revision: saved.revision + 1 }} conflict={conflict} blocked={false} onCommand={onCommand} />);
+  expect(screen.getByRole('button', { name: 'Confirm selected report' })).toBeDisabled();
+  expect(onCommand).not.toHaveBeenCalled();
+});
+
+it('labels estimated calculations in the live card and its explanation', async () => {
+  const saved = planningSnapshot();
+  const result = saved.workspace!.results!.find(item => item.id === 'closing')!;
+  result.state = 'estimated';
+  const { unmount } = render(<FinancialContext snapshot={saved} locked={false} stale={false} mode="live" proposalActive onCommand={vi.fn().mockResolvedValue(saved)} />);
+  expect(screen.getByRole('article', { name: 'Dated cash requirements' })).toHaveTextContent('Calculated · Estimated');
+  unmount();
+  render(<ResultDetails snapshot={saved} result={result} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Why this result?' }));
+  expect(screen.getByRole('dialog')).toHaveTextContent('Calculated · Estimated · Projected closing cash');
 });
