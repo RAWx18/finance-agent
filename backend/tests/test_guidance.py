@@ -16,7 +16,7 @@ from .test_scenarios import initialize, operation, submit
 
 
 def test_unknown_target_keeps_known_minimum_after_correcting_accepted_plan(client):
-    """Verify unknown-target corrections invalidate acceptance but retain known minimum obligations."""
+    """Verify unknown-target edits invalidate acceptance but retain known minimums."""
     data = facts(
         "100",
         [record("card", "debt", "500", "2026-09-12", debtType="card", target=money("1000"))],
@@ -117,7 +117,7 @@ def test_overdue_guidance_preserves_original_deadline(opening):
 
 
 def test_zero_outstanding_requires_reconciliation_before_card_reduction():
-    """Verify zero outstanding debt requires reconciliation before card reductions become eligible."""
+    """Verify zero outstanding debt needs reconciliation before card reductions qualify."""
     data = facts(
         "3000",
         [
@@ -142,7 +142,7 @@ def test_zero_outstanding_requires_reconciliation_before_card_reduction():
 
 
 async def test_retained_baseline_recalculates_known_obligations_before_comparing(store):
-    """Verify retained baseline reads recalculate known dues before comparing proposed reductions."""
+    """Verify retained baseline reads recalculate known dues before comparing reductions."""
     owner = owner_hash("retained-minimum")
     await store.create(owner)
     optional = record("optional", "optional", "50", "2026-09-13")

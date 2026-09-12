@@ -131,7 +131,7 @@ def test_same_day_conservative_order():
 
 
 def test_full_card_target_includes_minimum_and_leaves_outstanding():
-    """Verify card targets include the minimum, preserve debt balance, and cannot fall below minimum."""
+    """Verify card targets include the minimum, preserve debt, and cannot be below minimum."""
     data = facts(
         "12000",
         [
@@ -158,7 +158,7 @@ def test_full_card_target_includes_minimum_and_leaves_outstanding():
 
 @pytest.mark.parametrize("field", ["opening", "amount", "date"])
 def test_unknowns_are_not_zero(field):
-    """Verify unknown cash, amounts, and dates leave projections partial rather than implying zero."""
+    """Verify unknown cash, amounts, and dates yield partial projections, not assumed zeros."""
     data = facts("500", [record("rent", "essential", "200", "2026-09-12")])
     if field == "opening":
         data["opening"] = money(None, "unknown")
@@ -317,6 +317,6 @@ def test_limits_duplicates_and_coverage_validation(config):
     ],
 )
 def test_invalid_semantic_input(data):
-    """Verify contradictory money states, invalid category fields, and unsafe labels are rejected."""
+    """Verify contradictory money states, invalid category fields, and unsafe labels fail."""
     with pytest.raises(ValidationError):
         project(data)

@@ -981,6 +981,7 @@ class VoicePipeline:
                     snapshot = await store.get(owner)
                     self.refresh(snapshot)
                     result = {**result, "currentState": canonical(snapshot), "saved": False}
+                # A tool's own commit can advance the generation without superseding its response.
                 if not self.revoked and (
                     started_generation == self.generation
                     or (

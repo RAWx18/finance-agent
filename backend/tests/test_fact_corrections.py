@@ -76,7 +76,7 @@ async def test_provider_retraction_preserves_dues_other_reports_and_replay(store
     "identity", ["rent", "Rent", "rent:*", "rent:2026-09-15", "other:2026-09-14"]
 )
 async def test_provider_retraction_requires_exact_existing_occurrence(store, identity):
-    """Verify provider retractions reject inexact or nonexistent occurrence identifiers atomically."""
+    """Verify provider retractions reject inexact or nonexistent occurrence IDs atomically."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("rent", "essential", "2000", "2026-09-14")]))
@@ -115,7 +115,7 @@ async def test_provider_upsert_and_retraction_conflict_is_atomic(store):
 
 
 def test_provider_retractions_are_optional_and_bounded():
-    """Verify provider retraction lists default to empty and reject more than one thousand entries."""
+    """Verify provider retraction lists default to empty and reject over 1,000 entries."""
     assert FactsPatch(expected_revision=0).remove_provider_response_ids == []
     with pytest.raises(ValidationError):
         FactsPatch.model_validate(
@@ -125,7 +125,7 @@ def test_provider_retractions_are_optional_and_bounded():
 
 @pytest.mark.parametrize("terms", [{}, {"debtType": "loan"}])
 async def test_sparse_income_to_debt_and_cash_correction_commit_together(store, terms):
-    """Verify sparse income-to-debt corrections preserve terms and commit cash changes atomically."""
+    """Verify sparse income-to-debt edits preserve terms and commit cash changes atomically."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("transfer", "income", "2000", "2026-09-12")]))

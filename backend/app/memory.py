@@ -146,6 +146,7 @@ class Memory:
                 raise Problem(
                     409, "memoryLimit", "This memory scope is full; replace or forget a note."
                 )
+            # Unchanged notes must not renew their retention deadline.
             changed = notes.get(change.key) != change.text
             if changed and change.scope == "chat":
                 if change.text is None:

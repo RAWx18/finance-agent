@@ -12,7 +12,7 @@ from .test_finance import project
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_dependency_uses_earlier_protected_deadline_not_labels_or_input_order(reverse):
-    """Verify protected deadlines determine question priority regardless of labels or input order."""
+    """Verify protected deadlines rank questions, regardless of labels or input order."""
     items = [
         record("urgent", "essential", "1000", "2026-09-12", label="Z need"),
         record("later", "debt", "1000", "2026-09-20", label="A loan"),
@@ -120,7 +120,7 @@ def test_required_minimum_and_intended_payment_have_distinct_questions(field):
 
 @pytest.mark.parametrize("status", ["unknown", "none"])
 def test_focused_purchase_stops_after_explicit_needs_answer_without_income_inventory(status):
-    """Verify explicit needs answers end focused purchase questioning without an income inventory."""
+    """Verify explicit needs answers end focused purchase queries without income inventory."""
     data = facts(
         "50000",
         [record("phone", "optional", "5000", "2026-09-20")],
@@ -205,7 +205,7 @@ def test_protection_depends_on_commitment_not_kind_or_label_inventory(reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("basis", ["committed", "autoDebit", "essential", "debt"])
 def test_undated_protection_uses_required_amounts_not_targets(reverse, basis):
-    """Verify undated protected needs rank by required amounts rather than targets or input order."""
+    """Verify undated protected needs rank by required amounts, not targets or input order."""
     items = [
         record(
             "required",

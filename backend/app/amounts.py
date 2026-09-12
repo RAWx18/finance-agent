@@ -25,6 +25,7 @@ def money_value(value: "MoneyInput", limit: int | None = None) -> tuple[int | No
             return (None if amount is None else int(amount)), value.status
         if amount is None or conversion.rate is None or fee is None:
             return None, "unknown"
+        # The fee is in INR paise, so the exchange rate applies only to the source amount.
         net = amount * Decimal(conversion.rate) - fee
         if net < 0:
             raise ValueError("Conversion fee exceeds the converted income; net INR is negative")

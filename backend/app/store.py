@@ -913,6 +913,7 @@ class Store:
                     raise Problem(409, "noAccepted", "There is no accepted scenario.", snapshot)
                 snapshot.accepted = None
                 snapshot.preview = None
+            # Preview-only changes must not invalidate the proposal's source revision.
             snapshot = snapshot.model_copy(
                 update={
                     "revision": snapshot.revision

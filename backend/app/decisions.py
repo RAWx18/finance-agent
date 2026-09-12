@@ -1139,6 +1139,7 @@ def assess(
                 kind="reduceOptional" if option.kind == "optional" else "cardMinimum",
                 event_ids=[option.event_id],
                 prerequisite_ids=prerequisites,
+                # Carry other assumed reductions so the choice matches its comparison.
                 adjustment_amounts=[
                     AdjustmentAmount(event_id=event.id, amount_paise=event.amount_paise)
                     for event in plan.events

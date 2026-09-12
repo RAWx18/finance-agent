@@ -87,7 +87,7 @@ async def test_external_step_can_be_deferred_without_a_payee_response(store, kin
 
 @pytest.mark.parametrize("kind", ["contactPayee", "followUp", "seekSupport", "resolveGroup"])
 async def test_external_deferral_reopens_only_after_its_source_changes(store, kind):
-    """Verify external deferrals survive cash edits and reopen only after dependent source changes."""
+    """Verify external deferrals survive cash edits; reopen only on dependent source edits."""
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(external_facts(kind)))
     current = await store.command("owner", response_command(baseline, "unavailable"))
@@ -183,7 +183,7 @@ async def test_declined_card_targets_explain_combined_minimums_without_applying_
 
 
 async def test_combined_minimums_do_not_hide_an_unfunded_required_payment(store):
-    """Verify combined-minimum guidance does not claim fit when required payments remain unfunded."""
+    """Verify combined-minimum guidance claims no fit while required payments are unfunded."""
     await store.create("owner")
     current = await store.command(
         "owner",
@@ -252,7 +252,7 @@ async def test_reported_terms_distinguish_known_zero_estimated_and_unknown_costs
 
 @pytest.mark.parametrize("through_voice", [False, True])
 async def test_renaming_an_accepted_item_updates_all_labels_but_not_consent(store, through_voice):
-    """Verify renaming an accepted item refreshes all labels while preserving consent and metrics."""
+    """Verify renaming an accepted item refreshes all labels but keeps consent and metrics."""
     await store.create("owner")
     await store.command(
         "owner",

@@ -348,7 +348,7 @@ async def test_request_cap_stops_before_request_41_and_retains_partial_evidence(
 async def test_failures_close_resources_and_write_evidence(
     tmp_path, model, stores, config, failure
 ):
-    """Verify failure evidence survives empty replies, outages, cancellation and tool limits."""
+    """Verify failure evidence survives empty replies, errors, cancellation and tool limits."""
     if failure == "empty":
         response = stream(" ")
         model.get_chat_completions.return_value = response

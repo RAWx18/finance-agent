@@ -52,6 +52,7 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
         {(item.event_id, item.amount_paise, item.dependency_key) for item in proposal.adjustments}
         for proposal in snapshot.rejected_proposals
     ]
+    # Match the whole bundle so rejecting one proposal does not reject different terms.
     eligible_choices = {
         choice.id: choice
         for choice in assessment.choices
@@ -887,6 +888,7 @@ def evidence(
             else event.model_copy()
             for event in plan.events
         ]
+        # Recompute event balances so conditional witnesses cannot cite baseline balances.
         reconcile(branch, facts, snapshot.anchor_date, config)
         conditional_results, conditional_contributions = evidence(
             snapshot,

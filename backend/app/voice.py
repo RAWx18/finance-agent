@@ -381,6 +381,7 @@ class CallManager:
                 self.call = call
                 call.task = asyncio.create_task(self.run(call))
         try:
+            # Duplicate starts share this future; a timeout must not cancel it.
             done, _ = await asyncio.wait(
                 {call.join},
                 timeout=self.config.voice.startup_seconds + self.config.voice.shutdown_seconds,
@@ -695,6 +696,7 @@ class CallManager:
                 self.store.unsubscribe(call.owner, queue)
             call.teardown = asyncio.create_task(self.finish(call, setup_error))
             try:
+                # Teardown must survive another cancellation of the lifecycle task.
                 await asyncio.shield(call.teardown)
             except asyncio.CancelledError:
                 pass

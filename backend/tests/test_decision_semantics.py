@@ -52,7 +52,7 @@ async def test_cash_to_constraints_to_one_scope_sweep_and_stop(store):
 
 
 def test_explicit_unknown_scope_is_qualified_without_repeated_category_interview():
-    """Verify explicit unknown coverage qualifies the outcome without repeated category questions."""
+    """Verify explicit unknown coverage qualifies results without repeat category queries."""
     plan = project(
         facts(
             "4000",

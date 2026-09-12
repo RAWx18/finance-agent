@@ -102,6 +102,7 @@ class SpeechRecognition(AzureSTTService):
             if final:
                 await self._handle_transcription(text, True, self._settings.language)
                 await self.emit_stt_usage_metrics()  # type: ignore[no-untyped-call]
+            # Disconnect can run during usage reporting, so recheck identity before delivery.
             if identity is self._recognition_id:
                 await self.push_frame(frame)
 
@@ -356,6 +357,7 @@ class SpeechSynthesis(AzureTTSService):
                 )
         task = self._native_stop
         if task is not None:
+            # A timeout cannot stop the SDK thread; later cleanup must still await it.
             async with asyncio.timeout(self.config.shutdown_seconds):
                 await asyncio.shield(task)
             if task is self._native_stop:

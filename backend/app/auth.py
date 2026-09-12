@@ -280,6 +280,7 @@ class Auth:
                     except GoogleRejected:
                         async with self.store.lock:
                             current = await self.row_locked(access)
+                            # A stale provider rejection must not revoke a newer grant.
                             if current["version"] == row["version"]:
                                 async with self.store.transaction():
                                     await self.store.connection().execute(
@@ -497,6 +498,7 @@ class Auth:
                         refresh_token,
                         grant.expires_at.timestamp(),
                         self.now(),
+                        # Keep the nonce paired with the retained refresh token.
                         prior[1]
                         if not grant.refresh_token and prior and prior[0]
                         else grant.nonce_hash,

@@ -467,6 +467,7 @@ def calculate(
                 continue
             distance = (day - due).days
             recurrence = record.schedule.recurrence
+            # Horizon clipping must not shift installment amounts or restart a finite schedule.
             index = (
                 (day.year - due.year) * 12 + day.month - due.month
                 if recurrence in {"monthly", "monthlyBudget"}
@@ -892,6 +893,7 @@ def reconcile(
             )
         )
     peak = None if trough is None else max(0, -trough)
+    # Exclude the cash deficit here so it is not counted in both gap and reserve shortfall.
     reserve_shortfall = None if trough is None else max(0, facts.reserve_paise - max(0, trough))
     if reserve_shortfall:
         issues.append(

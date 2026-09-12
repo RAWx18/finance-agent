@@ -165,7 +165,7 @@ async def test_embedded_key_sources_cannot_change_trusted_endpoints(google, name
 
 
 async def test_bounded_key_cache_rotation_and_unknown_key_retries(google):
-    """Verify key caching supports rotation while bounding unknown-key retries and refreshing expiry."""
+    """Verify key caches support rotation, bound unknown-key retries, and refresh expiry."""
     await google.verify(signed(google), digest("test-nonce"))
     await google.verify(signed(google), digest("test-nonce"))
     assert google.requests == [("GET", JWKS)]
@@ -234,7 +234,7 @@ async def test_real_provider_http_error_mapping(
 
 
 async def test_real_http_size_limit_redirects_and_timeout(config, tmp_path, monkeypatch):
-    """Verify oversized responses, redirects, and timeouts fail closed without following redirects."""
+    """Verify oversize replies, redirects, and timeouts fail closed; never follow redirects."""
     reached = asyncio.Event()
     release = asyncio.Event()
 

@@ -164,7 +164,7 @@ async def test_named_undated_exclusion_is_replaced_by_real_dated_gap(store):
 
 
 async def test_focus_and_current_correction_remain_visible_with_first_exposed_need(store):
-    """Verify timeline priority retains the first exposed need, decision focus, and corrected record."""
+    """Verify timeline priority keeps the first exposed need, focus, and corrected record."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -319,7 +319,7 @@ def test_optional_cut_after_first_funding_gap_does_not_displace_earlier_help():
 
 
 def test_timing_only_does_not_push_an_optional_cut_but_later_funding_need_is_named():
-    """Verify timing-only exposure avoids forced cuts while later essential funding needs stay named."""
+    """Verify timing-only gaps avoid forced cuts but name later essential funding needs."""
     data = facts(
         "0",
         [
@@ -346,7 +346,7 @@ def test_timing_only_does_not_push_an_optional_cut_but_later_funding_need_is_nam
 
 
 async def test_qualifications_keep_minimum_estimate_and_result_sources_separate(store):
-    """Verify result qualifications distinguish card minimums, estimates, and excluded obligations."""
+    """Verify qualifications distinguish card minimums, estimates, and excluded obligations."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -436,7 +436,7 @@ async def test_qualifications_follow_exact_gap_witness_and_conditional_branch(st
 
 
 async def test_exposed_recurrence_shows_its_actual_occurrence_not_first_funded_one(store):
-    """Verify recurring timeline rows show the exposed occurrence rather than the first funded one."""
+    """Verify recurring timeline rows show the exposed occurrence, not the first funded one."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -469,7 +469,7 @@ async def test_exposed_recurrence_shows_its_actual_occurrence_not_first_funded_o
 
 
 async def test_funded_recurring_card_moves_to_today_without_claiming_earlier_payment(store):
-    """Verify funded recurring timeline cards advance to today without changing prior projections."""
+    """Verify funded recurring cards advance to today without changing prior projections."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",

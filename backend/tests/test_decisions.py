@@ -306,7 +306,7 @@ def test_corrections_preserve_independent_acceptance_and_emit_invalidations(clie
 
 
 def test_unknown_controllability_is_only_a_hypothesis_and_conditional_consent_rejected(client):
-    """Verify unknown control blocks acceptance and nonexplicit or conditional consent is rejected."""
+    """Verify unknown control blocks acceptance; reject nonexplicit or conditional consent."""
     data = september()
     data["records"][5]["controllability"] = "unknown"
     initialize(client, data)
@@ -362,7 +362,7 @@ def test_irrelevant_details_do_not_drive_questions_and_brief_never_overrides_ris
 
 
 async def test_voice_full_proposal_path_corrections_and_canonical_schema(store):
-    """Verify voice previews, acceptance, corrections, review, and clearing share canonical state."""
+    """Verify voice previews, acceptance, edits, review, and clearing share canonical state."""
     await store.create("owner")
     await store.command("owner", parsed_command(september()))
     refreshed = []
@@ -422,7 +422,7 @@ async def test_voice_full_proposal_path_corrections_and_canonical_schema(store):
 
 
 async def test_voice_provider_and_decision_deep_merge_and_membership_coverage(store):
-    """Verify voice edits merge decision context, retain provider reports, and track income coverage."""
+    """Verify voice edits merge context, retain provider reports, and track income coverage."""
     await store.create("owner")
     await store.command("owner", parsed_command(september()))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
@@ -539,7 +539,7 @@ def test_proposal_explicitly_exposes_removal_of_retained_assumptions(client):
 
 
 def test_supported_reductions_expose_first_gap_vs_peak_vs_later_impacts():
-    """Verify reduction choices distinguish first-gap relief from peak-gap and later-only effects."""
+    """Verify reductions distinguish first-gap relief from peak-gap and later-only effects."""
     data = facts(
         "100",
         [

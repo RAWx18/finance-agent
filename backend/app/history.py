@@ -62,6 +62,7 @@ class History:
         snapshot.conversation_slug = slug
         snapshot.revision = max(revision, current.revision) + 1
         snapshot.sequence = max(snapshot.sequence, current.sequence) + 1
+        # Rebase only a current preview; selection must not revive a stale proposal.
         if snapshot.preview is not None and snapshot.preview.source_revision == revision:
             snapshot.preview.source_revision = snapshot.revision
         snapshot.latest_change = None

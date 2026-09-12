@@ -176,7 +176,7 @@ async def test_live_chunked_body_limit(live_server):
 
 
 async def test_live_sse_scenario_commands_publish_full_snapshots(live_server):
-    """Verify preview, acceptance, and clearing commands publish complete reconnectable snapshots."""
+    """Verify preview, acceptance, and clearing publish complete reconnectable snapshots."""
     client, _, _ = live_server
     await client.post("/api/session", json={})
     baseline = (await client.post("/api/session/commands", json=command(scenario_two()))).json()

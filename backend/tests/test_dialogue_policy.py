@@ -7,6 +7,7 @@ from app.voice_tools import VoiceTools
 
 
 async def test_invalid_capture_explains_argument_paths_without_saving_or_echoing_input(store):
+    """Verify invalid captures expose safe field errors and allow a corrected save."""
     baseline = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -31,6 +32,7 @@ async def test_invalid_capture_explains_argument_paths_without_saving_or_echoing
 
 
 async def test_domain_validation_does_not_expose_internal_error_or_choose_an_identity(store):
+    """Verify invalid record corrections preserve state without exposing internal errors."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(

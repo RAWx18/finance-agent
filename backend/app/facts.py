@@ -235,6 +235,7 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                         values["amount"] = {"amount": None, "status": "unknown", "conversion": None}
                 elif record.get("schedule", {}).get("amounts") and "amount" not in values:
                     raise ValueError("Clearing variable amounts requires an explicit scalar amount")
+            # A concrete date alone does not establish exact timing for an estimated schedule.
             if "date" in values["schedule"] and "certainty" not in values["schedule"]:
                 values["schedule"]["certainty"] = (
                     "unknown"

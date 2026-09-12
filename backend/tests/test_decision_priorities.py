@@ -179,7 +179,7 @@ def test_estimate_with_headroom_qualifies_without_exactness_gate():
 
 
 def test_unknown_income_receipt_changes_relevant_deadline_but_uncertain_is_not_reasked():
-    """Verify unknown receipts prompt clarification while uncertain receipts get confirmation actions."""
+    """Verify unknown receipts need clarification; uncertain ones get confirmation actions."""
     data = facts(
         "0",
         [
@@ -323,7 +323,7 @@ def test_ready_first_gap_solution_precedes_smaller_cut_or_unknown_control():
 
 
 async def test_voice_explicit_same_status_on_corrected_terms_is_fresh_but_omission_is_not(store):
-    """Verify explicit provider reconfirmation survives voice corrections but omitted reports expire."""
+    """Verify explicit provider reconfirmation survives voice edits; omitted reports expire."""
     await store.create("owner")
     data = september()
     data["providerResponses"] = [
@@ -354,7 +354,7 @@ async def test_voice_explicit_same_status_on_corrected_terms_is_fresh_but_omissi
 
 
 def test_no_past_controllability_question_after_midnight(config):
-    """Verify elapsed purchases prompt status reconciliation rather than controllability questions."""
+    """Verify elapsed purchases need status reconciliation, not controllability questions."""
     data = facts(
         "100", [record("purchase", "optional", "200", "2026-09-11", controllability="unknown")]
     )

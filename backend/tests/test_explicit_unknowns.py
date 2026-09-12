@@ -50,7 +50,7 @@ async def test_omitted_unknowns_remain_questions(store, schedule):
 
 
 async def test_clarification_then_correction_keeps_current_thirty_day_outcome(store):
-    """Verify date clarification and cash correction retain record identity and a current outcome."""
+    """Verify date clarification and cash edits retain record identity and current outcomes."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -285,7 +285,7 @@ async def test_competing_values_are_not_unavailable_answers(store, field):
 
 
 async def test_ambiguous_record_candidates_are_not_unavailable_answers(store):
-    """Verify ambiguous record identities require clarification without saving unavailable answers."""
+    """Verify ambiguous record IDs need clarification without saving unavailable answers."""
     await store.create("owner")
     await store.command(
         "owner",
@@ -334,7 +334,7 @@ async def test_explicit_unknown_transaction_failure_rolls_back_facts_and_answers
 
 
 async def test_estimates_never_become_unavailable_answers(store):
-    """Verify estimated cash, amounts, and dates remain estimates rather than unavailable answers."""
+    """Verify estimated cash, amounts, and dates remain estimates, not unavailable answers."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -358,7 +358,7 @@ async def test_estimates_never_become_unavailable_answers(store):
 
 
 async def test_reanswered_unknown_replaces_dependency_without_duplicate_or_stale_plan(store):
-    """Verify reanswered unknowns replace dependency keys without duplicate answers or stale plans."""
+    """Verify reanswered unknowns replace dependency keys with no duplicates or stale plans."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -388,7 +388,7 @@ async def test_reanswered_unknown_replaces_dependency_without_duplicate_or_stale
 
 
 async def test_explicit_unknown_recalculates_retained_accepted_plan(store):
-    """Verify unknown opening cash recalculates baseline and accepted plans while retaining consent."""
+    """Verify unknown cash recalculates baseline and accepted plans while retaining consent."""
     await store.create("owner")
     await store.command(
         "owner",

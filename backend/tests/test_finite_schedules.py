@@ -62,7 +62,7 @@ def test_finite_weekly_receipts_stop_at_either_bound(schedule, expected):
 
 
 def test_variable_occurrences_are_not_scalar_duplicates():
-    """Verify variable schedules preserve each occurrence's amount and index in complete projections."""
+    """Verify complete variable projections preserve each occurrence's amount and index."""
     plan = project(facts("0", [variable()]))
     assert [event.amount_paise for event in plan.events] == [100000, 150000, 80000]
     assert [event.schedule_index for event in plan.events] == [0, 1, 2]
@@ -73,7 +73,7 @@ def test_variable_occurrences_are_not_scalar_duplicates():
 
 @pytest.mark.parametrize("kind", ["income", "essential", "optional", "debt"])
 def test_variable_amount_status_is_per_occurrence(kind, config):
-    """Verify each variable occurrence retains its own exact, estimated, or unknown amount status."""
+    """Verify variable occurrences retain their exact, estimated, or unknown amount status."""
     item = variable(kind, [money("100"), money("200", "estimate"), money(None, "unknown")])
     data = facts("0", [item])
     plan = project(data)
@@ -112,7 +112,7 @@ def test_variable_foreign_receipts_convert_each_currency():
 
 @pytest.mark.parametrize("kind", ["income", "debt"])
 def test_overdue_sequence_index_does_not_shift(kind):
-    """Verify overdue and omitted past occurrences do not shift later sequence amounts or indexes."""
+    """Verify overdue and omitted past occurrences never shift later amounts or indexes."""
     item = variable(kind, date="2026-09-01")
     plan = project(facts("0", [item]), anchor=date(2026, 9, 12))
     if kind == "debt":
@@ -159,7 +159,7 @@ def test_invalid_schedule_combinations(schedule):
 
 
 def test_patch_omitted_null_and_empty_semantics():
-    """Verify schedule patches distinguish omitted fields, nullable bounds, and empty amount lists."""
+    """Verify schedule patches distinguish omitted fields, null bounds, and empty lists."""
     assert SchedulePatch().model_dump(exclude_unset=True) == {}
     patch = SchedulePatch.model_validate({"endDate": None, "count": None, "amounts": []})
     assert patch.model_dump(exclude_unset=True) == {"end_date": None, "count": None, "amounts": []}
@@ -233,7 +233,7 @@ def test_budget_clips_without_redistribution_or_overdue_month():
 
 @pytest.mark.parametrize("start", ["2026-09-01", "2026-09-12"])
 def test_budget_early_gap_survives_positive_closing(start):
-    """Verify monthly budgets expose early gaps despite positive closing cash without inventing bills."""
+    """Verify monthly budgets show early gaps, not bills, despite positive closing cash."""
     item = scheduled("essential", "monthlyBudget", amount="3000", date=start)
     plan = project(
         facts("500", [item, record("pay", "income", "3000", "2026-09-20")]),
@@ -266,7 +266,7 @@ def test_missing_budget_start_and_amount_remain_useful_questions():
 @pytest.mark.parametrize("start", ["2026-10-10", "2026-10-11"])
 @pytest.mark.parametrize("certainty", ["exact", "estimate"])
 def test_budget_start_certainty_qualifies_even_without_occurrences(start, certainty):
-    """Verify estimated budget starts qualify outcomes even when no occurrences enter the horizon."""
+    """Verify estimated budget starts qualify outcomes with no occurrences in the horizon."""
     item = scheduled("essential", "monthlyBudget", amount="3100", date=start, certainty=certainty)
     plan = project(facts("100", [item]))
     outcome = plan.decision_assessment.outcome
@@ -293,7 +293,7 @@ def test_budget_start_certainty_qualifies_even_without_occurrences(start, certai
 
 
 async def test_voice_store_budget_variable_corrections_and_sse(store):
-    """Verify voice schedule corrections persist, publish snapshots, and reject budget payee reports."""
+    """Verify voice schedule edits persist, emit snapshots, and reject budget payee reports."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     stream = await store.subscribe("owner")
@@ -389,7 +389,7 @@ async def test_voice_store_budget_variable_corrections_and_sse(store):
 
 
 def test_variable_whole_currency_entries_and_clearing_bounds(config):
-    """Verify variable currency entries retain metadata and clearing a sequence requires a scalar."""
+    """Verify variable currency entries keep metadata; clearing a sequence needs a scalar."""
     saved = normalize(
         FactsInput.model_validate(
             facts(
@@ -453,7 +453,7 @@ def test_variable_whole_currency_entries_and_clearing_bounds(config):
     ],
 )
 def test_merge_preserves_undated_finite_and_variable_terms(config, reverse, terms):
-    """Verify record merges preserve finite bounds and variable amounts while supplying a known date."""
+    """Verify merges retain finite bounds and variable amounts while supplying a known date."""
     source = variable(date=None, **terms) if "amounts" in terms else scheduled(date=None, **terms)
     target = scheduled() | {"id": "dated"}
     if "amounts" in terms:
@@ -542,7 +542,7 @@ def test_merge_rejects_conflicting_schedule_terms_in_either_direction(
     ],
 )
 def test_sequence_replacement_never_inherits_currency_by_index(config, amounts, expected):
-    """Verify replacement sequences use explicit currency metadata rather than inheriting by index."""
+    """Verify replacement sequences use explicit currency metadata, not inherited by index."""
     saved = normalize(
         FactsInput.model_validate(
             facts("0", [variable(amounts=[foreign(), foreign("100", "EUR", "90", "0")])])
@@ -606,7 +606,7 @@ async def test_sequence_replacement_requires_explicit_source_metadata_atomically
 
 @pytest.mark.parametrize("recurrence,days", [("daily", [12, 13, 14]), ("fortnightly", [12, 26])])
 def test_other_finite_cadences(recurrence, days):
-    """Verify finite daily and fortnightly schedules preserve expected dates and sequence indexes."""
+    """Verify finite daily and fortnightly schedules retain expected dates and indexes."""
     plan = project(facts("0", [scheduled(recurrence=recurrence, count=len(days))]))
     assert [event.date.day for event in plan.events] == days
     assert [event.schedule_index for event in plan.events] == list(range(len(days)))
