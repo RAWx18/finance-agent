@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -9,6 +10,16 @@ import pytest
 from azure.cognitiveservices.speech import CancellationErrorCode, CancellationReason
 
 from app.speech import SpeechSynthesis, SynthesisFailure
+
+
+def diagnostics(caplog, event):
+    """Select persisted-safe diagnostic events by name."""
+    return [
+        payload
+        for record in caplog.records
+        if getattr(record, "safe_diagnostic", False)
+        and (payload := json.loads(record.getMessage()))["event"] == event
+    ]
 
 
 @pytest.mark.parametrize(
@@ -51,11 +62,60 @@ async def test_synthesis_cancellation_keeps_safe_provider_diagnostics(
     call = speech.push_error_frame.call_args
     assert isinstance(call.args[0].exception, SynthesisFailure) == recoverable
     assert call.kwargs.get("force_treat_as_permanent", False) == (not recoverable)
-    assert f"code={code.name}" in caplog.text
-    assert f"reason={reason.name}" in caplog.text
+    (cancelled,) = diagnostics(caplog, "speech.synthesisCancelled")
+    assert cancelled["category"] == code.name and cancelled["reason"] == reason.name
+    (failed,) = diagnostics(caplog, "speech.synthesisFailed")
+    assert failed["category"] == ("recoverable" if recoverable else "permanent")
     assert "private-token-and-utterance" not in caplog.text
     assert "Private financial text" not in caplog.text
+    await speech.cleanup()
     provider.stop_speaking_async.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "details,expected",
+    [
+        ("Connection was closed by the remote host. Error code: 1011. Error details: x", 1011),
+        ("USP error 12345678 secret token", None),
+        (None, None),
+    ],
+)
+async def test_streaming_cancellation_records_close_code_and_chunk_count(
+    monkeypatch, caplog, details, expected
+):
+    """Keep the websocket close code and received chunk count while dropping provider text."""
+    provider = Mock()
+    monkeypatch.setattr("app.speech.SpeechSynthesizer", Mock(return_value=provider))
+    speech = SpeechSynthesis(api_key="synthetic", region="centralindia", sample_rate=24000)
+    speech.get_event_loop = Mock(return_value=asyncio.get_running_loop())
+    speech.push_error_frame = AsyncMock()
+
+    def stream(_):
+        """Deliver two audio chunks and then the SDK runtime cancellation."""
+        deliver = provider.synthesizing.connect.call_args.args[0]
+        for _ in range(2):
+            deliver(SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)))
+        provider.synthesis_canceled.connect.call_args.args[0](
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    cancellation_details=SimpleNamespace(
+                        error_code=CancellationErrorCode.RuntimeError,
+                        reason=CancellationReason.Error,
+                        error_details=details,
+                    )
+                )
+            )
+        )
+
+    provider.speak_ssml_async.side_effect = stream
+    frames = [frame async for frame in speech.run_tts("Private financial text.", "test")]
+    assert len(frames) == 2
+    (cancelled,) = diagnostics(caplog, "speech.synthesisCancelled")
+    assert cancelled["stage"] == "streaming" and cancelled["audio_frames"] == 2
+    assert cancelled.get("provider_code") == expected
+    assert "secret" not in caplog.text and "remote host" not in caplog.text
+    assert "12345678" not in caplog.text
+    await speech.cleanup()
 
 
 @pytest.mark.parametrize("kind", ["audio", "canceled"])
