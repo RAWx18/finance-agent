@@ -19,6 +19,14 @@ max_streams_per_session = 4
 workspace_max_questions = 3
 workspace_max_actions = 6
 
+[diagnostics]
+# Active file plus this many rotated files; diagnostics exclude private payloads.
+max_bytes = 2097152
+backup_count = 3
+
+[exchange]
+timeout_seconds = 5
+
 [history]
 max_conversations = 200
 max_messages = 2000

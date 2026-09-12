@@ -16,6 +16,7 @@ dependencies = [
   "openai>=2,<3",
   "pipecat-ai[azure,daily,openai]==1.9.0",
   "pydantic>=2.12,<3",
+  "structlog>=25.4,<26",
   "tzdata>=2025.2,<2027",
   "uvicorn>=0.41,<1",
 ]

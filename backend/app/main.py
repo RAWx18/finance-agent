@@ -5,11 +5,13 @@ import asyncio
 import logging
 import re
 import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
@@ -22,13 +24,16 @@ from fastapi.responses import (
     StreamingResponse,
 )
 from starlette.exceptions import HTTPException
+from starlette.routing import Match
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from structlog.contextvars import bind_contextvars, reset_contextvars
 
 from .auth import Auth, AuthProblem
 from .auth_models import is_return_path
 from .auth_routes import owner
 from .auth_routes import router as auth_router
 from .config import ROOT, Config, Environment, load_config
+from .diagnostics import diagnostic_sink, record_event, request_id
 from .finance import export_text
 from .google import Google
 from .history import ConversationList, History, SavedConversation, transcript
@@ -46,21 +51,103 @@ from .models import (
     Snapshot,
 )
 from .store import Problem, Store, utc_now
+from .telemetry import configure as configure_logging
+from .telemetry import get_logger
 from .voice import VOICE_UNAVAILABLE, CallManager, unavailable_reason
 
-logger = logging.getLogger(__name__)
+http_log = get_logger(__name__, "http")
+
+# Locally constructed voice setup reasons that are safe to log; anything else is generic.
+VOICE_REASONS = {
+    "Daily room service is unavailable.",
+    "Daily returned an invalid room.",
+    "Daily returned an invalid token.",
+    "Voice is shutting down.",
+    "Voice setup failed; continue with manual entry.",
+    "Configured female English voice is unavailable in this Azure Speech resource; "
+    "verify voice.tts_voice, voice.tts_locale, and AZURE_SPEECH_REGION.",
+    "Azure Speech voice check failed; verify the resource region and service connectivity.",
+}
+VOICE_CHECK_STATUS = re.compile(
+    r"Azure Speech voice check returned HTTP [1-5][0-9]{2}; "
+    r"check the speech key, resource region, and service availability\."
+)
+
+
+def voice_reason(message: str) -> str:
+    """Reduce a voice failure message to a known safe reason."""
+    if message in VOICE_REASONS or VOICE_CHECK_STATUS.fullmatch(message):
+        return message
+    return "Voice setup failed."
 
 
 class CallbackLogFilter(logging.Filter):
-    """Access-log filter that excludes authentication callback URLs."""
+    """Exclude authentication callbacks even if access logging is re-enabled externally."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        """Exclude log records containing authentication callback URLs."""
         return "/auth/callback" not in record.getMessage()
 
 
-callback_log_filter = CallbackLogFilter()
-logging.getLogger("uvicorn.access").addFilter(callback_log_filter)
+class ServerLogFilter(logging.Filter):
+    """Keep Uvicorn's duplicate ASGI reports from rendering private exception messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and record.msg.startswith("Exception in ASGI application"):
+            record.msg = "ASGI request failed; consult correlated diagnostics."
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
+        return True
+
+
+logging.getLogger("uvicorn.error").addFilter(ServerLogFilter())
+logging.getLogger("uvicorn.access").addFilter(CallbackLogFilter())
+# Access logs contain raw history slugs and authentication query parameters.
+logging.getLogger("uvicorn.access").disabled = True
+
+
+def route_template(scope: Scope) -> str | None:
+    """Resolve the registered route pattern so logs never carry slugs or identifiers."""
+    route = getattr(scope.get("route"), "path", None)
+    if route is None:
+        for candidate in scope["app"].routes:
+            match, _ = candidate.matches(scope)
+            if match is Match.FULL:
+                route = getattr(candidate, "path", None)
+                break
+    return route if isinstance(route, str) else None
+
+
+def request_failure(
+    scope: Scope, status: int, *, error: BaseException | None = None, **fields: object
+) -> None:
+    """Record each relevant HTTP failure once using only its registered route template."""
+    if status < 500 and (
+        status < 400
+        or status == 404
+        or (
+            scope["method"] not in {"POST", "PUT", "PATCH", "DELETE"}
+            and status not in {409, 410, 428, 429}
+        )
+    ):
+        return
+    state = scope.setdefault("state", {})
+    if state.get("diagnostic_failure"):
+        return
+    state["diagnostic_failure"] = True
+    token = request_id.set(state.get("diagnostic_request_id"))
+    try:
+        record_event(
+            "http.failure",
+            error=error,
+            call_id=state.get("diagnostic_call_id"),
+            status=status,
+            method=scope["method"],
+            route=route_template(scope),
+            **fields,
+        )
+    finally:
+        request_id.reset(token)
 
 
 class Boundary:
@@ -74,7 +161,7 @@ class Boundary:
         self.auth = auth
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        """Enforce HTTP request restrictions and attach security headers to responses."""
+        """Correlate each request, attach security headers, and log API request outcomes."""
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
@@ -82,12 +169,28 @@ class Boundary:
             key.decode("latin-1").lower(): value.decode("latin-1")
             for key, value in scope["headers"]
         }
+        identity = uuid4()
+        scope.setdefault("state", {})["diagnostic_request_id"] = identity
+        token = request_id.set(identity)
+        context = bind_contextvars(requestId=str(identity))
+        started = time.monotonic()
+        status: int | None = None
+        # Health probes and static assets are noise; API and auth traffic is the trace of interest.
+        traced = scope["path"].startswith(("/api/", "/auth/"))
 
         async def secured_send(message: Message) -> None:
             """Attach browser security headers before forwarding response messages."""
+            nonlocal status
             if message["type"] == "http.response.start":
-                message.setdefault("headers", []).extend(
+                status = message["status"]
+                message["headers"] = [
+                    (key, value)
+                    for key, value in message.get("headers", [])
+                    if key.lower() != b"x-request-id"
+                ]
+                message["headers"].extend(
                     [
+                        (b"x-request-id", str(identity).encode()),
                         (b"x-content-type-options", b"nosniff"),
                         (b"referrer-policy", b"no-referrer"),
                         (b"cache-control", b"no-store"),
@@ -107,10 +210,41 @@ class Boundary:
                 )
             await send(message)
 
+        try:
+            await self.dispatch(scope, receive, secured_send, headers)
+        except Exception as error:
+            request_failure(
+                scope,
+                500,
+                error=error,
+                elapsed_seconds=time.monotonic() - started,
+            )
+            raise
+        else:
+            if status is not None:
+                request_failure(scope, status, elapsed_seconds=time.monotonic() - started)
+            if traced:
+                (http_log.warning if status is not None and status >= 500 else http_log.info)(
+                    "http.request",
+                    method=scope["method"],
+                    route=route_template(scope),
+                    status=status,
+                    durationMs=round((time.monotonic() - started) * 1000, 1),
+                )
+        finally:
+            request_id.reset(token)
+            reset_contextvars(**context)
+
+    async def dispatch(
+        self, scope: Scope, receive: Receive, send: Send, headers: dict[str, str]
+    ) -> None:
+        """Enforce HTTP request restrictions before forwarding to the application."""
+
         async def reject(status: int, code: str, message: str) -> None:
             """Send a structured request rejection with security headers."""
+            request_failure(scope, status, code=code)
             await JSONResponse({"code": code, "message": message}, status_code=status)(
-                scope, receive, secured_send
+                scope, receive, send
             )
 
         path = scope["path"]
@@ -184,13 +318,14 @@ class Boundary:
                         await reject(400, "invalidQuery", "Query parameters are not accepted.")
                         return
             except Problem as error:
+                request_failure(scope, error.status, error=error, code=error.body.code)
                 await JSONResponse(
                     error.body.model_dump(mode="json", by_alias=True),
                     status_code=error.status,
                     headers={"Retry-After": str(error.retry_after)}
                     if isinstance(error, AuthProblem) and error.retry_after
                     else None,
-                )(scope, receive, secured_send)
+                )(scope, receive, send)
                 return
             if mutation:
                 content_type = headers.get("content-type", "").split(";")[0].strip().lower()
@@ -237,9 +372,9 @@ class Boundary:
                         return {"type": "http.request", "body": bytes(body), "more_body": False}
                     return await receive()
 
-                await self.app(scope, body_receive, secured_send)
+                await self.app(scope, body_receive, send)
                 return
-        await self.app(scope, receive, secured_send)
+        await self.app(scope, receive, send)
 
 
 def create_app(
@@ -261,41 +396,64 @@ def create_app(
 
     async def cleanup() -> None:
         """Periodically expire stored financial and authentication data."""
-        while True:
-            await asyncio.sleep(config.cleanup_seconds)
-            await store.cleanup()
-            await auth.cleanup()
+        try:
+            while True:
+                await asyncio.sleep(config.cleanup_seconds)
+                await store.cleanup()
+                await auth.cleanup()
+        except Exception as error:
+            record_event("app.cleanupFailure", error=error, stage="cleanup")
+            raise
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         """Start application services and release them when the application shuts down."""
-        if reason := unavailable_reason(config, environment):
-            logger.warning("Voice unavailable at startup: %s", reason)
-        else:
-            from .voice_pipeline import prepare_runtime
-
-            await asyncio.to_thread(prepare_runtime)
-        await store.open()
-        await auth.open()
-        await store.cleanup()
-        await auth.cleanup()
-        task = asyncio.create_task(cleanup())
-        application.state.cleanup_task = task
-        try:
-            yield
-        finally:
-            task.cancel()
+        configure_logging(environment.log_level, environment.log_format)
+        with diagnostic_sink(environment.data_dir, config.diagnostics):
+            task: asyncio.Task[None] | None = None
+            stage = "startup"
+            record_event("app.startup", status="started")
             try:
-                with suppress(asyncio.CancelledError):
-                    await task
+                if (reason := unavailable_reason(config, environment)) is None:
+                    from .voice_pipeline import prepare_runtime
+
+                    await asyncio.to_thread(prepare_runtime)
+                else:
+                    record_event("app.voiceUnavailable", status="unavailable")
+                    http_log.warning("voice.unavailable", stage="startup", reason=reason)
+                await store.open()
+                await auth.open()
+                await store.cleanup()
+                await auth.cleanup()
+                task = asyncio.create_task(cleanup())
+                application.state.cleanup_task = task
+                record_event("app.startup", status="ok")
+                stage = "runtime"
+                yield
+            except BaseException as error:
+                record_event("app.lifecycleFailure", error=error, stage=stage)
+                raise
             finally:
+                record_event("app.shutdown", status="started")
                 try:
-                    await calls.close()
-                finally:
                     try:
-                        await auth.close()
+                        if task is not None:
+                            task.cancel()
+                            with suppress(asyncio.CancelledError):
+                                await task
                     finally:
-                        await store.close()
+                        try:
+                            await calls.close()
+                        finally:
+                            try:
+                                await auth.close()
+                            finally:
+                                await store.close()
+                except BaseException as error:
+                    record_event("app.shutdown", error=error, status="failed")
+                    raise
+                else:
+                    record_event("app.shutdown", status="ok")
 
     application = FastAPI(
         title="30-day cashflow foundation",
@@ -318,34 +476,18 @@ def create_app(
     async def problem_handler(request: Request, error: Problem) -> JSONResponse:
         """Render domain failures with public-safe messages and applicable rate limits."""
         if error.body.code == "commandConflict":
-            logger.warning("authCommandConflict")
             try:
                 auth.limit("conflict", owner(request).user_id, config.auth.invalid_limit)
             except AuthProblem as limited:
                 error = limited
         body = error.body.model_dump(mode="json", by_alias=True)
+        request_failure(request.scope, error.status, error=error, code=error.body.code)
         if error.body.code == "voiceUnavailable":
-            reason = unavailable_reason(config, environment)
-            # Only locally constructed reasons and bounded HTTP statuses are safe to log.
-            if reason is None:
-                reason = error.body.message
-                if reason not in {
-                    "Daily room service is unavailable.",
-                    "Daily returned an invalid room.",
-                    "Daily returned an invalid token.",
-                    "Voice is shutting down.",
-                    "Voice setup failed; continue with manual entry.",
-                    "Configured female English voice is unavailable in this Azure Speech resource; "
-                    "verify voice.tts_voice, voice.tts_locale, and AZURE_SPEECH_REGION.",
-                    "Azure Speech voice check failed; "
-                    "verify the resource region and service connectivity.",
-                } and not re.fullmatch(
-                    r"Azure Speech voice check returned HTTP [1-5][0-9]{2}; "
-                    r"check the speech key, resource region, and service availability\.",
-                    reason,
-                ):
-                    reason = "Voice setup failed."
-            logger.warning("Voice unavailable: %s", reason)
+            http_log.warning(
+                "voice.unavailable",
+                stage="callStart",
+                reason=unavailable_reason(config, environment) or voice_reason(error.body.message),
+            )
             body["message"] = VOICE_UNAVAILABLE
         return JSONResponse(
             body,
@@ -358,6 +500,13 @@ def create_app(
     @application.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, error: RequestValidationError) -> JSONResponse:
         """Return a public validation error without exposing submitted field values."""
+        request_failure(
+            request.scope,
+            422,
+            error=error,
+            code="validationError",
+            validation=error.errors(),
+        )
         return JSONResponse(
             {
                 "code": "validationError",
@@ -369,6 +518,7 @@ def create_app(
     @application.exception_handler(HTTPException)
     async def http_handler(request: Request, error: HTTPException) -> JSONResponse:
         """Return a generic resource or method error with the original HTTP status."""
+        request_failure(request.scope, error.status_code, error=error, code="httpError")
         return JSONResponse(
             {"code": "httpError", "message": "Resource or method unavailable."},
             status_code=error.status_code,
@@ -377,6 +527,7 @@ def create_app(
     @application.exception_handler(sqlite3.Error)
     async def storage_handler(request: Request, error: sqlite3.Error) -> JSONResponse:
         """Report storage unavailability with safe command-retry guidance."""
+        request_failure(request.scope, 503, error=error, code="unavailable")
         return JSONResponse(
             {
                 "code": "unavailable",
@@ -388,9 +539,11 @@ def create_app(
     @application.exception_handler(Exception)
     async def unexpected_handler(request: Request, error: Exception) -> JSONResponse:
         """Return a generic internal failure without disclosing exception details."""
+        request_failure(request.scope, 500, error=error, code="internalError")
         return JSONResponse(
             {"code": "internalError", "message": "Request failed; retry the same command ID."},
             status_code=500,
+            headers={"X-Request-ID": str(request.state.diagnostic_request_id)},
         )
 
     @application.get("/api/settings", response_model=Settings)
@@ -467,11 +620,13 @@ def create_app(
     @application.post("/api/session/call", response_model=CallJoin)
     async def join_call(request: Request, body: CallRequest) -> CallJoin:
         """Start or join the requested voice conversation."""
+        request.state.diagnostic_call_id = body.call_id
         return await calls.start(owner(request), body.call_id, body.conversation_slug)
 
     @application.delete("/api/session/call", response_model=CallState)
     async def end_call(request: Request, body: CallRequest) -> CallState:
         """End the requested voice call and return its resulting state."""
+        request.state.diagnostic_call_id = body.call_id
         return await calls.end(owner(request), body.call_id)
 
     @application.post("/api/session/commands", response_model=Snapshot)
@@ -498,6 +653,7 @@ def create_app(
         async def stream() -> AsyncIterator[str]:
             """Yield authorized snapshot events, heartbeats, and terminal session failures."""
             sequence = -1
+            started = time.monotonic()
 
             async def terminal(value: Error) -> str:
                 """Render a terminal event, distinguishing account deletion from sign-out."""
@@ -510,6 +666,8 @@ def create_app(
                     ):
                         if await cursor.fetchone() is None:
                             value = Error(code="accountDeleted", message="Account deleted.")
+                if value.code in {"unavailable", "authUnavailable", "internalError"}:
+                    request_failure(request.scope, 503, code=value.code, stage="sse")
                 return f"event: {value.code}\ndata: {value.model_dump_json(by_alias=True)}\n\n"
 
             try:
@@ -520,6 +678,13 @@ def create_app(
                         try:
                             value = await store.get(key)
                         except Problem as error:
+                            request_failure(
+                                request.scope,
+                                error.status,
+                                error=error,
+                                code=error.body.code,
+                                stage="sse",
+                            )
                             yield await terminal(error.body)
                             return
                         if value.sequence == sequence:
@@ -529,12 +694,26 @@ def create_app(
                         try:
                             await auth.check(key)
                         except Problem as error:
+                            request_failure(
+                                request.scope,
+                                error.status,
+                                error=error,
+                                code=error.body.code,
+                                stage="sse",
+                            )
                             value = error.body
                         yield await terminal(value)
                         return
                     try:
                         value = await store.get(key)
                     except Problem as error:
+                        request_failure(
+                            request.scope,
+                            error.status,
+                            error=error,
+                            code=error.body.code,
+                            stage="sse",
+                        )
                         yield await terminal(error.body)
                         return
                     if value.sequence <= sequence:
@@ -544,6 +723,15 @@ def create_app(
                         f"event: snapshot\nid: {sequence}\n"
                         f"data: {value.model_dump_json(by_alias=True)}\n\n"
                     )
+            except Exception as error:
+                request_failure(
+                    request.scope,
+                    500,
+                    error=error,
+                    stage="sse",
+                    elapsed_seconds=time.monotonic() - started,
+                )
+                raise
             finally:
                 store.unsubscribe(key, queue)
 

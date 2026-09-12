@@ -119,6 +119,14 @@ class HistoryConfig(BaseModel):
     max_search_chars: int = Field(default=200, ge=1, le=1000)
 
 
+class ExchangeConfig(BaseModel):
+    """Exchange-rate provider request deadline."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    timeout_seconds: float = Field(default=5, ge=0.1, le=30, allow_inf_nan=False)
+
+
 class MemoryConfig(BaseModel):
     """Conversational note size, count, and user-context retention limits."""
 
@@ -127,6 +135,15 @@ class MemoryConfig(BaseModel):
     max_notes: int = Field(ge=1, le=20)
     max_note_chars: int = Field(ge=40, le=500)
     user_days: int = Field(ge=1, le=90)
+
+
+class DiagnosticsConfig(BaseModel):
+    """Bounded local retention for payload-free operational diagnostics."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    max_bytes: int = Field(default=2097152, ge=16384, le=16777216, strict=True)
+    backup_count: int = Field(default=3, ge=1, le=10, strict=True)
 
 
 class Config(BaseModel):
@@ -152,6 +169,8 @@ class Config(BaseModel):
     workspace_max_questions: int = Field(default=3, ge=1, le=10)
     workspace_max_actions: int = Field(default=6, ge=1, le=20)
     history: HistoryConfig = Field(default_factory=HistoryConfig)
+    exchange: ExchangeConfig = Field(default_factory=ExchangeConfig)
+    diagnostics: DiagnosticsConfig = Field(default_factory=DiagnosticsConfig)
     memory: MemoryConfig
     auth: AuthConfig
     voice: VoiceConfig
@@ -182,6 +201,15 @@ class Environment(BaseModel):
     azure_speech_region: str = Field(
         default="", pattern=r"^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)?$"
     )
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Unset selects colored console output on a terminal and JSON lines elsewhere.
+    log_format: Literal["json", "console"] | None = None
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def validate_log_level(cls, value: object) -> object:
+        """Accept log levels in any letter case."""
+        return value.upper() if isinstance(value, str) else value
 
     @field_validator("auth_encryption_key")
     @classmethod
@@ -289,6 +317,8 @@ class Environment(BaseModel):
                     "DAILY_API_KEY",
                     "AZURE_SPEECH_KEY",
                     "AZURE_SPEECH_REGION",
+                    "LOG_LEVEL",
+                    "LOG_FORMAT",
                 )
                 if name in os.environ
             }
