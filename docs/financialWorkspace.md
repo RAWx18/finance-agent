@@ -24,42 +24,76 @@ income, essential/optional spending, loans, cards and other payment obligations.
 Asia/Kolkata. Opening cash corrects the original starting position, not a live bank balance.
 Paid expenses and income already in that position must not be counted again.
 
+Foreign income retains its original amount/currency and reported INR-per-unit rate, rate date
+and INR deduction. The backend calculates net INR with decimal arithmetic and rounds once to
+paise. Missing rates or fees stay unknown; enter zero explicitly for no fee. Estimated source
+amounts or conversion terms remain conditional income, not dependable funds. No live rate lookup
+or currency conversion transaction is performed.
+
+Schedules support daily, weekly, fortnightly and monthly occurrences, an inclusive `endDate`,
+and a finite `count`. Ordered `amounts` generate varying occurrences from the same cadence and
+start date; they replace the scalar amount and stop at the list length. Replacement list entries
+must include `conversion: null` for INR or complete foreign-source terms. Variable required debt
+payments cannot share a scalar intended-payment target.
+
+`monthlyBudget` represents an explicitly chosen even-daily calendar-month spending forecast.
+It uses each month's actual length, including leap years, with deterministic paise allocation.
+Only days within the start/end and plan window count; clipped days are not redistributed.
+Its daily entries are estimates, not contractual bills. For this schedule, `count` means calendar
+months. Budget and variable occurrences are not eligible for spending-change proposals.
+
 There is no bank access, payment execution, mandate cancellation, provider contact, credit approval,
 new-borrowing recommendation, investment selection or tax/legal determination. Provider reports
 are not independently verified approval. Never invent lender rules, fees or offers. Minimum,
 intended total payment and outstanding debt are separate; planning does not establish repayment.
 
-## Card templates
+## Conversation companion
 
 The backend determines membership; a fresh session has **no cards**. Cards have stable IDs,
-sections, states and references to facts, issues, occurrences and results. Related items share a
-card rather than exposing every internal object as a widget.
+states and references to facts, issues, occurrences and results. A shared summary shows the
+financial consequence and one eligible next step; four compact patterns hold the supporting facts.
 
-| Template | Information and when it exists | Consumer decision |
+| Pattern | Information and when it exists | Consumer decision |
 | --- | --- | --- |
-| Available cash | Opening amount/certainty and date, relevant reserve; supplied cash, conflict or reserve | Correct usable starting funds; reserve is not spending |
-| Income | Named receipts, amount, recurrence, availability date and certainty; appears when discussed | Confirm timing/reliability or retain conditional income |
-| Essential spending | Unpaid living costs, amount/date certainty, recurrence, commitment/auto-debit | Protect needs and identify incomplete obligations |
-| Optional spending | Named future spending, amount/date and changeability | Explore an eligible reduction; deleting a mistaken fact is not cancellation |
-| Loans/other debt | Required instalment, next unpaid date, recurrence, type, optional outstanding | Correct obligations and identify exposed deadlines |
-| Credit cards | Required minimum, intended payment including minimum, outstanding, debit/changeability | Compare a supported target reduction without implying payoff |
-| Information needing attention | Material missing/uncertain/conflicting details and why they matter; alternatives stay visible | Clarify an exact detail or leave it explicitly unresolved |
-| Timeline | Dated receipts/obligations, conservative ordering and requirements balances | See when money is needed, not just the final remainder |
-| Gap/timing risk | First/largest deficit, reserve exposure and causal occurrences | Identify the deadline and whether a change actually helps |
-| Proposal | Whole assumption set, replacements/removals and calculated effects | Accept unconditionally, reject, or close exploration |
-| Accepted assumptions | Consented amounts/dates/effects, separate from facts | See dependencies; accepted never means executed |
-| Invalidation | Affected assumptions and reasons they no longer apply | Obtain fresh consent rather than carrying obsolete advice |
-| Outlook/plan | Covered/uncovered commitments, qualifications, next step and revisit conditions | Reach a qualified or reviewed conclusion without false completeness |
+| Cash & timing | Reported opening cash, relevant reserve and qualified calculated closing figure | Check starting funds; positive closing never hides the summary's earlier gap |
+| Next & commitments | Four prioritized name/amount/date rows: exposed need, current concern, correction and receipt | Inspect relevant items without duplicate category/timeline rows; expand for remaining records |
+| Important uncertainty | One material unresolved detail not already represented on visible rows | Clarify the fact that changes the decision, without an on-screen questionnaire |
+| Plan changes | Actual preview, saved assumptions and invalidations together | Review exact amounts/removals and first-shortfall impact before unconditional consent |
 
 Known, estimated, uncertain, missing, conflicting, proposed, accepted and unresolved remain distinct.
-Missing fields stay on relevant fact/issue cards. Resolved conflicts and deleted items disappear;
-successful corrections/decisions remain in the change summary. No empty category placeholders.
+Only changed values receive a brief highlight; unchanged values retain their position and focus.
+Missing fields stay on their relevant row. Named exclusions, amounts and reasons accompany
+calculated figures. The summary and next action survive End without a completion wizard.
+Money retains detailed review, printing and a direct download beside the actual expiry time.
+Retention remains configured separately from the 30-day projection window.
+
+Ordinary recurring rows select the earliest occurrence on or after evaluation, while a prioritized
+exposed occurrence keeps its original date. Elapsed items are never inferred paid. Focused editors
+retain their row order until focus leaves; saving a correction updates dependent results together.
+
+Click a source amount, date or name to edit in place; Enter saves and Escape cancels. Source certainty,
+foreign conversion terms and selected occurrence amounts retain their original meaning. Generated
+balances, shortfalls, net INR and budget-day allocations remain read-only. Repeating dates edit the
+series start, not an invented individual occurrence. Failed saves retain the draft; stale revisions
+cannot overwrite newer facts. All proposal changes and removals must be visible before consent.
+
+Inline edits submit `updateFacts` with `source: "humanCardEdit"` outside `changes`. The store stamps
+`latestChange.source` / `workspace.change.source` with `kind`, authenticated `actorId`, and server `at`.
+The change's command ID, revision and before/after field references persist in the same SQLite
+transaction and idempotency receipt. Neither the client nor the LLM supplies the actor or timestamp.
+Voice tool arguments do not accept this source label.
+
+Isha receives the same source metadata in canonical `change`; external edits refresh the snapshot
+and invalidate obsolete model/tool/audio generations. The agent is instructed to recognize a manual
+correction without replaying its mutation or claiming it was spoken. No card-local financial ledger
+or browser arithmetic is introduced.
 
 ## Validated lifecycle
 
 HTTP `updateFacts` and voice `update_facts` share `FactsPatch`, its reducer and the store transaction.
-Command and patch carry `expectedRevision`; inputs use decimal **rupee strings**, normalized by the
-backend to integer paise. Idempotent command IDs support retries; stale revisions cannot overwrite.
+Command and patch carry `expectedRevision`; inputs use decimal **rupee strings**, or original
+currency amounts when `conversion` is supplied. The backend normalizes to INR integer paise while
+retaining foreign source terms. Idempotent command IDs support retries; stale revisions cannot overwrite.
 
 | Intent | Operation and validation |
 | --- | --- |
@@ -86,9 +120,13 @@ consent. User-reported lender terms never imply that the service contacted a len
 Same-day payments precede receipts conservatively; actual bank processing is not asserted. Unknown
 opening yields unknown balances. Estimated/uncertain receipts are excluded from assurance.
 Undated obligations are excluded from dated totals **with a limitation**, not treated as zero.
+`timingRisks` separates pre-receipt exposure from the funding gap remaining after included same-day
+receipts. Timing advice is deferrable, not an answerable ordering field; it cannot change money,
+dates, reliability or automatic-debit assumptions. First buffer-breach amounts retain their own dates,
+separately from the largest buffer shortfall.
 
 Results expose value/state, rule, date/window, contributing/excluded IDs, per-result exclusion
-reasons, witness occurrences, unresolved issues and assumptions. Contributions reference source
+reasons, named `qualifications`, witness occurrences, unresolved issues and assumptions. Contributions reference source
 facts and kernel balances. Gap evidence stops at the deficit-producing occurrence, before a later
 same-day receipt. First gap means largest deficit on the earliest affected date; peak means largest
 overall deficit, **not their sum**. Positive closing is not spending permission or an early-gap fix.
@@ -108,10 +146,15 @@ focus/scroll and respects reduced motion. Stale state disables writes and voice 
 - [Models](../backend/app/models.py), [fact reducer](../backend/app/facts.py),
   [workspace/evidence](../backend/app/workspace.py), [store](../backend/app/store.py).
 - [Isha tools/scope](../backend/app/voice_tools.py), [cards](../frontend/src/FinancialContext.tsx),
-  [corrections/conflicts/evidence](../frontend/src/WorkspaceDetails.tsx).
+    [inline fields](../frontend/src/CardField.tsx), [source edits](../frontend/src/cardFields.ts),
+    [detailed evidence](../frontend/src/WorkspaceDetails.tsx).
 - [Backend regressions](../backend/tests/test_workspace.py),
-  [voice integration](../backend/tests/test_voice_workspace.py),
-  [browser HTTP/SSE journey](../frontend/tests/e2e/workspace.spec.ts).
+    [card membership](../backend/tests/test_companion.py),
+    [provenance and voice invalidation](../backend/tests/test_card_edits.py),
+    [browser HTTP/SSE companion journey](../frontend/tests/e2e/companion.spec.ts).
+- [Consumer financial-flow regressions](../backend/tests/test_financial_flow.py),
+    [summary presentation](../frontend/tests/PlanSummary.test.tsx),
+    [browser corrections, timing, expiry and export](../frontend/tests/e2e/financialFlow.spec.ts).
 
 Run the standard checks in [../README.md](../README.md). Scripted model/provider boundaries verify
 commands, state, UI and orchestration—not natural-language accuracy. Real recognition and human

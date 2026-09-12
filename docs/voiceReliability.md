@@ -9,7 +9,7 @@ coordinator — browser integration and focused end-to-end verification.
 
 **Outcome:** a voice failure must not delete a financial plan, replay a financial mutation,
 publish obsolete advice, silently resume capture or claim resource cleanup without evidence.
-The existing Pipecat → Daily → Azure Speech → configured GPT-5.6-Terra → financial
+The existing Pipecat → Daily → Azure Speech → configured GPT-5.6 model → financial
 tools/SQLite → browser architecture remains in use. No alternative provider or retry service.
 
 ## Recovery decisions
@@ -17,8 +17,8 @@ tools/SQLite → browser architecture remains in use. No alternative provider or
 | Failure | Recovery |
 | --- | --- |
 | User interruption or financial correction | Advance the response generation, flush playback and cancel obsolete model/tool/speech work. Refresh authoritative state before answering. |
-| LLM timeout, connection failure, throttling or retryable server outage | Pause the same call. Discard partial assistant/tool context, retain completed user input and committed figures, and require explicit Continue. No automatic model request or write replay. |
-| TTS first-audio, progress or overall timeout; empty audio; temporary speech-provider failure | Retire request callbacks, stop synthesis and pause only after interruption settles. Do not emit a speaking-start signal without audio. Continue requests one read-only response from current state. |
+| LLM stalls without text/tool progress, connection failure, throttling or retryable server outage | Pause the same call. Discard partial assistant/tool context, retain completed user input and committed figures, and require explicit Continue. No automatic model request or write replay. |
+| TTS first-audio or audio-progress timeout; empty audio; temporary speech-provider failure | Retire request callbacks, stop synthesis and pause only after interruption settles. Do not emit a speaking-start signal without audio. Continue finishes addressing the retained user turn in one read-only response from current state. |
 | Invalid provider credentials, exhausted billing quota, malformed output, unsafe completion or unknown pipeline exception | End media, preserve the plan and report a concise failure. A new call requires a user action; provider configuration may need repair. No fabricated financial answer. |
 | STT unexpected cancellation/session stop or malformed recognition | Retire the recognizer and reject late callbacks. End media; explicit reconnect creates a fresh recognizer with current financial state. Intentional shutdown is not a recognition failure. |
 | Invalid/stale tool arguments | Keep structured validation/current-state feedback and revision checks. Unknown tools or exhausted execution budgets cannot authorize an ungrounded response. |
@@ -43,14 +43,27 @@ tools/SQLite → browser architecture remains in use. No alternative provider or
 - Azure native operations remain tracked after a coroutine timeout. Recognizer stop cannot
   overtake a queued native start. Callback retirement is immediate; actual termination is a
   separate fact. Pipecat worker exceptions, cancellation and timeout cannot look like clean End.
-- Deadlines live in [config.toml](../config.toml): model, startup, shutdown, absolute call
-  lifetime, and synthesis first-audio/progress/overall limits. Browser startup/shutdown limits
+- Deadlines live in [config.toml](../config.toml): model inactivity, startup, shutdown, absolute call
+  lifetime, and synthesis first-audio/audio-progress limits. Browser startup/shutdown limits
   come from server settings; media expiry comes from the returned credentials.
+- Model content/tool progress refreshes its deadline; empty keepalives do not. Healthy audio
+  does not expire by total synthesis duration. Call duration, token and tool-round limits remain.
+  Deferred empty-response recovery belongs to one request and cannot stop a newer response.
 - Logs retain sanitized stage, exception type, provider HTTP status and generation information,
   not credentials, raw provider bodies or private financial dialogue.
 
 ## Focused acceptance evidence
 
+- [Response progress](../backend/tests/test_voice_progress.py): progressing model/audio streams
+  finish without Paused, stale empty-completion recovery cannot cut off current audio, and
+  empty keepalives still time out. Subsequent turns preserve the original financial save.
+- [Chat isolation](../backend/tests/test_history_continuation.py) and
+  [resumed Pipecat turns](../backend/tests/test_voice_resume.py): stable chat identity across fresh
+  calls, A/B financial and conversational isolation, read-only catch-up, no old-action replay,
+  preserved consent/proposals, stale callback rejection and new intentional corrections.
+- [History continuation](../frontend/tests/e2e/continuation.spec.ts): Continue talking selects A
+  over real HTTP/SSE, opens `/app/{slug}`, starts once, reconnects A after an SDK disconnect and
+  keeps reload microphone-free; desktop/tablet/mobile use explicit media-provider doubles.
 - [Provider recovery](../backend/tests/test_voice_recovery.py): LLM timeout/connection/throttle/
   server failure before and after commit; explicit Continue; empty/stalled/cancelled TTS;
   stale callbacks; STT loss; worker crash and timeout.
@@ -71,6 +84,20 @@ tools/SQLite → browser architecture remains in use. No alternative provider or
   microphone disconnect, stale Continue acknowledgements and duplicate command retry.
 
 ## Verification limits and operations
+
+On 12 September, real Chromium/Daily/Pipecat/Azure checks passed both ordinary reconnect and
+History's Continue talking action with one retained chat, distinct media-call IDs and audible
+assistant output. Reconnect reached ready/capture in 4.18 s and first audio in 8.11 s; History
+continuation took 4.37 s and 8.31 s. End stopped local media in about 1 ms and confirmed cleanup
+in 263–270 ms. Every owned room was confirmed absent with GET 404. These live checks use
+synthetic authentication and silent microphone input; A/B content and mutation isolation are
+covered by the real-pipeline and HTTP/SSE regressions, not a human speech-accuracy guarantee.
+
+Reproduce from the backend with
+`uv run --locked python -m scripts.verify_lifecycle --allow-billable --cycles 2 --mode history`
+(or `--mode cycles` for ordinary reconnect).
+Saved transcripts predating captured financial memory remain readable; continuation fails closed
+when their own snapshot cannot be proven. It never loads a different chat's current workspace.
 
 These fault tests isolate external providers while exercising real Pipecat, SQLite and browser
 boundaries. They do not certify live Azure/Daily outage behavior, physical playback, acoustic

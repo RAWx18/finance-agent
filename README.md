@@ -3,7 +3,7 @@
 
 # 30-day voice financial planner
 
-A conversation-first prototype using **Daily, Pipecat, GPT-5.6-Terra and Microsoft Foundry Speech**.
+A conversation-first prototype using **Daily, Pipecat, GPT-5.6 and Microsoft Foundry Speech**.
 The conversation role captures partial facts and corrections through validated application tools;
 `review_plan` reads the deterministic decision assessment. INR state, calculations and live cards
 share the same committed facts.
@@ -30,6 +30,8 @@ No host Python/Node installation is needed. Copy [.env.example](.env.example) to
 repository root and configure the three Google sign-in values below. Configure the Azure OpenAI
 endpoint and key, Speech key/region, and Daily key only if using voice. Select the verified Azure
 deployment with `voice.model` in [config.toml](config.toml).
+The current setting uses the existing `gpt-5.6-luna` deployment; the former Terra deployment is
+no longer available in the configured resource.
 Do not paste keys into chat or commit them. Read the
 [Azure setup values and private credential instructions](docs/azureSetup.md). The configured model
 calls Azure, never direct OpenAI; the existing `caracalaus` deployment and the Central India
@@ -64,7 +66,8 @@ Compose stays attached; no second frontend or backend startup command is needed.
 4. Start the application and choose **Continue with Google**. Only `openid profile email` are
 	requested. Sign-in does not start a microphone, a financial plan, or a paid voice call.
 
-Routes include `/login`, `/app`, `/money`, `/account`, `/history` and `/history/<conversation-slug>`.
+Routes include `/login`, `/app`, `/app/<conversation-slug>`, `/money`, `/account`, `/history`
+and `/history/<conversation-slug>`.
 Money has shallow `/money/income`, `/money/spending`, `/money/debts`, `/money/upcoming`, and
 `/money/changes` pages. Authenticated deep links retain their destination through sign-in.
 The backend protects application pages
@@ -133,6 +136,12 @@ Completed turns do not resend their tool snapshots: the latest authoritative fin
 the current turn's tool results remain available. This avoids accumulating a full ledger per turn
 without deleting saved facts, corrections or accepted assumptions.
 
+Isha receives the current account display name and a small separate conversational memory.
+`[memory]` limits notes to eight per scope and 240 characters each: common preferences last until
+forgotten, explicitly retained user context expires after 30 days, and chat notes expire with their
+chat. Ask Isha to remember or forget a preference; no transcript dump or second financial ledger is
+created. See [memory boundaries](backend/README.md#conversational-memory).
+
 Only one voice call runs at a time. **Start conversation** opens preparation; **Start talking**
 requests microphone access before a room is created. Rooms and participant tokens permit audio
 only and grant no recording, transcription or participant-administration privileges. The app never
@@ -156,6 +165,21 @@ Amounts, dates, income reliability and debt type may remain unknown. A positive
 closing balance can coexist with an earlier cash gap. Same-day debits precede receipts
 conservatively; verify timing before relying on them. Debt targets include the required/minimum
 payment rather than adding to it. A projection never reduces the reported outstanding debt.
+
+Conversation and Money show one current next step with its financial consequence. Closing forecasts
+name excluded items and amounts beside the number. Same-day timing exposure is distinct from money
+still unfunded after that day's included receipts; timing advice never establishes bank processing order.
+Money offers **Download saved plan** beside its expiry notice. The default 24-hour retention is not
+30 days of online availability; saved conversational preferences do not preserve an expired plan.
+
+For foreign income, edit **Amount** to enter the original currency amount, INR-per-unit rate,
+rate certainty/date and INR deduction. The backend calculates net INR; unknown rates or fees
+remain unknown, and estimated conversion terms stay conditional. There is no live rate lookup.
+In **Repeats**, set daily/weekly/fortnightly/monthly cadence, inclusive end date or occurrence count.
+Choose **Varies by occurrence** under Amount for an ordered finite amount sequence without entering
+every date. For essential or optional spending, **Monthly budget** spreads the stated calendar-month
+budget evenly across actual month days as an explicit estimated forecast, not a scheduled bill.
+Budget and variable occurrences are not eligible for Plan changes proposals.
 
 Use **Plan changes** to compare individual eligible occurrences and confirm that
 each can still be changed. Optional expenses must be uncommitted and controllable without
@@ -214,12 +238,14 @@ when requested. Financial retention remains 24 hours, independently of login lif
 **Sign out** ends the current browser login and its voice connection without deleting the plan.
 Other tabs detect logout through a browser signal and server revalidation; independent browser
 logins remain valid. **Delete app account** requires typing `DELETE` and a sign-in within the last
-15 minutes. It removes the user, Google grants, all app logins, figures, assumptions and command
-history, and stops active voice/access. It does not delete the Google account or downloaded files.
+15 minutes. It removes the user, Google grants, all app logins, conversational memories, figures,
+assumptions and command history, and stops active voice/access. It does not delete the Google
+account or downloaded files. Deleting only the plan removes chat notes, not shared preferences.
 The app attempts Google grant revocation after local deletion; external-provider retention rules
 remain outside this application's control. SQLite deletion is not a forensic-erasure guarantee.
 Audio travels through Daily and Azure Speech
-during a call; conversation and financial context are sent to the configured Azure OpenAI resource.
+during a call; relevant profile/memory, conversation and financial context are sent to the configured
+Azure OpenAI resource.
 Global Standard model processing is not restricted to the resource's region. This application does not
 record audio. **History** saves each call separately with its final human captions and emitted Isha
 responses. Search by title, date or stored words, open a conversation, and use **Download captions**
@@ -231,7 +257,10 @@ still apply. Use synthetic data for testing; there is no backup/HA guarantee.
 Stop with Ctrl+C, then optionally `docker compose down` (keeps retained sessions).
 Shutdown gives active HTTP requests up to 10 seconds, then bounds pipeline and room cleanup
 separately within the container's 40-second stop grace period. Reload recovers saved figures,
-not a terminated voice call.
+not a terminated media call. Reconnect or History's **Continue talking** starts fresh media for
+the same saved chat, restoring only its financial memory and recent dialogue. Reload alone never
+opens the microphone. Older transcripts without an attributable financial snapshot remain readable
+but cannot safely be continued; another chat's figures are never substituted.
 `docker compose down --volumes` deliberately deletes **all local session storage**.
 
 ## Development and validation

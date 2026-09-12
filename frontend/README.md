@@ -5,14 +5,15 @@
 
 React 19, TypeScript, React Router, Vite and the Pipecat Daily browser transport. Google sign-in
 gates `/app`, `/history`, `/money` and `/account`; the backend independently authorizes all financial access.
-The journey is welcome →
-microphone preparation → live conversation and evolving cards → review → finished. Opening the
-page or preparing never starts capture. **Money** has a compact overview and shallow income, spending,
+The journey is welcome → microphone preparation → conversation, live cards and call controls.
+Ending stays on the same surface with Reconnect; there are no separate Review or Take your plan
+destinations. Opening the page or preparing never starts capture. **Money** owns detailed review,
+the final plan, printing and downloads, with a compact overview and shallow income, spending,
 debt, upcoming and plan-change routes. Focused corrections preserve exact record identity and are
 unavailable during a call; unresolved corrections or commands prevent a new call. No simulated conversation, payment
 execution, browser financial calculations or runtime sample data are included. Provider setup and live-call
 verification are documented in [../README.md](../README.md).
-The server uses an Azure-hosted Terra deployment with Microsoft Foundry Speech STT/TTS;
+The server uses a configured Azure-hosted GPT-5.6 deployment with Microsoft Foundry Speech STT/TTS;
 Azure keys/endpoints stay server-side. See [the voice plan](../docs/voicePlan.md) for live acceptance
 and [Azure setup](../docs/azureSetup.md) for verified component checks and remaining live-journey
 acceptance.
@@ -111,7 +112,8 @@ are retained; unit tests verify the renderer hash and browser tests verify its c
 emerald uniforms and actual drawn pixels. A documented accessibility patch freezes the same WebGL
 renderer under reduced motion, redrawing only for state and size changes; there is no substitute SVG.
 Reconnect explicitly starts a fresh transport after
-cleanup, not a claimed restoration of the previous call. Mute/end, page exit and failed startup release
+cleanup while retaining the saved chat's identity, committed figures and recent dialogue. Mute/end,
+page exit and failed startup release
 local devices and the server call. Reload never opens the microphone automatically. Only the
 short-lived Daily participant token enters browser memory; provider keys remain server-side.
 GET/POST/DELETE `/api/session/call` use generated contracts, and financial updates continue over
@@ -127,13 +129,16 @@ are ignored. A disconnected microphone also releases the call and offers retry. 
 real provider smoke and the remaining human acceptance exercise.
 
 [src/Captions.tsx](src/Captions.tsx) shows only the latest spoken caption under the large official Orb
-and accessible icon call controls. [src/History.tsx](src/History.tsx) reads separate persisted calls from
+and accessible icon call controls. [src/History.tsx](src/History.tsx) reads separate saved chats from
 `/api/history`, with title/date/message search and readable `/history/<slug>` deep links that survive
 Google sign-in. Assistant UI's official Thread List and Day Separator elements render the stored
 human and Isha captions; its disabled external-store runtime owns conversation scrolling without a
 composer or model connection. [Component provenance](src/components/assistant-ui/historyRegistry.json)
 records MIT sources and styling/accessibility adaptations. Mobile navigation switches between the list
 and the selected chat. Downloads fetch the selected server transcript, not the financial-plan export.
+**Continue talking** beside Download captions selects that chat's own financial memory and opens
+`/app/<slug>` with a one-shot voice-start request. Direct links and reloads select the chat with the
+microphone off. Selection hides another chat's figures and blocks overlapping calls or pending edits.
 
 Navigation between History and the call keeps the existing call alive. Caption notifications refresh
 saved history without copying ephemeral browser text into it; reading position is preserved. Records

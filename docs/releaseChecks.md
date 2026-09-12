@@ -26,11 +26,21 @@ test-only Google provider; voice boundary doubles cannot be selected in the prod
 | Expired login/logout remove private views and media; late responses stay invalid | [auth browser checks](../frontend/tests/e2e/auth.spec.ts), [voice errors](../backend/tests/test_voice_errors.py) |
 | A committed save with a lost response retries the identical command without applying twice | [browser recovery](../frontend/tests/e2e/voice.spec.ts), [session recovery](../frontend/tests/recovery.test.tsx) |
 | Refused/deferred actions, combined card minimums, reported costs and consent-preserving labels | [financial follow-ups](../backend/tests/test_financial_followups.py) |
+| Named exclusions beside closing, timing-only versus residual gaps, focus/correction card priority and first reserve-breach date | [financial flow](../backend/tests/test_financial_flow.py), [summary](../frontend/tests/PlanSummary.test.tsx) |
+| Corrected next steps survive reload; export retains exclusions; timing advice can be deferred without inventing order or creditors | [browser financial flow](../frontend/tests/e2e/financialFlow.spec.ts) |
 
 Financial freshness requires a valid snapshot from the current stream, not merely an open socket.
 Losing that stream stops the call; restoring updates does not automatically reopen the microphone.
 Provider/setup retries require a user action. Failed saves retain their exact command identity until
 their outcome is established. Ending remains available even when a plan is incomplete.
+
+Conversation has no Review/Take your plan destinations or post-call plan panel. End keeps the
+voice surface, live cards and Reconnect in place; detailed review, printing and downloads stay
+in Money. The focused journey/continuation suites pass 64 tests, and the HTTP/SSE browser check
+passes on desktop, tablet and mobile, including 320px/200% text, unchanged cards, End/reconnect,
+and Money export. Types, lint and build pass. Provider boundaries are doubled in these UI checks.
+The wider component run also found unrelated memory-copy, Money-region and card-summary
+expectation failures; it is not an all-suite-green result.
 
 ## Opt-in real services
 
@@ -93,6 +103,42 @@ owned live tracks and actual playback drive microphone/speaking status, not a sy
 Diagnostics contain stage counters, completion reasons and sanitized error categories/types/status,
 not keys, provider bodies, transcripts or financial values. Synthetic diagnostic payloads exist only
 in the isolated authenticated test factory, which is excluded from the production image.
+
+### Startup and End verification
+
+The startup blocker was Pipecat's missing NLTK `punkt_tab` data: worker warmup attempted a
+runtime download, and sentence aggregation could raise `LookupError` in the read-only image.
+The image bundles and validates the data as the non-root runtime user; imports warm before
+serving calls. Successful voice-catalog validation is cached, both Daily tokens are requested
+concurrently, and BotReady waits for actual processor startup rather than the opening response.
+End stops local media and finishes the UI immediately; owned keepalive termination and SDK
+cleanup proceed independently. Unconfirmed backend cleanup still blocks overlapping calls.
+
+Real Chromium/Daily/Pipecat/Azure measurements on 12 September (two consecutive calls):
+
+| Measurement | Cold call | Warm call |
+| --- | --- | --- |
+| Start → ready with live microphone | 5.91 s | 4.41 s |
+| Start → first non-silent assistant audio | 10.15 s | 7.98 s |
+| End → local media stop | 1 ms | 1 ms |
+| End → confirmed backend cleanup | 270 ms | 265 ms |
+
+These are observed samples with microphone permission granted, not latency guarantees or human
+permission-decision time. Daily room/token requests took about 2 s and native join 1.7–2.4 s;
+opening-model generation remains the main delay after readiness. Framework warmup during each
+call took 1.5–2.6 ms. Refresh released the real call in 365 ms. Native permission denial and
+End during a genuinely pending permission prompt created no room or worker. All owned rooms
+were confirmed absent with Daily GET 404, and test processes/storage were released.
+
+Reproduce using [the managed lifecycle verifier](../backend/scripts/verify_lifecycle.py):
+`uv run --locked python -m scripts.verify_lifecycle --allow-billable --cycles 2 --mode cycles`
+from the backend directory. Modes `refresh`, `denied`, and `prompt` accept `--cycles 1`;
+`prompt` requires a desktop display. The verifier uses Reconnect on the same Conversation surface.
+The final focused checks passed 84 backend and 268 frontend tests, plus types/lint/contracts/build.
+These results describe the validated demo snapshot, not subsequent concurrent worktree edits.
+One 300 ms synthetic model-timeout case failed initially, then passed unchanged in isolation and
+the scoped rerun; no production timeout was altered. Slow-provider and Daily reconnect failure
+paths are boundary-injected regressions, not claims of a deliberately induced live-provider outage.
 
 ## Evidence boundary
 

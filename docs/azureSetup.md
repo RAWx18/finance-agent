@@ -3,6 +3,11 @@
 
 # Azure AI deployment and setup
 
+**Current model, 12 September 2026:** the configured resource lists `gpt-5.6-luna` and
+`gpt-5.6-luna-2`; Terra returns deployment-not-found. The app selects the existing primary
+`gpt-5.6-luna`, verified with streamed conversational-memory tool calls. No deployment or key was
+changed. Terra-specific capacity, pricing and measurements below describe the earlier check, not Luna.
+
 Verified **11 September 2026**, Azure CLI **2.81.0**, public Azure cloud. The existing Terra
 deployment was reused unchanged. **One Speech resource was created through Azure CLI** and
 live inference, synthesis and recognition passed component checks through the installed SDKs.
@@ -233,7 +238,7 @@ voice call; none is required merely to inspect saved manual figures.
 | `DAILY_API_KEY` | Daily dashboard → Developers → API keys; authenticates private rooms/tokens, separate billing | **Yes** |
 
 These are **voice-only requirements**; application startup/manual inspection works without them.
-The verified deployment name is selected separately as `voice.model = "gpt-5.6-terra"` in
+The verified deployment name is selected separately as `voice.model = "gpt-5.6-luna"` in
 [config.toml](../config.toml), alongside ordinary conversation behavior.
 Neither Azure subscription/tenant IDs, a Speech endpoint variable nor an API-version variable is
 required by application runtime. Keep provider entries blank in the committed example. Put actual
@@ -246,7 +251,7 @@ Azure Portal → **Subscriptions → Azure subscription 1 → Resource groups �
 - Open **caracalaus → Resource Management → Keys and Endpoint**; copy Key 1 or Key 2 privately into
   `AZURE_OPENAI_API_KEY`. Use the verified v1 URL above for `AZURE_OPENAI_ENDPOINT`.
 - Open **caracalaus → Go to Microsoft Foundry → Models + endpoints / Deployments**; the deployed
-  alias is `gpt-5.6-terra`, selected by `voice.model` in the primary configuration.
+  alias selected by `voice.model` is `gpt-5.6-luna` in the primary configuration.
 - Open **financeVoiceIndia → Resource Management → Keys and Endpoint**; copy its Key 1 or Key 2
   into `AZURE_SPEECH_KEY`, and its region `centralindia` into `AZURE_SPEECH_REGION`.
 - Daily is not in Azure. A Daily account owner/admin obtains `DAILY_API_KEY` from

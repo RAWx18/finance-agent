@@ -4,12 +4,13 @@
 # Voice and financial-state backend
 
 FastAPI owns sessions, deterministic cash flow and a single supervised Pipecat/Daily call.
-Streaming Azure Speech connects a GPT-5.6-Terra conversation role to validated fact and decision tools.
+Streaming Azure Speech connects the configured GPT-5.6 model to validated fact and decision tools.
 Provider-backed calls require the setup in [../README.md](../README.md);
 [Azure component checks](../docs/azureSetup.md) verified actual target-account inference/STT/TTS,
 not the complete Daily call or human recognition quality. Manual comparisons and export
 use the same state. No payments, bank connections or audio recordings are made. Actual final human
-captions and emitted Isha responses are retained as separate per-call conversations in SQLite.
+captions and emitted Isha responses are retained per saved chat in SQLite. Reconnected media calls
+append to the selected chat rather than creating another transcript.
 
 The [financial workspace contract](../docs/financialWorkspace.md) describes templates, fact
 lifecycle, evidence and conversational boundaries. `updateFacts` and voice `update_facts` use
@@ -99,12 +100,12 @@ a private room with separate short-lived browser/bot tokens. Both room and token
 `permissions: {canSend: ["audio"], canAdmin: false}`; neither participant is a meeting owner.
 This enforces audio-only media rather than relying on the camera starting off. The call manager
 supervises readiness and closes the call on end, deletion, expiry or failure.
-[app/voice_pipeline.py](app/voice_pipeline.py) connects Daily → Azure real-time STT → Terra
+[app/voice_pipeline.py](app/voice_pipeline.py) connects Daily → Azure real-time STT → configured model
 → financial tools → Azure streaming TTS → Daily, with real RTVI events and Silero/timeout turns.
 [app/speech.py](app/speech.py) attaches financial phrase hints before recognition and uses HD-safe
 SSML without unsupported prosody/silence tags. The standard en-IN STT endpoint is service-managed;
 no invented latest model ID or batch-transcription path is used. TTS streams audio per short sentence.
-[app/voice_tools.py](app/voice_tools.py) exposes `read_state`, `update_facts`, `review_plan`,
+[app/voice_tools.py](app/voice_tools.py) exposes `read_state`, `update_memory`, `update_facts`, `review_plan`,
 `respond_to_action`, `preview_adjustments`, `accept_preview`, `reject_preview`, `discard_preview`,
 and `clear_accepted`. `review_plan({expectedRevision})` reads the deterministic workspace and
 active assessment; no planner LLM runs. Explicit rejection records refusal; discarding only closes
@@ -113,7 +114,7 @@ Persist concerns through `update_facts.decision`. Scenario tools use the same co
 `AzureLLMService` sends streaming Chat Completions to the supplied Azure v1 endpoint;
 `voice.model` supplies the verified deployment name in the API's `model` field. No direct OpenAI
 billing is used.
-No dated inference `api-version` is needed. Terra's Chat Completions tools require the configured
+No dated inference `api-version` is needed. The configured Chat Completions deployment uses
 `reasoning_effort=none`; a different deployment must be verified for compatible capabilities.
 `parallel_tool_calls=false` prevents parallel model tool requests; Pipecat callbacks also run
 sequentially. Completed STT segments are collected through the current VAD/pause-based turn
@@ -201,13 +202,14 @@ uv run --project backend python -c 'import json,sys; sys.path.insert(0,"backend"
 | `GET /api/session` | Current `Snapshot` |
 | `GET /api/session/options` | Owner-scoped `AdjustmentOptions`; may refresh the clock-derived assessment as described below |
 | `GET /api/session/call` | `CallState`: current owner-scoped call status |
-| `POST /api/session/call` | JSON `{}` → `CallJoin`: callId, room url, browser token, expiresAt |
-| `DELETE /api/session/call` | Idempotent call teardown → `CallState` |
+| `POST /api/session/call` | `{callId, conversationSlug?}` → `CallJoin`: callId, conversationSlug, room url, browser token, expiresAt |
+| `DELETE /api/session/call` | `{callId}` → idempotent owned teardown, including `cleanupConfirmed` |
 | `POST /api/session/commands` | `Command` → committed `Snapshot` |
 | `GET /api/session/events` | SSE `snapshot` events containing complete `Snapshot` JSON |
 | `GET /api/session/export` | `text/plain` attachment using the same stored calculation |
 | `GET /api/history` | Owner-scoped conversations; optional `search` matches titles, dates and stored message text |
 | `GET /api/history/{slug}` | One chronological human/Isha conversation, with timestamps and partial-caption markers |
+| `POST /api/history/{slug}/continue` | `{}` → select this chat's financial memory, returning its current `Snapshot`; never starts media |
 | `GET /api/history/{slug}/transcript` | Plain-text captions attachment: timestamp, speaker and exact stored text only |
 | `DELETE /api/session` | `{ "deleted": true }`; deletes only the user's financial plan, not their login |
 | `GET /health/live`, `GET /health/ready` | `{ "status": "ok" }`; readiness checks local DB/cleanup only |
@@ -221,13 +223,39 @@ narrow exception for cross-site navigation. No wildcard CORS is enabled. Cookies
 HttpOnly and SameSite Lax; HTTPS uses Secure `__Host-` names. Client-supplied user/session IDs never
 authorize access. Never place credentials in application URLs, JavaScript storage or logs.
 
-[app/history.py](app/history.py) stores one chat per call, not per financial revision. Public RTVI
+[app/history.py](app/history.py) stores a stable chat across fresh media-call identities. Public RTVI
 output is saved before forwarding captions; interim speech, generated-but-unspoken text, tools and
 financial context are excluded. Interrupted prefixes cannot be extended by late completions. History
 uses the financial session's expiry and cascades on plan/account deletion; sign-out revokes access
 without deleting retained captions. Limits are in `[history]` in [config.toml](../config.toml). Existing
 unsaved calls cannot be recovered. History routes accept bounded lowercase slugs through the same
 protected SPA and Google return-path validation as other application routes.
+
+`Snapshot.conversationSlug` selects the chat whose committed snapshot is saved atomically with
+workspace edits. Selection restores its facts, proposals and consent, rotates the workspace identity,
+and rejects stale commands/streams. Reconnect loads only that chat's bounded saved dialogue and
+begins with a read-only catch-up; past tool calls and user requests are not re-executed. Active or
+unconfirmed calls prevent switching. Older transcripts without a provable financial snapshot return
+`conversationMemoryUnavailable` rather than borrowing another chat's figures.
+
+### Conversational memory
+
+[app/memory.py](app/memory.py) stores selected short notes separately from financial snapshots:
+
+- **Common:** the live authenticated display name plus stable communication/recurring preferences.
+  Preference notes remain until forgotten or account deletion; the profile name is never copied.
+- **User:** explicitly requested nonfinancial cross-chat context, expiring after `memory.user_days`.
+- **Chat:** conversational context, decisions and unresolved explanations keyed to the owned logical
+  chat, not a media call. These notes expire/cascade with that chat and never load for another chat.
+
+`user_memories` and `chat_memories` use the existing local SQLite database and shared auth/transaction
+guards. `[memory]` bounds each scope and note length. The voice request receives fresh profile/notes
+without accumulating copies in history. `update_memory` replaces a key or forgets it with `text:null`,
+requires quoted current-user evidence, and cannot change financial revisions, cards or consent.
+The conversation policy excludes financial/sensitive facts and transcript copying; validation rejects
+oversized notes and obvious numeric, currency, contact or credential content. This is not a complete
+semantic privacy classifier. No embeddings, background summarizer, new service or management UI runs.
+Account deletion removes every scope; logout revokes access without erasing retained preferences.
 
 ### Command and financial input
 

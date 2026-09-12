@@ -38,14 +38,14 @@ supported female English neural voice explicitly after checking the resource and
 
 ## Integrated path and responsibilities
 
-**Browser → Daily WebRTC → Pipecat → Azure Speech STT → GPT-5.6-Terra → financial tools/state
+**Browser → Daily WebRTC → Pipecat → Azure Speech STT → configured GPT-5.6 model → financial tools/state
 → Azure Speech TTS → Pipecat → Daily → Browser.**
 
 - The conversation role understands the situation, chooses the next useful question, handles
   ambiguity and corrections, and speaks as one coherent assistant. Accept several facts per turn;
   save partial records and ask only for consequential missing information.
 - `review_plan` reads the deterministic decision assessment and active canonical plan without
-  another LLM request. The speaking Terra role explains it; calculations and selected financial
+  another LLM request. The conversation role explains it; calculations and selected financial
   questions remain application-owned. No second model deployment is needed.
 - `read_state` and `update_facts` bind ownership on the server. Complete tool arguments merge into
   the existing state under revision checks; existing deterministic code owns arithmetic, dated
