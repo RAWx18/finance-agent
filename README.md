@@ -11,7 +11,7 @@ Voice uses Pipecat, Daily, Azure-hosted GPT-5.6 and Microsoft Foundry Speech.
 
 - Capture income, expenses, loans and card payments by voice; clarify missing information and corrections.
 - Recalculate cash-flow gaps and synchronized editable cards from one authoritative financial state.
-- Model recurring schedules, reported monthly patterns, estimated budgets and foreign-income conversions.
+- Model recurring schedules, reported monthly patterns, estimated budgets and reported foreign-currency money flows.
 - Preview eligible spending changes with explicit consent; review, print and download the plan in **Money**.
 - Google sign-in, searchable conversation history, same-chat continuation and scoped conversational memory.
 
@@ -61,7 +61,7 @@ Keep credentials private and out of Git.
 
 Use the Azure base endpoint, not an operation URL ending in `/responses` or `/chat/completions`.
 Select an existing compatible deployment through `voice.model` in [config.toml](config.toml)
-(currently `gpt-5.6-luna`). The same file owns assistant identity, speech settings and runtime limits.
+(currently `gpt-5.6-terra`). The same file owns assistant identity, speech settings and runtime limits.
 No provider resources are created automatically and there is no model fallback.
 See [Azure setup](docs/azureSetup.md) for resource and credential details.
 
@@ -80,11 +80,31 @@ Open **http://localhost:8000**. Use `localhost`, not `127.0.0.1`, to match API o
 Compose starts the frontend and backend together.
 
 Sign in → **Start conversation** → **Start talking**. The microphone starts only on request.
-**End conversation** releases media; **Continue** or **Reconnect** requires an explicit action.
+**End conversation** releases media. Transient response failures get one bounded, read-only retry;
+after exhaustion, **Continue** is explicit. A disconnected call requires explicit **Reconnect**.
 Reloading restores saved state, not an active microphone. Use **Resume audio** if playback is blocked.
 
 Stop with Ctrl+C or `docker compose down`; the data volume is retained.
 **`docker compose down --volumes` deletes all local application storage.**
+
+### Logs
+
+The backend writes one structured JSON event per line to stderr (`docker compose logs -f app`).
+Every event carries `level`, `component` (`http`, `call`, `daily`, `pipecat`, `stt`, `llm`, `tool`,
+`store`, `sse`, `tts`, `turn`, …), `event`, `status` (`started`/`ok`/`failed`/`timeout`/`rejected`/
+`cancelled`), `durationMs` where an operation is timed, and error type/location fields for failures.
+Trace one conversation with `callId`, one browser request with `requestId` (also returned as the
+`X-Request-ID` header), and one reply with `generation`/`sequence`. Set `LOG_LEVEL=DEBUG` or
+`LOG_FORMAT=console` for coloured, human-readable output.
+
+For a browsable viewer, start the optional [Dozzle](https://dozzle.dev) profile and open
+**http://localhost:8080**:
+
+```sh
+docker compose --profile logs up --build
+```
+
+Logs never contain credentials, room tokens, cookies, transcripts, amounts or request bodies.
 
 ## Development and validation
 
@@ -123,7 +143,10 @@ use real providers and incur usage. Keep provider credentials out of pull-reques
 	to the original plan date; only unpaid/future items should be added. Same-day payments precede
 	receipts conservatively. A positive closing balance can hide an earlier gap and is not a spending allowance.
 - **Assumptions:** unknown amounts/dates are not zero; uncertain income is not assured funds.
-	Pattern dates and undated-payment comparisons stay qualified. Foreign exchange rates are user-supplied.
+	Pattern dates and undated-payment comparisons stay qualified. Unquoted foreign amounts use
+	Frankfurter daily reference estimates (one cached attempt per pair/local day), not bank quotes.
+	Captured conversions remain separate from current planning INR; lookup failures preserve original
+	currency and leave current INR unknown. Unknown conversion fees are excluded, not assumed zero.
 	Accepted changes are planning assumptions, not payments, cancellations or lender approvals.
 - **Voice:** recognition can mishear amounts/dates, and response latency varies. Verify important values
 	against the cards. Provider-double tests do not replace human-microphone acceptance testing.
@@ -132,7 +155,8 @@ use real providers and incur usage. Keep provider credentials out of pull-reques
 - **Memory:** common preferences remain until forgotten/account deletion; user context expires after
 	30 days; chat notes follow their chat's expiry. Ask the assistant to forget a saved note.
 - **Privacy/deletion:** Daily and Azure process audio and relevant context; the app stores captions,
-	not audio recordings. Provider retention policies still apply. Sign-out retains saved data.
+	not audio recordings. Frankfurter receives only currency pairs through the backend, not amounts
+	or account details. Provider retention policies still apply. Sign-out retains saved data.
 	Deleting a plan removes its chats/chat notes; account deletion requires recent sign-in and removes
 	all local account data, not the Google account or downloaded files. Signing in after account deletion
 	creates an empty account.

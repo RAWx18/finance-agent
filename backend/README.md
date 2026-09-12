@@ -67,12 +67,13 @@ connection/worker resources; inline scripts/styles remain blocked. Build CSS to 
 
 ## Conversation execution
 
-The primary configuration's `[voice]` section selects the assistant name/introduction, language,
+The primary configuration's `[voice]` section selects the assistant name, spoken openings, language,
 tone, verified model deployment, turn/VAD timings, inactivity, token/tool budgets and response
-length guidance. Resource endpoints and credentials stay in the environment. The configured
-opening guidance drives one model response after client readiness with financial tools disabled.
-It requests a brief introduction and free invitation, not opening cash. User-first speech preempts
-it; its one-time instruction is removed before processing the first user turn.
+length guidance. Resource endpoints and credentials stay in the environment. The first assistant
+message is deterministic: one configured `openings` line for a new chat, or one `resumptions`
+line for a continued chat, chosen per call and spoken without a model request. A continued chat
+then runs one tool-free model turn to reconnect with the saved dialogue. User-first speech
+preempts the opening; a wordless interruption replays an unheard one.
 
 Every completed user turn requires a processing tool before speech. One `update_facts` can merge
 all clear facts; `read_state` handles a turn without changes. Tool-bearing completions do not
@@ -83,11 +84,131 @@ presentation; they are not proof of arbitrary language compliance.
 
 Recognition activity rearms the 2.6-second continuation window even when VAD misses a short filler.
 The independent 60-second idle state pauses browser capture, not the room or financial session.
-Sequenced Continue is explicit, read-only and owner-validated; it cannot extend the original
-30-minute call deadline. Empty normal-stop model output offers the same recovery with an
-unfinished-response explanation, never automatic retries or fabricated audio. Provider failures
-remain bounded and fail closed. [Live checks and limits](../docs/releaseChecks.md) distinguish
-real audio/connection evidence from synthetic identity/input and intermittent recognition failures.
+Sequenced recovery is read-only and owner-validated; it cannot extend the original call deadline.
+`voice.response_retry_attempts` defaults to one automatic response retry, delayed by
+`voice.response_retry_delay_seconds` (0.5 seconds). Set attempts to zero for manual Continue only.
+The browser must acknowledge the exact retry sequence before the worker produces retry audio.
+End, a newer turn, changed state or lost authorization invalidates that attempt.
+
+| Failure | Handling |
+| --- | --- |
+| LLM connection/progress timeout; HTTP 408/429/500/502/503/504, excluding quota/billing errors | Bounded read-only response retry, then Paused with explicit Continue |
+| Supported transient TTS cancellation, first-audio/progress timeout, or empty synthesis | Retire native synthesis, then the same bounded response recovery |
+| Azure SDK `CancellationErrorCode.RuntimeError` after nonempty synthesis audio | Treat as a failed streaming request; retire native synthesis, then the same bounded read-only recovery. This does not make arbitrary Python runtime errors recoverable |
+| Native synthesis stop hangs or fails after a barge-in or failed reply (unreachable speech service) | Callbacks are retired immediately and the SDK stop settles in the background, so captions, state and the next reply keep flowing; End and cleanup still await it and stay unconfirmed until it settles |
+| Model token, request or tool-round budget exhausted | Stop tool execution; bounded tool-free response retry, then Paused |
+| Empty normal-stop model reply | Same bounded read-only response retry, then Paused; no fabricated speech |
+| Speech activity without recognizable words cuts off an unfinished reply | Resume the interrupted reply once the wordless turn closes; a finished reply stays quiet |
+| Financial write cancelled by a barge-in before any provider verdict | Retain exact intent; the same frozen command may run again in the same turn and deduplicates against any committed receipt |
+| Financial write exception, timeout or lost acknowledgement | Retain exact intent as unconfirmed; repeat/rephrase or explicit retry uses the original command ID and payload; no automatic financial replay |
+| Invalid financial arguments | Save nothing; repair only supplied facts, otherwise ask the material clarification |
+| Saved amount absent from the digits the recognizer heard | The write stands, but the tool result lists `unverifiedAmounts` and the assistant reads them back for confirmation in the same reply |
+| Stale revision, wrong call/session, conflicted command or expired proposal | Reject mutation; review current state, never silently rebase |
+| Caption storage or unexpected read-only tool failure | Keep the live call; count and log the failure once, and return tool failures to the model as structured results |
+| Service-side speech recognition cancellation (connection, timeout, service error/unavailable, session stop) | Start a fresh recognizer in place, up to three times per call; audio during the gap is lost, nothing else changes |
+| Authentication, permission/quota denial, invalid provider request/contract, corrupt state, unusable processor or failed native cleanup | Stop media safely; no automatic retry |
+| Worker termination, Daily disconnect or financial-stream loss | Stop unsafe media; explicit reconnect after cleanup and state verification. The browser grants a dropped snapshot stream a short reconnect grace before treating updates as lost |
+
+Google credential rechecks (`auth.recheck_seconds`) reach the provider. If Google is unreachable
+at a due recheck, a grant whose access token is still valid keeps serving for
+`auth.recheck_grace_seconds`, then fails closed; an expired token or a Google rejection never
+receives that grace.
+Quiet longer than `voice.inactive_seconds` pauses the call with the microphone off until Continue.
+
+Only a committed receipt establishes a saved financial fact. Conversation memory and retained
+retry arguments are not financial state. Repeated failures remain unconfirmed and do not create
+duplicate records. Call-local retained intents end with the call; committed facts/history remain.
+
+Income discovery follows known opening money before general expense intake unless a material
+conflict takes precedence. Explicit unknown/no-income answers are respected. After an explicit
+"you forgot my income" / "so ask me" turn with income still unanswered, statement-only replies
+are withheld and use the existing bounded, read-only response retry. This checks for a question,
+not perfect semantic compliance with arbitrary speech.
+
+## Calendar grounding
+
+Every model request, including resumed conversations and response retries, receives the server's
+current local timestamp, ISO date, weekday and configured timezone. A separate user-turn reference
+date keeps relative phrases stable if processing crosses midnight. Neither clock comes from the
+model or snapshot creation timestamps. No calendar message is copied into saved conversation history.
+
+The supplied window uses the financial snapshot's `anchorDate` (inclusive), `endDateExclusive`
+(anchor + 30 calendar days), and the preceding inclusive last day. Resuming a plan does not roll
+its window or rebase opening cash. Calendar-derived relative dates and a date/weekday table are
+provided: this weekday means the upcoming occurrence including today, next weekday is strictly
+future; conflicting week intentions require clarification. Next month is a range, never an
+invented payment day. Four weeks means 28 days, not a calendar month.
+
+The engine still expands all recurring schedules. Ongoing living-cost allowances without a
+reported start use its labelled anchor-based forecast; bills, debt, auto-debits and income need
+an actual starting date or an explicitly reported monthly pattern, not each occurrence's date.
+Calendar context does not change facts, financial revisions, recurrence rules or amounts.
+
+## Failure diagnostics
+
+Operational events are JSON on stderr and in `DATA_DIR/diagnostics.jsonl` (with numbered backups).
+The persistent log survives container rebuilds with the existing data volume. Retention is
+bounded by `diagnostics.max_bytes` (2 MiB per file) and `diagnostics.backup_count` (3 backups).
+Files use owner-only permissions. Disk/logging failure does not replace an application error;
+stderr reports `diagnostics.sinkFailure` if persistence is unavailable.
+Persistent diagnostic events remain enabled even when server logging is set to ERROR.
+
+- Correlate by `call_id`, `request_id` (also returned in `X-Request-ID`), `boot_id`, UTC timestamp
+  and `incident_id`. The first `voice.stopped` records the failing stage and last canonical
+  revision, turn, generation, sequence, request/tool counts and metrics.
+- Model start/completion, selected question scope, text publication and first audio distinguish
+  a missing question from a model failure, synthesis failure or failed audio delivery. Logs store
+  counts and scope—not the user's or assistant's words. An explicit income-question omission
+  produces `voice.questionMissing` before retry.
+- Retry offer, acknowledgement, completion, exhaustion and cancellation are separate events.
+  Rejected call requests retain the validated call ID and rejection code. `daily.requestFailed`
+  preserves the upstream HTTP status and room/token operation, even when the public API returns 503.
+  Recognition cancellation includes safe SDK category/reason. Watcher, API, storage, caption,
+  lifecycle and resource-cleanup failures retain safe error types/statuses and bounded causal
+  stack locations, including file/function/line, without exception messages or local values.
+- Start with the first failure for a call and follow its retry/cleanup events. Normal End,
+  credential expiry, transport departure and unconfirmed cleanup are distinguished. An OOM,
+  forced process kill or host failure may prevent a final event; check container state alongside
+  the retained log rather than assuming the last component failed.
+
+For speech cancellations, inspect `speech.synthesisCancelled.category/reason` before the call
+failure. SDK cancellation categories and Python exception types are different: a streaming SDK
+RuntimeError can be response-recoverable, while native code errors, setup rejection and unsettled
+cleanup remain terminal. Propagated TTS failures retain `stage=synthesis` and their processor source;
+a later Daily departure during cleanup is not evidence that transport caused the stop. A
+`speech.synthesisCleanup` event long after the barge-in that started it records a slow SDK stop;
+it never blocks the frame lane, so a frozen "Listening" state with no captions points elsewhere.
+
+No financial amounts, transcripts, audio, credentials, request bodies, raw provider responses or
+authentication URLs are recorded. Treat operational IDs as private support data. Diagnostic
+coverage helps locate a recurrence; it does not establish the cause of an earlier unlogged crash.
+
+Inspect the local retained log with `docker compose exec -T app cat /data/diagnostics.jsonl`;
+use `docker compose logs --timestamps app` for current process output and container shutdowns.
+
+## Currency conversion
+
+Foreign income, expenses, debt payment/target/outstanding fields, opening cash and provider
+payment/cost reports preserve original currency in `Money.source`. Frankfurter is the sole automatic
+provider for unquoted currencies to INR. Its daily reference rates are approximate planning values,
+not intraday prices or bank quotes. Explicit user quotes retain precedence. Payment fees add to
+costs, receipt fees deduct from proceeds, and outstanding balances use rate-only valuation.
+Unknown fees are excluded from Frankfurter planning estimates and explicitly flagged, not assumed
+zero. Reported bank quotes still require fee certainty for net/cost calculations.
+
+The persistent exchange database reserves at most one HTTP attempt per pair per configured local
+calendar day, including failed/cancelled attempts. Same-day reads and restarts reuse the cache;
+the next day's first use refreshes it. A failed lookup without a successful same-day observation
+leaves current INR unknown while saving original money. There is no alternate provider, stale-cache
+fallback or same-day network retry. Frankfurter publication dates may precede retrieval across
+non-business days; both dates are displayed. Only currency pairs are sent, never amounts or identity.
+`exchange.timeout_seconds` controls the request deadline; no API key is required.
+
+Captured source rates/INR and command receipts remain historical. `Plan.planningFacts`, events and
+`occurrenceAmounts` contain the current backend valuation; `exchangeRates` records its observations.
+Refresh advances the snapshot sequence, not the user's financial revision. A converted minimum
+exceeding a selected target remains visibly inconsistent and includes required exposure without
+changing the target. Reserve-floor input remains an INR planning constraint.
 
 An explicit unknown money value or null date in a patch records an unavailable answer only for
 the corresponding clarification, in the same transaction. Omitted fields are not such answers.
@@ -106,7 +227,7 @@ supervises readiness and closes the call on end, deletion, expiry or failure.
 SSML without unsupported prosody/silence tags. The standard en-IN STT endpoint is service-managed;
 no invented latest model ID or batch-transcription path is used. TTS streams audio per short sentence.
 [app/voice_tools.py](app/voice_tools.py) exposes `read_state`, `update_memory`, `update_facts`, `review_plan`,
-`respond_to_action`, `preview_adjustments`, `accept_preview`, `reject_preview`, `discard_preview`,
+`retry_write`, `respond_to_action`, `preview_adjustments`, `accept_preview`, `reject_preview`, `discard_preview`,
 and `clear_accepted`. `review_plan({expectedRevision})` reads the deterministic workspace and
 active assessment; no planner LLM runs. Explicit rejection records refusal; discarding only closes
 exploration. Both leave reported facts unchanged.
@@ -304,7 +425,9 @@ Use a fresh command ID per intentional edit and retain exactly the same command 
   `debtType: loan|card|informal|unknown`. Unknown reliability is excluded from balances and
   leaves the projection partial. `autoDebit` defaults false.
   Outflow `controllability` is `unknown|controllable|committed` (defaults unknown); income uses null.
-  Exact amount and income reliability are independent: only exact reliable dated income is assured.
+  Reliable income counts at its reported figure and calculated day. An estimated amount, an
+  approximate date or a monthly pattern keeps it counted but labelled as an assumption, with an
+  `income:withoutAssumed` comparison showing the plan if it does not arrive.
 - `schedule`: required `date: YYYY-MM-DD|null`; `recurrence` is
   `once|weekly|fortnightly|monthly`, default `once`. Date is the next unpaid/future date.
 - Debt `amount` is the required/minimum payment. Optional debt-only `target` and `outstanding`
@@ -345,15 +468,17 @@ field, question, decision changes, blocked scope, material priority/reason and d
 `issues` are not a questionnaire. Choices include prerequisites, evaluated metrics, remaining risk
 references and `affectsFirstGap`, `affectsPeakGap`, `laterOnly`. Enquiries promise no agreement.
 Outcome exposes `branch: fits|uncertain|gap|conflict`, `readiness: ready|qualified`, `trueNow`, risk
-and choice references, selected action, uncertain references and revisit conditions. Its compact
-`summary`, `covered`, `notCovered`, `nextStep` and `conditions` answer the consumer's decision;
-the same selected action drives `spokenBrief`, cards and the opening of the export.
+and choice references, selected action, uncertain references and revisit conditions. Its consumer
+fields `headline`, `action`, `topCaveat` and optional `secondary` are what the assistant speaks and
+the plan card shows; `summary`, `covered`, `notCovered`, `nextStep` and `conditions` carry the full
+qualified detail. The same selected action drives `spokenBrief`, cards and the opening of the export.
 An action's `choiceId` links to evaluated reductions where applicable. Material dependencies
 precede actionable relief; late receipts or cuts cannot resolve an earlier deadline. A single
 scope question completes broad planning when no more consequential action remains.
 
 `incomeComparisons` has two bounded joint branches when eligible conditional receipts exist:
-all arrive on their reported dates, or none arrive by the horizon. Each has `id`,
+all arrive on their reported dates, or none arrive by the horizon. A further `income:withoutAssumed`
+branch excludes reliable receipts whose timing or amount is assumed. Each has `id`,
 `conditions[{eventId,arrival:reportedDate|notByHorizon}]`, and flat `ProjectionMetrics`, not nested
 plans. Missing dates/amounts never generate invented receipt branches. Baseline, branches and
 adjustment impacts use the same reconciliation kernel in [app/finance.py](app/finance.py).
