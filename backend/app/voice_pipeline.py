@@ -18,13 +18,13 @@ from .history import CaptionHistory
 from .models import Snapshot
 from .store import Problem, Store
 from .voice_tools import (
-    AFTER_TOOLS,
     TOOL_DEFINITIONS,
     VoiceTools,
     canonical,
     conversation,
     conversation_messages,
     introduction,
+    response_guidance,
     tool_parameters,
 )
 
@@ -510,7 +510,9 @@ class VoicePipeline:
                             *context.get_messages(),
                             {
                                 "role": "developer",
-                                "content": AFTER_TOOLS,
+                                "content": response_guidance(
+                                    json.loads(messages[0]["content"].split("\n", 1)[1])
+                                ),
                             },
                         ],
                         tools=context.tools,

@@ -29,6 +29,45 @@ from .test_voice_turns import voice_boundaries as voice_boundaries
 from .test_voice_waiting import continue_conversation, next_state
 
 
+async def test_invalid_money_shape_is_repaired_before_speech(voice, synthesis, store):
+    """Deliver actionable rejection evidence before saving and speaking the corrected amount."""
+    voice.responses.put_nowait(
+        tool_reply(
+            "update_facts",
+            {"expectedRevision": 0, "opening": {"amount": money("600000"), "status": "exact"}},
+            "nested-money",
+        )
+    )
+    voice.responses.put_nowait(
+        tool_reply(
+            "update_facts",
+            {"expectedRevision": 0, "opening": money("600000")},
+            "repaired-money",
+        )
+    )
+    voice.responses.put_nowait(text_reply("Your cash is six lakh rupees."))
+    await complete_turn(voice, "My available cash is six lakh rupees.")
+    requests = [await asyncio.wait_for(voice.requests.get(), 2) for _ in range(3)]
+    assert [request["tool_choice"] for request in requests] == ["required", "required", "auto"]
+    receipt = next(
+        json.loads(message["content"])
+        for message in requests[1]["messages"]
+        if message["role"] == "tool"
+    )
+    assert receipt["code"] == "invalidFacts" and receipt["saved"] is False
+    assert receipt["fields"][0]["path"] == "opening.amount"
+    assert "put status beside amount" in receipt["fields"][0]["hint"]
+    current = await store.get("owner")
+    assert current.revision == 1 and current.facts.opening.amount_paise == 60000000
+    assert current.facts.coverage.income == "notDiscussed"
+    instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
+    spoken = "".join(ElementTree.fromstring(ssml).itertext()).strip()
+    assert spoken == "Your cash is six lakh rupees."
+    await render(instance, spoken)
+    await next_frame(voice.frames, TTSAudioRawFrame)
+    assert not voice.pipeline.waiting and not voice.pipeline.revoked
+
+
 @pytest.mark.parametrize("voice", [{"max_tool_rounds": 2}], indirect=True)
 @pytest.mark.parametrize("write", [False, True], ids=["read", "write"])
 async def test_empty_success_waits_for_continue_from_committed_state(

@@ -71,6 +71,10 @@ async def test_clarification_then_correction_keeps_current_thirty_day_outcome(st
         for question in saved.workspace.questions
     )
     date = (saved.anchor_date + timedelta(days=3)).isoformat()
+    tools.user_turn = (
+        f"The rent is definitely due on {date}. Rent is my only unpaid living cost. "
+        "For the next thirty days, I have no income, no debts and no optional spending."
+    )
     await tools.update_facts(
         {
             "expectedRevision": saved.revision,
@@ -80,6 +84,12 @@ async def test_clarification_then_correction_keeps_current_thirty_day_outcome(st
                 "essential": "reviewed",
                 "debt": "none",
                 "optional": "none",
+            },
+            "coverageEvidence": {
+                "income": "no income",
+                "essential": "Rent is my only unpaid living cost",
+                "debt": "no debts",
+                "optional": "no optional spending",
             },
         },
         "clarified-date",

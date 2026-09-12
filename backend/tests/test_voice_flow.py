@@ -67,10 +67,16 @@ async def test_voice_change_requires_category_review_after_prior_confirmation(st
     """Verify reporting an optional expense replaces prior absent-category confirmation."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = "I have no optional spending for the next thirty days."
     await tools.update_facts(
-        {"expectedRevision": 0, "coverage": {"optional": "none"}},
+        {
+            "expectedRevision": 0,
+            "coverage": {"optional": "none"},
+            "coverageEvidence": {"optional": "no optional spending for the next thirty days"},
+        },
         "none",
     )
+    tools.user_turn = "I forgot a trip costing 2000 rupees."
     result = await tools.invoke(
         "update_facts",
         {
@@ -87,6 +93,11 @@ async def test_review_uses_the_accepted_plan_not_the_baseline(store):
     """Verify voice review assesses the accepted adjustment rather than the baseline."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = (
+        "I have 1000 rupees. For the next thirty days I have no income, no essential costs "
+        "and no debts. My only optional spending is a 2000 rupee trip on September 18, 2026, "
+        "and I can reduce it."
+    )
     await tools.update_facts(
         {
             "expectedRevision": 0,
@@ -96,6 +107,12 @@ async def test_review_uses_the_accepted_plan_not_the_baseline(store):
                 "essential": "none",
                 "debt": "none",
                 "optional": "reviewed",
+            },
+            "coverageEvidence": {
+                "income": "no income",
+                "essential": "no essential costs",
+                "debt": "no debts",
+                "optional": "My only optional spending is a 2000 rupee trip",
             },
             "records": [
                 {
@@ -152,6 +169,7 @@ async def test_external_correction_resumes_speech_without_talking_over_user(user
     pipeline = VoicePipeline()
     pipeline.started.set()
     pipeline.client_ready.set()
+    pipeline.opening = "delivered"
     pipeline.completed_turns = 1
     pipeline.user_speaking = user_speaking
     pipeline.context = Mock()

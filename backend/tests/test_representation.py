@@ -16,6 +16,11 @@ async def test_approximate_outside_obligation_never_becomes_a_fit_claim(store):
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     outside = initial.end_date_exclusive.isoformat()
+    tools.user_turn = (
+        f"I have 1000 rupees. My monthly rent is 2000, due around {outside}. "
+        "Rent is my only unpaid living cost. For the next thirty days, "
+        "I have no income, no optional spending and no debts."
+    )
     state = await tools.update_facts(
         {
             "expectedRevision": 0,
@@ -25,6 +30,12 @@ async def test_approximate_outside_obligation_never_becomes_a_fit_claim(store):
                 "essential": "reviewed",
                 "optional": "none",
                 "debt": "none",
+            },
+            "coverageEvidence": {
+                "income": "no income",
+                "essential": "Rent is my only unpaid living cost",
+                "optional": "no optional spending",
+                "debt": "no debts",
             },
             "records": [
                 {
@@ -74,6 +85,12 @@ async def test_estimated_required_payment_keeps_its_basis_after_target_correctio
     """Verify card corrections retain the required-payment basis and matching evidence certainty."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = (
+        "I have 100 rupees. My card requires about 500, but I plan to pay 2000 "
+        f"on {(initial.anchor_date + timedelta(days=3)).isoformat()}. "
+        "That card is my only debt. For the next thirty days, I have no income, "
+        "no unpaid living costs and no optional spending."
+    )
     state = await tools.update_facts(
         {
             "expectedRevision": 0,
@@ -83,6 +100,12 @@ async def test_estimated_required_payment_keeps_its_basis_after_target_correctio
                 "essential": "none",
                 "optional": "none",
                 "debt": "reviewed",
+            },
+            "coverageEvidence": {
+                "income": "no income",
+                "essential": "no unpaid living costs",
+                "optional": "no optional spending",
+                "debt": "That card is my only debt",
             },
             "records": [
                 {
@@ -137,6 +160,13 @@ async def test_unneeded_receipt_question_does_not_leak_into_voice(store, opening
     """Verify undated receipts prompt voice questions only when needed for the purchase."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = (
+        f"I have {opening} rupees. Can I buy a phone for 5000 "
+        f"on {(initial.anchor_date + timedelta(days=3)).isoformat()}? "
+        "A 1000 rupee bonus is certain, but its date is not settled. "
+        "That bonus is all my income for the next thirty days. "
+        "The phone is my only optional spending. I have no unpaid living costs and no debts."
+    )
     state = await tools.update_facts(
         {
             "expectedRevision": 0,
@@ -147,6 +177,12 @@ async def test_unneeded_receipt_question_does_not_leak_into_voice(store, opening
                 "essential": "none",
                 "optional": "reviewed",
                 "debt": "none",
+            },
+            "coverageEvidence": {
+                "income": "That bonus is all my income for the next thirty days",
+                "essential": "no unpaid living costs",
+                "optional": "The phone is my only optional spending",
+                "debt": "no debts",
             },
             "records": [
                 {
@@ -201,11 +237,28 @@ async def test_mixed_income_multiple_debts_and_corrections_share_one_dated_plan(
         record("otherCard", "debt", "300", day(8), debtType="card"),
         record("purchase", "optional", "600", day(12)),
     ]
+    tools.user_turn = (
+        f"I have 5000 rupees. Salary is 10000 on {day(10)}, and side work pays "
+        f"1000 weekly from {day(1)}. Freelance might pay 2000 on {day(5)}. "
+        "Those are all my income sources for the next thirty days. "
+        f"Food costs 500 weekly from {day(0)}, and rent is 4000 on {day(2)}; "
+        "I cannot change the rent. Food and rent are my only unpaid living costs. "
+        f"One loan takes 1000 automatically on {day(4)}, and another needs 500 that day. "
+        f"One card requires 200 on {day(6)}, but I plan to pay 1000. "
+        f"The other card requires 300 on {day(8)}. Those are all my debts. "
+        f"I plan a 600 rupee purchase on {day(12)}. That purchase is my only optional spending."
+    )
     state = await tools.update_facts(
         {
             "expectedRevision": 0,
             "opening": money("5000"),
             "coverage": dict.fromkeys(("income", "essential", "optional", "debt"), "reviewed"),
+            "coverageEvidence": {
+                "income": "Those are all my income sources for the next thirty days",
+                "essential": "Food and rent are my only unpaid living costs",
+                "optional": "That purchase is my only optional spending",
+                "debt": "Those are all my debts",
+            },
             "records": [
                 {key: value for key, value in item.items() if key != "id"} for item in items
             ],
