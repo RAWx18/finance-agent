@@ -20,6 +20,8 @@ from pipecat.frames.frames import (
     TTSTextFrame,
 )
 
+from app.speech import RECOGNITION_RESTARTS
+
 from .conftest import money
 from .test_voice_errors import text_reply
 from .test_voice_opening import render
@@ -37,6 +39,7 @@ pytestmark = pytest.mark.parametrize(
             "model_timeout_seconds": 0.3,
             "tts_first_audio_seconds": 0.15,
             "tts_progress_seconds": 0.15,
+            "response_retry_attempts": 0,
         }
     ],
     indirect=True,
@@ -88,7 +91,11 @@ async def test_response_failure_continues_once_without_replaying_writes(
             )
         assert body["tool_choice"] == "none"
         assert len(requests) == int(committed) + 2
-        assert "last completed user turn" in body["messages"][-1]["content"]
+        assert any(
+            "last completed user turn" in message.get("content", "")
+            for message in body["messages"]
+            if message.get("role") == "developer"
+        )
         assert not any(message.get("role") == "tool" for message in body["messages"])
         return text_reply("What payment would you like to review next?")
 
@@ -195,9 +202,9 @@ async def test_synthesis_failure_retires_callbacks_and_preserves_committed_facts
     assert voice.pipeline.metrics["tool_calls"] == 1
 
 
-@pytest.mark.parametrize("kind", ["session_stopped", "canceled", "malformed"])
+@pytest.mark.parametrize("kind", ["session_stopped", "canceled", "authentication", "malformed"])
 async def test_stt_loss_fails_only_media_and_ignores_late_callbacks(voice, store, kind):
-    """Verify recognition loss revokes media and ignores late callbacks without changing facts."""
+    """Terminal recognition failures retire media and late callbacks without changing facts."""
     voice.expect_failure = True
     failed = asyncio.Event()
     voice.failed.side_effect = failed.set
@@ -206,7 +213,16 @@ async def test_stt_loss_fails_only_media_and_ignores_late_callbacks(voice, store
     callback = recognizer.recognized.connect.call_args.args[0]
     if kind == "malformed":
         callback(SimpleNamespace(result=None))
+    elif kind == "authentication":
+        recognizer.canceled.connect.call_args.args[0](
+            SimpleNamespace(
+                cancellation_details=SimpleNamespace(
+                    error_code=CancellationErrorCode.AuthenticationFailure
+                )
+            )
+        )
     else:
+        voice.stt._restarts = RECOGNITION_RESTARTS
         getattr(recognizer, kind).connect.call_args.args[0](SimpleNamespace())
     await asyncio.wait_for(failed.wait(), 2)
     assert voice.pipeline.revoked

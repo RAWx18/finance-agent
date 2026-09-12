@@ -15,12 +15,11 @@ from app.history import History
 from app.models import Command
 from app.speech import SpeechRecognition
 from app.voice_pipeline import RESUME
-from app.voice_tools import introduction
 
 from .conftest import money
 from .test_voice_errors import lifecycle as lifecycle
 from .test_voice_errors import text_reply
-from .test_voice_opening import ready, render
+from .test_voice_opening import opening_lines, ready, render, spoken_opening
 from .test_voice_opening import synthesis as synthesis
 from .test_voice_turns import complete_turn, next_frame, tool_reply
 from .test_voice_turns import voice_boundaries as voice_boundaries
@@ -104,14 +103,19 @@ async def test_selected_chat_catchup_is_readonly_and_never_replays_history(voice
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(voice.requests.get(), 0.05)
     await ready(voice)
+    _, welcome = await spoken_opening(voice, synthesis, store, resumed=True)
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request["tool_choice"] == "none"
     messages = request["messages"]
     assert {"role": "developer", "content": RESUME} in messages
-    assert {"role": "developer", "content": introduction(store.config)} not in messages
+    assert not any(
+        message["content"] in opening_lines(store.config)
+        for message in messages
+        if message["role"] == "developer"
+    )
     assert {"role": "user", "content": "Help me with rent."} in messages
     assert {"role": "assistant", "content": "We were discussing rent"} in messages
-    assert "travel" not in json.dumps(messages)
+    assert "Help me with travel." not in json.dumps(messages)
     assert not any(message["role"] == "tool" for message in messages)
     canonical = next(
         message["content"]
@@ -135,8 +139,8 @@ async def test_selected_chat_catchup_is_readonly_and_never_replays_history(voice
         await asyncio.wait_for(voice.requests.get(), 0.05)
 
 
-async def test_resumed_opening_rejects_financial_tool_replay(voice, store):
-    """Verify resumed openings reject scripted financial tool replay without changing facts."""
+async def test_resumed_opening_rejects_financial_tool_replay(voice, synthesis, store):
+    """Verify resumed catch-up rejects scripted financial tool replay without changing facts."""
     voice.responses.put_nowait(
         tool_reply(
             "update_facts",
@@ -145,6 +149,7 @@ async def test_resumed_opening_rejects_financial_tool_replay(voice, store):
         )
     )
     await ready(voice)
+    await spoken_opening(voice, synthesis, store, complete=False, resumed=True)
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request["tool_choice"] == "none"
     await asyncio.wait_for(voice.pipeline.task, 2)
@@ -156,6 +161,7 @@ async def test_fresh_user_turn_can_correct_a_without_changing_b(voice, synthesis
     """Verify a fresh user correction changes only the selected conversation's saved facts."""
     voice.responses.put_nowait(text_reply("We were discussing rent; what is next?"))
     await ready(voice)
+    await spoken_opening(voice, synthesis, store, resumed=True)
     await asyncio.wait_for(voice.requests.get(), 2)
     instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
     await render(instance, "We were discussing rent; what is next?")
@@ -177,7 +183,7 @@ async def test_fresh_user_turn_can_correct_a_without_changing_b(voice, synthesis
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request["tool_choice"] == "required"
     assert {"role": "developer", "content": RESUME} not in request["messages"]
-    assert "travel" not in json.dumps(request["messages"])
+    assert "Help me with travel." not in json.dumps(request["messages"])
     await asyncio.wait_for(synthesis.requests.get(), 2)
     current = await store.get("owner")
     assert current.revision == voice.baseline.revision + 1

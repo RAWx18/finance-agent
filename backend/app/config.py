@@ -58,7 +58,8 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     assistant_name: str = Field(min_length=1, max_length=60)
-    introduction: str = Field(min_length=1, max_length=350)
+    openings: list[str] = Field(min_length=1, max_length=5)
+    resumptions: list[str] = Field(min_length=1, max_length=5)
     language: str = Field(min_length=1, max_length=60)
     tone: str = Field(min_length=1, max_length=500)
     model: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_.-]+$")
@@ -66,6 +67,8 @@ class VoiceConfig(BaseModel):
     model_timeout_seconds: float = Field(ge=1, le=120)
     max_completion_tokens: int = Field(ge=128, le=8192)
     max_tool_rounds: int = Field(ge=1, le=12)
+    response_retry_attempts: int = Field(default=1, ge=0, le=2, strict=True)
+    response_retry_delay_seconds: float = Field(default=0.5, ge=0.1, le=5)
     history_turns: int = Field(default=40, ge=1, le=200, strict=True)
     response_max_sentences: int = Field(ge=1, le=6)
     outcome_max_sentences: int = Field(ge=1, le=10)
@@ -89,7 +92,7 @@ class VoiceConfig(BaseModel):
     speech_timeout_seconds: float = Field(ge=0.3, le=3)
     inactive_seconds: float = Field(ge=15, le=300)
 
-    @field_validator("assistant_name", "introduction", "language", "tone")
+    @field_validator("assistant_name", "language", "tone")
     @classmethod
     def validate_words(cls, value: str) -> str:
         """Validate and trim nonempty conversation text without control characters."""
@@ -97,16 +100,19 @@ class VoiceConfig(BaseModel):
             raise ValueError("Conversation text must be nonempty and contain no control characters")
         return value.strip()
 
-    @field_validator("introduction")
+    @field_validator("openings", "resumptions")
     @classmethod
-    def validate_introduction(cls, value: str) -> str:
-        """Restrict introduction placeholders to assistant name and planning horizon."""
-        for _, field, spec, conversion in Formatter().parse(value):
-            if field is not None and (
-                field not in {"assistant_name", "horizon_days"} or spec or conversion
-            ):
-                raise ValueError("Introduction supports only {assistant_name} and {horizon_days}")
-        return value
+    def validate_openings(cls, values: list[str]) -> list[str]:
+        """Require short spoken lines using only assistant name and planning horizon."""
+        for value in values:
+            if not 1 <= len(value.strip()) <= 200 or re.search(r"[\x00-\x1f\x7f]", value):
+                raise ValueError("Openings must be 1-200 characters without control characters")
+            for _, field, spec, conversion in Formatter().parse(value):
+                if field is not None and (
+                    field not in {"assistant_name", "horizon_days"} or spec or conversion
+                ):
+                    raise ValueError("Openings support only {assistant_name} and {horizon_days}")
+        return [value.strip() for value in values]
 
 
 class HistoryConfig(BaseModel):

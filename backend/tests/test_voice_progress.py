@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from pipecat.frames.frames import LLMRunFrame, TTSAudioRawFrame, TTSStoppedFrame
+from pipecat.frames.frames import TTSAudioRawFrame, TTSStoppedFrame
 
 from .conftest import money
 from .test_voice_errors import text_reply
@@ -101,53 +101,6 @@ async def test_progressing_response_does_not_pause_and_next_turn_still_works(
     assert not voice.pipeline.waiting and not voice.pipeline.revoked
     assert await store.get("owner") == baseline
     assert voice.pipeline.metrics["tool_calls"] == 2
-
-
-@pytest.mark.parametrize("voice", [{"speech_timeout_seconds": 0.03}], indirect=True)
-async def test_superseded_empty_completion_cannot_pause_current_audio(
-    voice, synthesis, monkeypatch
-):
-    """Verify deferred empty-response handling cannot pause newer audio in the same generation."""
-    voice.pipeline.client_ready.set()
-    reached, release = asyncio.Event(), asyncio.Event()
-    create_task = voice.pipeline.llm.create_task
-
-    def delayed(coroutine, name=None):
-        """Delay empty-response tasks while forwarding other task creation."""
-        if name != "empty-response":
-            return create_task(coroutine, name)
-
-        async def run():
-            """Signal deferred task entry and await release before running its coroutine."""
-            reached.set()
-            await release.wait()
-            await coroutine
-
-        return create_task(run(), name)
-
-    monkeypatch.setattr(voice.pipeline.llm, "create_task", delayed)
-    voice.responses.put_nowait(tool_reply("read_state", {}, "read"))
-    voice.responses.put_nowait(text_reply(""))
-    await complete_turn(voice, "Please help me.")
-    await asyncio.wait_for(reached.wait(), 2)
-    generation = voice.pipeline.generation
-    response = "We can work through your next payment."
-    voice.responses.put_nowait(text_reply(response))
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    instance.synthesizing.connect.call_args.args[0](
-        SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480))
-    )
-    await next_frame(voice.frames, TTSAudioRawFrame)
-    assert voice.pipeline.generation == generation
-    release.set()
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(next_state(voice), 0.1)
-    assert not voice.pipeline.waiting
-    await render(instance, response)
-    await next_frame(voice.frames, TTSStoppedFrame)
-    assert voice.pipeline.metrics["model_requests"] == 3
-    assert voice.pipeline.metrics["tool_calls"] == 1
 
 
 @pytest.mark.parametrize(

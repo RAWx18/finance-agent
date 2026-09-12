@@ -826,6 +826,29 @@ describe('Daily microphone acknowledgement', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
+  it('ends the call itself after a server finished state once the goodbye has drained', async () => {
+    const microphone = track(); sdk.tracks.mockReturnValue({ local: { audio: microphone } });
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    try {
+      act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 1, reason: 'finished', autoRetry: false }));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      expect(sdk.enableMic).not.toHaveBeenCalledWith(false);
+      expect(api.endCall).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTimeAsync(1499));
+      expect(api.endCall).not.toHaveBeenCalled();
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(api.endCall).toHaveBeenCalledOnce();
+      expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
+      expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended');
+      expect(panel().queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      // A stale finished state after the call has ended must not end anything again.
+      act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 2, reason: 'finished', autoRetry: false }));
+      await act(async () => vi.advanceTimersByTimeAsync(2000));
+      expect(api.endCall).toHaveBeenCalledOnce();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
   it.each(['toggle', 'Continue'] as const)('refreshes %s only after local audio settles without track events', async action => {
     const microphone = track(); sdk.tracks.mockReturnValue({ local: { audio: microphone } });
     const view = show(); await start(); ready();
@@ -908,9 +931,196 @@ describe('Daily microphone acknowledgement', () => {
 
 describe('server-controlled conversation waiting', () => {
   /** Delivers a sequenced conversation-state message through the SDK callback double. */
-  function state(state: 'active' | 'waiting', sequence: number) {
-    act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state, sequence }));
+  function state(state: 'active' | 'waiting', sequence: number, details: Record<string, unknown> = {}) {
+    act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state, sequence, ...details }));
   }
+
+  it('acknowledges one exact automatic retry before resuming the same call and retained captions', async () => {
+    const view = show(); await start(); ready(); await hear(); state('active', 1);
+    const events = sdk.options!.callbacks!;
+    act(() => events.onBotOutput!({ text: 'Your saved figures', segment_id: 1, spoken_status: 'in-progress',
+      spoken_progress: { accumulated_text: 'Your saved figures', remaining_text: ' are ready.' } }));
+    const stream = view.container.querySelector('audio')!.srcObject;
+    state('waiting', 2, { reason: 'response', autoRetry: true });
+    expect(panel().getByRole('status')).toHaveTextContent(/^Trying again$/);
+    expect(panel().getByRole('button', { name: 'Continue' })).toBeEnabled();
+    expect(panel().getByRole('button', { name: 'End conversation' })).toBeEnabled();
+    expect(sdk.enabled).toBe(false);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    expect(view.container.querySelector('audio')!.muted).toBe(true);
+    expect(view.transcript.captions[0]).toMatchObject({ pending: false, interrupted: true });
+    act(() => events.onBotOutput!({ text: 'Late answer', segment_id: 2, spoken_status: 'completed' }));
+    expect(view.transcript.captions).toHaveLength(1);
+    sdk.sendClientMessage.mockImplementation(() => {
+      expect(sdk.enabled).toBe(false);
+      expect(view.container.querySelector('audio')!.muted).toBe(true);
+    });
+    await act(async () => state('active', 3, { reason: 'retry', retryOf: 2 }));
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('acknowledge-response-retry', { sequence: 3, retryOf: 2 });
+    expect(sdk.sendClientMessage.mock.invocationCallOrder[0]).toBeLessThan(sdk.enableMic.mock.invocationCallOrder[2]);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+    expect(view.container.querySelector('audio')!.muted).toBe(false);
+    expect(view.container.querySelector('audio')!.srcObject).toBe(stream);
+    act(() => {
+      events.onBotOutput!({ text: 'Your saved figures are ready.', segment_id: 1, spoken_status: 'completed' });
+      events.onBotStartedSpeaking!();
+    });
+    expect(view.transcript.captions[0].text).toBe('Your saved figures');
+    expect(panel().getByRole('status')).toHaveTextContent(/^Speaking$/);
+    expect(api.start).toHaveBeenCalledOnce(); expect(api.startCall).toHaveBeenCalledOnce();
+    expect(sdk.clients).toHaveLength(1); expect(sdk.connect).toHaveBeenCalledOnce(); expect(sdk.initDevices).toHaveBeenCalledOnce();
+    expect(api.endCall).not.toHaveBeenCalled(); expect(sdk.disconnect).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { prior: null, sequence: 2, retryOf: 1 },
+    { prior: { reason: 'response' }, sequence: 3, retryOf: 2 },
+    { prior: { reason: 'response', autoRetry: false }, sequence: 3, retryOf: 2 },
+    { prior: { reason: 'response', autoRetry: 'true' }, sequence: 3, retryOf: 2 },
+    { prior: { reason: 'inactivity', autoRetry: true }, sequence: 3, retryOf: 2 },
+    ...[undefined, '2', 1, 3, NaN].map(retryOf => ({ prior: { reason: 'response', autoRetry: true }, sequence: 3, retryOf })),
+    ...[1, 2, 4].map(sequence => ({ prior: { reason: 'response', autoRetry: true }, sequence, retryOf: 2 })),
+  ])('rejects an unowned or inexact retry offer %j', async ({ prior, sequence, retryOf }) => {
+    show(); await start(); ready(); state('active', 1);
+    if (prior) state('waiting', 2, prior);
+    sdk.enableMic.mockClear();
+    state('active', sequence, { reason: 'retry', retryOf });
+    expect(sdk.sendClientMessage).not.toHaveBeenCalled();
+    expect(sdk.enableMic).not.toHaveBeenCalled();
+    expect(sdk.enabled).toBe(!prior);
+    expect(api.startCall).toHaveBeenCalledOnce(); expect(api.endCall).not.toHaveBeenCalled();
+    if (prior?.autoRetry === true && prior.reason === 'response') {
+      state('active', 3, { reason: 'retry', retryOf: 2 });
+      expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('acknowledge-response-retry', { sequence: 3, retryOf: 2 });
+    }
+  });
+
+  it('lets explicit Continue supersede automatic ownership, including a retry offer already in flight', async () => {
+    show(); await start(); ready(); state('waiting', 2, { reason: 'response', autoRetry: true });
+    await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    expect(sdk.enabled).toBe(false);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+    expect(panel().getByRole('button', { name: 'Continue' })).toBeDisabled();
+    state('active', 4);
+    state('active', 5, { reason: 'retry', retryOf: 4 });
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+    expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('continue-conversation', { sequence: 2 });
+    expect(sdk.enableMic.mock.calls.map(([enabled]) => enabled)).toEqual([true, false, true]);
+    expect(api.startCall).toHaveBeenCalledOnce();
+  });
+
+  it('keeps exhausted or revoked automatic retries paused for manual Continue', async () => {
+    show(); await start(); ready(); state('waiting', 2, { reason: 'response', autoRetry: true });
+    state('waiting', 4, { reason: 'response', autoRetry: false });
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    state('active', 5, { reason: 'retry', retryOf: 4 });
+    expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+    expect(sdk.enabled).toBe(false); expect(sdk.sendClientMessage).not.toHaveBeenCalled();
+    await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('continue-conversation', { sequence: 4 });
+    state('active', 5);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+  });
+
+  it('bounds a missing retry offer and cancels its ownership without ending the call', async () => {
+    const view = show({ settings: { ...settings, voiceAvailable: true, voiceStartupSeconds: 2 } });
+    await start(); ready();
+    vi.useFakeTimers();
+    try {
+      state('waiting', 2, { reason: 'response', autoRetry: true });
+      act(() => vi.advanceTimersByTime(1999));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Trying again$/);
+      act(() => vi.advanceTimersByTime(1));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+      expect(screen.getByText('No response yet. Try Continue again.')).toBeVisible();
+      state('active', 3, { reason: 'retry', retryOf: 2 });
+      state('waiting', 2, { reason: 'response', autoRetry: true });
+      expect(sdk.enabled).toBe(false); expect(sdk.sendClientMessage).not.toHaveBeenCalled();
+      fireEvent.click(panel().getByRole('button', { name: 'Continue' }));
+      state('active', 4);
+      expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('continue-conversation', { sequence: 2 });
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      expect(api.startCall).toHaveBeenCalledOnce(); expect(api.endCall).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
+  it('leaves microphone and playback off when the retry acknowledgement throws, then continues at the offered sequence', async () => {
+    const view = show(); await start(); ready(); await hear();
+    state('waiting', 2, { reason: 'response', autoRetry: true });
+    sdk.sendClientMessage.mockImplementationOnce(() => { throw new Error('private transport failure'); });
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    expect(sdk.sendClientMessage).toHaveBeenCalledExactlyOnceWith('acknowledge-response-retry', { sequence: 3, retryOf: 2 });
+    expect(sdk.enabled).toBe(false);
+    expect(view.container.querySelector('audio')!.muted).toBe(true);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+    expect(screen.getByText('No response yet. Try Continue again.')).toBeVisible();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(api.endCall).not.toHaveBeenCalled(); expect(sdk.disconnect).not.toHaveBeenCalled();
+    await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    expect(sdk.sendClientMessage).toHaveBeenLastCalledWith('continue-conversation', { sequence: 3 });
+    state('active', 4);
+    expect(sdk.enabled).toBe(true); expect(api.startCall).toHaveBeenCalledOnce();
+  });
+
+  it.each(['end', 'updates', 'session', 'auth', 'unmount'] as const)('ignores retry offers after %s cancels the owning attempt', async action => {
+    const view = show(); await start(); ready();
+    state('waiting', 2, { reason: 'response', autoRetry: true });
+    const events = sdk.options!.callbacks!;
+    if (action === 'end') await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
+    else if (action === 'updates') view.change({ updatesLost: true });
+    else if (action === 'session') view.change({ sessionIssue: 'expired' });
+    else if (action === 'auth') invalidateRequests();
+    else view.unmount();
+    act(() => events.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3, reason: 'retry', retryOf: 2 }));
+    expect(sdk.enabled).toBe(false); expect(sdk.sendClientMessage).not.toHaveBeenCalled();
+    if (action === 'end') {
+      await start(); ready(); state('waiting', 2, { reason: 'response', autoRetry: true });
+      act(() => events.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3, reason: 'retry', retryOf: 2 }));
+      expect(sdk.enabled).toBe(false); expect(sdk.sendClientMessage).not.toHaveBeenCalled();
+      state('active', 3, { reason: 'retry', retryOf: 2 });
+      expect(sdk.enabled).toBe(true);
+    }
+  });
+
+  it('does not resume if a waiting revocation arrives while sending the acknowledgement', async () => {
+    show(); await start(); ready(); state('waiting', 2, { reason: 'response', autoRetry: true });
+    sdk.sendClientMessage.mockImplementationOnce(() => state('waiting', 4, { reason: 'response', autoRetry: false }));
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    expect(sdk.enabled).toBe(false);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+    expect(api.endCall).not.toHaveBeenCalled();
+  });
+
+  it('preserves a user mute through automatic recovery', async () => {
+    show(); await start(); ready();
+    await userEvent.click(panel().getByRole('button', { name: 'Mute microphone' }));
+    state('waiting', 2, { reason: 'response', autoRetry: true });
+    state('active', 3, { reason: 'retry', retryOf: 2 });
+    expect(sdk.enabled).toBe(false);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Microphone muted$/);
+    expect(panel().getByRole('button', { name: 'Unmute microphone' })).toBeEnabled();
+    expect(sdk.sendClientMessage).toHaveBeenCalledOnce();
+  });
+
+  it('waits for the actual microphone acknowledgement after automatic recovery and clears its deadline', async () => {
+    const view = show(); await start(); ready();
+    vi.useFakeTimers();
+    try {
+      state('waiting', 2, { reason: 'response', autoRetry: true });
+      sdk.enableMic.mockImplementation(() => undefined);
+      state('active', 3, { reason: 'retry', retryOf: 2 });
+      expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+      act(() => { sdk.enabled = true; sdk.dailyOn.mock.lastCall![1]({ participant: { local: true } }); });
+      expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+      act(() => vi.advanceTimersByTime(settings.voiceStartupSeconds * 1000));
+      expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+      expect(api.endCall).not.toHaveBeenCalled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
 
   it.each([false, true])('rejects late captions until Continue is acknowledged (pending: %s)', async continuing => {
     const view = show(); await start(); ready(); state('active', 1);
@@ -1153,18 +1363,20 @@ describe('server-controlled conversation waiting', () => {
     expect(api.startCall).toHaveBeenCalledOnce();
   });
 
-  it('offers retry after a missing ACK without assuming active and accepts a delayed real ACK', async () => {
+  it('bounds a missing Continue ACK and requires renewed ownership before a delayed ACK can resume', async () => {
     const view = show(); await start(); ready(); state('active', 1); state('waiting', 2);
     vi.useFakeTimers();
     try {
       fireEvent.click(panel().getByRole('button', { name: 'Continue' }));
-      act(() => vi.advanceTimersByTime(9999));
+      act(() => vi.advanceTimersByTime(settings.voiceStartupSeconds * 1000 - 1));
       expect(panel().getByRole('button', { name: 'Continue' })).toBeDisabled();
       act(() => vi.advanceTimersByTime(1));
       expect(screen.getByText('No response yet. Try Continue again.')).toBeVisible();
       expect(panel().getByRole('button', { name: 'Continue' })).toBeEnabled();
       expect(sdk.enabled).toBe(false);
       expect(panel().getByRole('status')).toHaveTextContent(/^Paused$/);
+      state('active', 3);
+      expect(sdk.enabled).toBe(false);
       fireEvent.click(panel().getByRole('button', { name: 'Continue' }));
       expect(sdk.sendClientMessage).toHaveBeenCalledTimes(2);
       expect(sdk.sendClientMessage).toHaveBeenLastCalledWith('continue-conversation', { sequence: 2 });
@@ -1522,7 +1734,7 @@ describe('real SDK integration boundary', () => {
     expect(screen.getByRole('region', { name: 'Live caption' })).toBe(live);
     regions.forEach((region, index) => expect(panel.children[index]).toBe(region));
     act(() => events.onError!({ label: 'rtvi-ai', id: 'error', type: 'error', data: { error: 'private details', fatal: true } }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('The assistant could not continue. Check your connection and try again.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('The assistant could not continue. Your saved figures are still available. Reconnect to continue.');
     expect(screen.getByRole('status')).toHaveTextContent(/^Unable to connect$/);
     expect(within(panel).getByRole('button', { name: 'Reconnect' }).textContent).toBe('');
     expect(within(panel).getByRole('button', { name: 'Reconnect' }).querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
@@ -2321,7 +2533,7 @@ describe('notice ownership and current actions', () => {
     const view = show(); await start(); ready();
     act(() => sdk.options!.callbacks!.onDisconnected!());
     const notice = await screen.findByRole('alert', { name: 'Connection lost' });
-    expect(within(notice).getByText('Check your internet connection, then reconnect.')).toBeVisible();
+    expect(within(notice).getByText('The call disconnected. Reconnect to continue.')).toBeVisible();
     view.change({ disabled: true });
     expect(within(notice).getByRole('button', { name: 'Reconnect' })).toBeDisabled();
     view.change({ disabled: false });

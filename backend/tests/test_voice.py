@@ -38,6 +38,15 @@ def environment(tmp_path):
     )
 
 
+def unavailable_events(caplog):
+    """Select structured voice.unavailable records as (stage, reason) pairs."""
+    return [
+        (record.msg["stage"], record.msg["reason"])
+        for record in caplog.records
+        if isinstance(record.msg, dict) and record.msg.get("event") == "voice.unavailable"
+    ]
+
+
 async def test_partial_facts_are_atomic_retained_idempotent_and_corrected(store):
     """Verify partial fact writes persist atomically, replay safely, and support corrections."""
     await store.create("owner")
@@ -233,16 +242,16 @@ def test_missing_setup_diagnostics_stay_internal(config, tmp_path, caplog):
         "DAILY_API_KEY, AZURE_SPEECH_KEY, AZURE_SPEECH_REGION."
     )
     with TestClient(auth_app(config, env), base_url=ORIGIN) as client:
-        assert caplog.messages == [f"Voice unavailable at startup: {reason}"]
+        assert unavailable_events(caplog) == [("startup", reason)]
         caplog.clear()
         sign_in(client)
         settings = client.get("/api/settings").json()
-        assert caplog.messages == []
+        assert unavailable_events(caplog) == []
         client.post("/api/session", json={})
         response = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert response.json()["message"] == settings["voiceUnavailableReason"]
         assert reason not in response.text
-        assert caplog.messages == [f"Voice unavailable: {reason}"]
+        assert unavailable_events(caplog) == [("callStart", reason)]
 
 
 @pytest.mark.parametrize("status", [200, 301, 401, 403, 429, 500])
@@ -271,7 +280,7 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
     )
     application = auth_app(config, environment(tmp_path))
     with TestClient(application, base_url=ORIGIN) as client:
-        assert caplog.messages == []
+        assert unavailable_events(caplog) == []
         sign_in(client)
         baseline = client.post("/api/session", json={}).json()
         result = client.post("/api/session/call", json={"callId": str(uuid4())})
@@ -299,7 +308,7 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
                 "message": "Conversations are temporarily unavailable. Please try again shortly.",
             }
             assert call.state == state
-        assert caplog.messages == [f"Voice unavailable: {reason}"]
+        assert unavailable_events(caplog) == [("callStart", reason)]
         current = client.get("/api/session").json()
         assert current["sessionId"] != baseline["sessionId"]
         assert current == {
@@ -377,8 +386,8 @@ def test_http_voice_error_logs_only_known_reasons(config, tmp_path, monkeypatch,
             "snapshot": None,
         }
         assert error.body.message == message
-        assert caplog.messages == [
-            "Voice unavailable: " + ("Voice setup failed." if "secret" in message else message)
+        assert unavailable_events(caplog) == [
+            ("callStart", "Voice setup failed." if "secret" in message else message)
         ]
         assert "secret" not in caplog.text
 
@@ -394,7 +403,7 @@ def test_http_other_problem_body_is_unchanged(config, tmp_path, monkeypatch, cap
         response = client.post("/api/session/call", json={"callId": str(uuid4())})
         assert response.status_code == error.status
         assert response.json() == error.body.model_dump(mode="json", by_alias=True)
-        assert caplog.messages == []
+        assert unavailable_events(caplog) == []
 
 
 class RoomsDouble:
@@ -656,7 +665,7 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
             assert not isinstance(client, AsyncAzureOpenAI)
             assert str(client.base_url) == f"https://{host}/openai/v1/"
             assert "api-version" not in client.default_query
-        assert "Opening cash is the original" in pipeline.llm._settings.system_instruction
+        assert "Starting cash is not income" in pipeline.llm._settings.system_instruction
         assert pipeline.llm._run_in_parallel is False
         assert pipeline.llm._settings.extra["store"] is False
         assert pipeline.llm._settings.extra["reasoning_effort"] == "none"

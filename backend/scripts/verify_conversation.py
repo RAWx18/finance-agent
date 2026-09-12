@@ -27,9 +27,9 @@ from app.voice_tools import (
     canonical,
     conversation,
     conversation_messages,
-    introduction,
     tool_parameters,
 )
+from app.voice_tools import opening as opening_line
 
 
 def require(value: Any, label: str) -> None:
@@ -87,7 +87,6 @@ async def verify(output: Path | None = None) -> None:
         )
     evidence: dict[str, Any] = {
         "mode": "realAzureModelSyntheticText",
-        "introduction": introduction(config),
         "turns": [],
         "passed": False,
     }
@@ -120,35 +119,9 @@ async def verify(output: Path | None = None) -> None:
                 requests = 0
 
                 async def opening():
-                    """Request and check a tool-free introduction within the request budget."""
-                    nonlocal requests
+                    """Seed the configured spoken opening exactly as the pipeline does."""
                     refresh(await store.get("synthetic"))
-                    context.add_message({"role": "developer", "content": introduction(config)})
-                    context.set_tool_choice("none")
-                    requests += 1
-                    require(requests <= 40, "Request budget exhausted")
-                    spoken = ""
-                    async with asyncio.timeout(config.voice.model_timeout_seconds):
-                        stream = await llm.get_chat_completions(context)
-                        async with stream:
-                            async for chunk in stream:
-                                for choice in chunk.choices:
-                                    require(
-                                        not choice.delta.tool_calls, "Opening must not call tools"
-                                    )
-                                    spoken += choice.delta.content or ""
-                    require(bool(spoken.strip()), "Empty introduction")
-                    require(config.voice.assistant_name in spoken, "Introduction omits identity")
-                    require(
-                        spoken.count("?") <= config.voice.max_questions, "Opening asks too much"
-                    )
-                    require(
-                        not any(
-                            word in spoken.lower() for word in ("how much", "balance", "due date")
-                        ),
-                        "Opening must invite the situation, not collect a field",
-                    )
-                    context.get_messages().pop()
+                    spoken = opening_line(config, tools.call_id, False)
                     context.add_message({"role": "assistant", "content": spoken})
                     evidence.setdefault("openings", []).append(spoken)
                     print(json.dumps({"check": "opening", "assistant": spoken}), flush=True)

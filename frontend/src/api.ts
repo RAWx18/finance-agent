@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { components } from './contracts';
 import { isHistoryRoute } from './historyRoutes';
+import { errorFields, log } from './telemetry';
 
 export type Snapshot = components['schemas']['Snapshot'];
 export type Settings = components['schemas']['Settings'];
@@ -33,10 +34,11 @@ export function reportAuthLoss(code: AuthLoss, epoch = generation) {
   if (epoch === generation) window.dispatchEvent(new CustomEvent<AuthLoss>('auth:loss', { detail: code }));
 }
 
-/** Represent an API failure with its HTTP status and structured service error. */
+/** Represent an API failure with its HTTP status, structured service error and server request ID. */
 export class ApiError extends Error {
-  constructor(public status: number, public body: ApiEnvelope) {
+  constructor(public status: number, public body: ApiEnvelope, public requestId: string | null = null) {
     super(body.message);
+    this.name = 'ApiError';
   }
 }
 
@@ -49,6 +51,53 @@ export function exactNumbers(_key: string, value: unknown): unknown {
   return value;
 }
 
+/** Check identifiers and labels without rewriting server-owned values. */
+const nonempty = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0;
+/** Check nonnegative integers that retain their exact value in JavaScript. */
+const unsigned = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+/** Check calendar dates without accepting JavaScript's rollover normalization. */
+const isoDate = (value: unknown): value is string => typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  && Number.isFinite(Date.parse(value)) && new Date(value).toISOString().slice(0, 10) === value;
+
+/** Check the shared occurrence identity, eligibility bounds, and consent dependency. */
+function validOption(value: unknown): value is AdjustmentOptions['options'][number] {
+  const option = value as AdjustmentOptions['options'][number] | null;
+  return !!option && nonempty(option.eventId) && nonempty(option.recordId) && nonempty(option.label)
+    && ['optional', 'card'].includes(option.kind) && isoDate(option.date)
+    && unsigned(option.originalPaise) && unsigned(option.minimumPaise) && option.minimumPaise < option.originalPaise
+    && typeof option.acceptanceReady === 'boolean' && nonempty(option.dependencyKey);
+}
+
+/** Check the financial values and collections consumed by proposal review. */
+function validPlan(value: unknown): value is Plan {
+  const plan = value as Plan | null;
+  const amount = (value: unknown) => value === null || Number.isSafeInteger(value);
+  const cost = (value: unknown) => value === null || unsigned(value);
+  return !!plan && ['reliableIncomePaise', 'uncertainIncomePaise', 'outflowPaise'].every(key => unsigned(plan[key as keyof Plan]))
+    && amount(plan.closingPaise) && amount(plan.troughPaise) && cost(plan.peakGapPaise) && cost(plan.reserveShortfallPaise)
+    && (plan.firstGap === null || !!plan.firstGap && isoDate(plan.firstGap.date) && unsigned(plan.firstGap.amountPaise))
+    && (plan.peakGapDate == null || isoDate(plan.peakGapDate)) && isoDate(plan.evaluatedOn)
+    && typeof plan.projectionPartial === 'boolean'
+    && Array.isArray(plan.events) && plan.events.every(event => !!event && nonempty(event.id) && nonempty(event.recordId)
+      && nonempty(event.label) && ['income', 'essential', 'optional', 'debt'].includes(event.kind)
+      && isoDate(event.date) && isoDate(event.originalDueDate) && cost(event.amountPaise) && amount(event.balancePaise)
+      && ['reported', 'requiredOnly', 'requiredFloor', 'assumed', 'budget'].includes(event.amountBasis)
+      && (event.amountStatus === undefined || ['exact', 'estimate', 'unknown'].includes(event.amountStatus))
+      && (event.requiredStatus === undefined || ['exact', 'estimate', 'unknown'].includes(event.requiredStatus))
+      && (event.requiredPaise == null || unsigned(event.requiredPaise))
+      && (event.scheduleIndex == null || unsigned(event.scheduleIndex))
+      && (event.dateAssumption == null || typeof event.dateAssumption === 'string')
+      && typeof event.included === 'boolean' && typeof event.overdue === 'boolean' && typeof event.autoDebit === 'boolean')
+    && new Set(plan.events.map(event => event.id)).size === plan.events.length
+    && (plan.timingRisks === undefined || Array.isArray(plan.timingRisks) && plan.timingRisks.every(risk => !!risk
+      && isoDate(risk.date) && unsigned(risk.exposurePaise) && unsigned(risk.remainingGapPaise)))
+    && !!plan.budgetBasis && typeof plan.budgetBasis.datedProjectionComplete === 'boolean'
+    && Array.isArray(plan.budgetBasis.unresolvedAmounts) && plan.budgetBasis.unresolvedAmounts.every(item => !!item
+      && nonempty(item.recordId) && ['missingDate', 'missingAmount', 'unknownTarget'].includes(item.reason)
+      && !!item.amount && cost(item.amount.amountPaise) && ['exact', 'estimate', 'unknown'].includes(item.amount.status)
+      && ['once', 'daily', 'weekly', 'fortnightly', 'monthly', 'monthlyBudget'].includes(item.recurrence));
+}
+
 /** Validate a saved financial snapshot and its workspace references before use. */
 export function readSnapshot(value: unknown): Snapshot {
   const snapshot = value as Snapshot | null;
@@ -59,8 +108,25 @@ export function readSnapshot(value: unknown): Snapshot {
     || typeof snapshot.anchorDate !== 'string' || typeof snapshot.endDateExclusive !== 'string'
     || typeof snapshot.expiresAt !== 'string' || !snapshot.facts?.opening || !snapshot.facts.coverage
     || !Array.isArray(snapshot.facts.records) || !Array.isArray(snapshot.facts.conflicts)
-    || !snapshot.plan || !Array.isArray(snapshot.plan.events))
+    || !validPlan(snapshot.plan))
     throw new Error('The saved figures could not be read safely.');
+  for (const scenario of [snapshot.preview, snapshot.accepted]) {
+    if (scenario === undefined || scenario === null) continue;
+    if (!nonempty(scenario.id) || !unsigned(scenario.sourceRevision)
+      || typeof scenario.createdAt !== 'string' || !isoDate(scenario.createdAt.slice(0, 10))
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(scenario.createdAt)
+      || !Number.isFinite(Date.parse(scenario.createdAt))
+      || !unsigned(scenario.reducedOutflowPaise) || !Array.isArray(scenario.adjustments)
+      || scenario.adjustments.some(item => !validOption(item) || !unsigned(item.amountPaise)
+        || item.amountPaise < item.minimumPaise || item.amountPaise >= item.originalPaise
+        || item.acceptedRevision != null && !unsigned(item.acceptedRevision))
+      || new Set(scenario.adjustments.map(item => item.eventId)).size !== scenario.adjustments.length
+      || scenario.removedAssumptionIds !== undefined && (!Array.isArray(scenario.removedAssumptionIds)
+        || !scenario.removedAssumptionIds.every(nonempty)
+        || new Set(scenario.removedAssumptionIds).size !== scenario.removedAssumptionIds.length)
+      || !validPlan(scenario.plan))
+      throw new Error('The saved figures could not be read safely.');
+  }
   const workspace = snapshot.workspace;
   const arrays = ['cards', 'questions', 'results', 'contributions', 'actions', 'choices'] as const;
   const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === 'string');
@@ -145,7 +211,15 @@ function readHistory(value: unknown, detail: boolean) {
 /** Send an API request and validate its response within the current authentication context. */
 async function request<T>(path: string, init?: RequestInit, text = false): Promise<T> {
   const epoch = generation;
-  const response = await fetch(`/api/${path}`, { ...init, credentials: 'same-origin' });
+  // Saved-conversation slugs are user-derived titles and stay out of console logs.
+  const route = { method: init?.method ?? 'GET', path: `/api/${path.split('?')[0].replace(/^history\/[^/]+/, 'history/{slug}')}` };
+  let response: Response;
+  try { response = await fetch(`/api/${path}`, { ...init, credentials: 'same-origin' }); }
+  catch (error) {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) log('api.request', { ...route, ...errorFields(error) }, 'warn');
+    throw error;
+  }
+  const requestId = response.headers.get('x-request-id');
   const content = await response.text();
   const protectedRequest = !path.startsWith('auth/');
   // AuthProvider owns deletion completion even when revocation invalidates ordinary requests.
@@ -155,13 +229,20 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
     try {
       body = JSON.parse(content, exactNumbers) as ApiEnvelope;
       if (!body || typeof body.code !== 'string' || typeof body.message !== 'string') throw new Error('Invalid error response');
+      if (body.snapshot !== undefined && body.snapshot !== null) readSnapshot(body.snapshot);
     }
     catch { body = { code: 'unavailable', message: 'The request could not be completed.' }; }
+    log('api.request', { ...route, status: response.status, errorCode: body.code, requestId }, 'warn');
     if (protectedRequest && (response.status === 401 || body.code === 'authUnavailable'))
       reportAuthLoss(response.status === 401 ? body.code === 'sessionExpired' ? 'sessionExpired' : 'unauthenticated' : 'authUnavailable', epoch);
-    throw new ApiError(response.status, body);
+    throw new ApiError(response.status, body, requestId);
   }
   const value = response.status === 204 ? undefined : text ? content : JSON.parse(content, exactNumbers);
+  if (path === 'session/options' && (!value || !nonempty(value.sessionId) || !unsigned(value.revision)
+    || !unsigned(value.sequence) || !isoDate(value.today) || !Array.isArray(value.options)
+    || !value.options.every(validOption)
+    || new Set(value.options.map((option: AdjustmentOptions['options'][number]) => option.eventId)).size !== value.options.length))
+    throw new Error('Planning choices could not be read safely.');
   const selecting = path.startsWith('history/') && path.endsWith('/continue');
   if (!text && !selecting && (path === 'history' || path.startsWith('history?') || path.startsWith('history/')))
     readHistory(value, path.startsWith('history/'));
@@ -304,7 +385,9 @@ export function conversationError(error: unknown): string {
 
 /** Describe a financial-session failure with guidance for the attempted operation. */
 export function errorMessage(error: unknown, operation?: Command['operation']['type']): string {
-  if (!(error instanceof ApiError)) return 'We could not reach your projection. Check your connection and retry.';
+  if (!(error instanceof ApiError)) return operation && ['previewAdjustments', 'acceptPreview', 'discardPreview', 'rejectPreview', 'clearAccepted'].includes(operation)
+    ? 'This proposal action could not be confirmed. Keep this page open, check your connection, and retry the same action safely.'
+    : 'We could not reach your projection. Check your connection and retry.';
   if (error.body.code === 'invalidStoredState') return 'The service is reachable, but your saved figures could not be read. They have not been deleted.';
   if (error.status === 410) return 'This projection has expired. Start again to enter fresh figures.';
   if (error.status === 404) return 'This projection is no longer available. You can start again.';
@@ -317,9 +400,12 @@ export function errorMessage(error: unknown, operation?: Command['operation']['t
     : 'Saved figures changed elsewhere. Your draft is still here; review it before saving.';
   if (error.body.code === 'stalePreview') {
     if (operation === 'respondToAction') return 'Your answer was not saved because the open proposal differs from this suggested cut. Review the proposal or choose “Reject preview” before answering again.';
-    if (operation === 'discardPreview' || operation === 'rejectPreview') return 'This preview is no longer available to reject. Review the current proposal before trying again.';
+    if (operation === 'previewAdjustments') return 'Another preview changed while you were choosing amounts. Review the current preview before replacing it.';
+    if (operation === 'discardPreview') return 'This preview is no longer available to close. Review the current proposal before trying again. Closing a preview does not reject it.';
+    if (operation === 'rejectPreview') return 'This preview is no longer available to reject. Review the current proposal before trying again.';
     return 'This preview is no longer available to accept. Review the current preview or refresh eligible choices and preview again; a date may have passed.';
   }
+  if (error.body.code === 'proposalRejected') return 'This exact set of proposed changes was previously declined. Choose another amount or a different set of changes to preview.';
   if (error.body.code === 'noAccepted') return 'There are no saved assumptions to clear. The current saved projection is shown.';
   if (error.body.code === 'invalidAdjustments') return 'These changes are no longer eligible. Refresh choices, check each amount and confirmation, then preview again.';
   if (error.status === 503 || error.status >= 500) return 'Saving is temporarily unavailable. Keep this page open and retry.';

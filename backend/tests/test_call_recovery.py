@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+import json
 from datetime import timedelta
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -148,6 +149,7 @@ async def test_cancelled_setup_deletes_the_predetermined_room(
 
 async def test_ambiguous_create_timeout_still_deletes_name(manager, monkeypatch):
     """Verify an ambiguous room creation timeout still triggers deletion by its reserved name."""
+
     async def timed_out(self, name, expires):
         """Simulate room creation timing out without confirming whether the room exists."""
         raise TimeoutError
@@ -494,6 +496,14 @@ async def test_daily_invalid_json_logs_status_and_type_not_response(tmp_path, mo
     try:
         with pytest.raises(Problem, match="Daily room service is unavailable"):
             await rooms.create("room", 123)
-        assert "HTTP 200 (ValueError)" in caplog.text and "private token" not in caplog.text
+        event = next(
+            json.loads(record.message)
+            for record in caplog.records
+            if record.name == "uvicorn.error.diagnostics"
+            and json.loads(record.message)["event"] == "daily.requestFailed"
+        )
+        assert event["status"] == 200
+        assert [item["type"] for item in event["errors"]] == ["Problem", "ValueError"]
+        assert "private token" not in caplog.text
     finally:
         await rooms.close()

@@ -156,7 +156,7 @@ async def test_cash_filler_rent_is_one_turn(config, filler_vad):
     assert config.voice.speech_timeout_seconds == 2.6
     assert config.voice.vad_stop_seconds == 0.2
     assert config.voice.vad_start_seconds == 0.1
-    assert config.voice.inactive_seconds == 60
+    assert config.voice.inactive_seconds == 180
     messages, events, down, _ = await play(
         config,
         [

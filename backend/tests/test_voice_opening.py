@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 
 import pytest
 from pipecat.frames.frames import (
+    BotStoppedSpeakingFrame,
     InterruptionFrame,
     LLMRunFrame,
     TTSAudioRawFrame,
@@ -18,15 +19,23 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.aggregators.llm_response_universal import LLMAssistantAggregator
+from pipecat.processors.frame_processor import FrameDirection
 
 from app.voice_pipeline import RESUME, VoicePipeline
-from app.voice_tools import introduction
 
 from .conftest import money
 from .test_voice_errors import text_reply
-from .test_voice_turns import complete_turn, next_frame, recognize, tool_reply
+from .test_voice_turns import complete_turn, next_frame, recognize
 from .test_voice_turns import voice as voice
 from .test_voice_turns import voice_boundaries as voice_boundaries
+
+
+def opening_lines(config, resumed=False):
+    """Format every configured opening or welcome-back line for the given situation."""
+    return {
+        line.format(assistant_name=config.voice.assistant_name, horizon_days=config.horizon_days)
+        for line in (config.voice.resumptions if resumed else config.voice.openings)
+    }
 
 
 @pytest.fixture
@@ -72,6 +81,20 @@ async def ready(voice):
     await voice.pipeline.worker.rtvi._call_event_handler("on_client_ready")
 
 
+async def spoken_opening(voice, synthesis, store, *, resumed=False, complete=True):
+    """Await the deterministic opening's synthesis request and optionally play it through."""
+    instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
+    text = "".join(ElementTree.fromstring(ssml).itertext()).strip()
+    assert text in opening_lines(store.config, resumed)
+    if complete:
+        await render(instance, text)
+        await next_frame(voice.frames, TTSAudioRawFrame)
+        await next_frame(voice.frames, TTSStoppedFrame)
+        # The queued transport never reports playback; Azure TTS waits for it before speaking on.
+        await voice.pipeline.output.push_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    return instance, text
+
+
 @pytest.fixture
 def resumed_dialogue(monkeypatch):
     """Seed pipeline construction with a conversation slug and recent scripted dialogue."""
@@ -95,18 +118,23 @@ def resumed_dialogue(monkeypatch):
 async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying_writes(
     resumed_dialogue, voice, synthesis, store
 ):
-    """Verify reconnect uses recent dialogue without repeating introductions or writes."""
+    """Verify reconnect speaks a welcome back, then continues without introductions or writes."""
     await voice.pipeline.tools.update_facts(
         {"expectedRevision": 0, "opening": money("600000")}, "saved-before-reconnect"
     )
     baseline = await store.get("owner")
-    response = "Yeah, let's continue with rent before payday."
+    response = "Let's continue with rent before payday."
     voice.responses.put_nowait(text_reply(response))
     await ready(voice)
+    _, welcome = await spoken_opening(voice, synthesis, store, resumed=True)
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request["tool_choice"] == "none"
     assert all(message in request["messages"] for message in resumed_dialogue)
-    assert {"role": "developer", "content": introduction(store.config)} not in request["messages"]
+    assert not any(
+        message["content"] in opening_lines(store.config)
+        for message in request["messages"]
+        if message["role"] == "developer"
+    )
     assert {"role": "developer", "content": RESUME} in request["messages"]
     instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
     await render(instance, response)
@@ -116,6 +144,7 @@ async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying
     assert await store.get("owner") == baseline
     assert voice.pipeline.metrics.get("tool_calls", 0) == 0
     assert voice.pipeline.completed_turns == 2
+    assert {"role": "assistant", "content": welcome} in voice.pipeline.context.get_messages()
     await ready(voice)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(voice.requests.get(), 0.05)
@@ -127,31 +156,22 @@ async def test_reconnect_uses_recent_dialogue_without_reintroducing_or_replaying
         {},
         {
             "assistant_name": "Mira",
-            "introduction": "Hello, I'm {assistant_name}. Tell me your concern.",
+            "openings": ["Hello, I'm {assistant_name}. Tell me your concern."],
         },
     ],
     indirect=True,
 )
-async def test_model_opening_reaches_synthesis_transport_and_history_once(
+async def test_configured_opening_reaches_synthesis_transport_and_history_once(
     voice, synthesis, store, voice_boundaries
 ):
-    """Verify a scripted model opening reaches synthesis, transport, and history once."""
+    """Verify the configured opening reaches synthesis, transport, and history without the model."""
     baseline = await store.get("owner")
     assert f"You are {store.config.voice.assistant_name}," in (
         voice.pipeline.llm._settings.system_instruction
     )
-    greeting = (
-        f"Hello from {store.config.voice.assistant_name}, what money concern is on your mind?"
-    )
-    voice.responses.put_nowait(text_reply(greeting))
     await ready(voice)
-    request = await asyncio.wait_for(voice.requests.get(), 2)
-    assert request["tool_choice"] == "none"
-    assert not any(message["role"] == "user" for message in request["messages"])
-    assert {"role": "developer", "content": introduction(store.config)} in request["messages"]
-    instance, ssml = await asyncio.wait_for(synthesis.requests.get(), 2)
-    text = "".join(ElementTree.fromstring(ssml).itertext())
-    assert text == greeting and text != introduction(store.config)
+    instance, text = await spoken_opening(voice, synthesis, store, complete=False)
+    assert store.config.voice.assistant_name in text
     assert voice_boundaries.transport_factory.call_args.args[2] == store.config.voice.assistant_name
     await render(instance, text)
     assert (await next_frame(voice.frames, TTSAudioRawFrame)).audio == b"\x01\x00" * 480
@@ -169,7 +189,8 @@ async def test_model_opening_reaches_synthesis_transport_and_history_once(
     assert synthesis.requests.empty()
     assert await store.get("owner") == baseline
     assert voice.pipeline.metrics.get("tool_calls", 0) == 0
-    assert voice.pipeline.metrics["model_requests"] == 1
+    assert voice.pipeline.metrics.get("model_requests", 0) == 0
+    assert voice.pipeline.metrics["openings"] == 1
     assert voice.pipeline.completed_turns == 0
     assert voice.pipeline.opening == "delivered"
 
@@ -188,16 +209,14 @@ async def test_user_first_preempts_opening_even_after_the_turn_finishes(voice, s
     assert (await store.get("owner")).revision == 0
 
 
-async def test_interrupted_intro_drops_late_audio_and_does_not_resume(voice, synthesis):
-    """Verify an interrupted introduction drops late audio and never resumes."""
-    voice.responses.put_nowait(text_reply("Hello, what would you like to work through?"))
+async def test_interrupted_intro_drops_late_audio_and_does_not_resume(voice, synthesis, store):
+    """Verify an interrupted opening drops late audio and never resumes after user speech."""
     await ready(voice)
-    await asyncio.wait_for(voice.requests.get(), 2)
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    instance, text = await spoken_opening(voice, synthesis, store, complete=False)
     await voice.pipeline.worker.queue_frame(VADUserStartedSpeakingFrame())
     await asyncio.wait_for(voice.started.wait(), 2)
     await next_frame(voice.frames, InterruptionFrame)
-    await render(instance, "An interrupted introduction must not resume.")
+    await render(instance, text)
     await ready(voice)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(next_frame(voice.frames, TTSAudioRawFrame), 0.1)
@@ -209,34 +228,25 @@ async def test_external_refresh_replaces_an_unheard_opening_without_waiting_for_
     voice, synthesis, store
 ):
     """Verify external refresh replaces an unheard opening without waiting for user input."""
-    voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
     await ready(voice)
-    await asyncio.wait_for(voice.requests.get(), 2)
-    await asyncio.wait_for(synthesis.requests.get(), 2)
+    await spoken_opening(voice, synthesis, store, complete=False)
     await voice.pipeline.tools.update_facts(
         {"expectedRevision": 0, "opening": money("100")}, "external"
     )
-    voice.responses.put_nowait(text_reply("Hi, I'm Isha; what's worrying you about money?"))
     await voice.pipeline.interrupt()
-    request = await asyncio.wait_for(voice.requests.get(), 2)
-    assert request["tool_choice"] == "none"
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    await render(instance, "Hi, I'm Isha; what's worrying you about money?")
-    await next_frame(voice.frames, TTSAudioRawFrame)
-    await next_frame(voice.frames, TTSStoppedFrame)
+    await spoken_opening(voice, synthesis, store)
     await ready(voice)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(voice.requests.get(), 0.1)
     assert synthesis.requests.empty() and voice.pipeline.completed_turns == 0
+    assert voice.pipeline.metrics["openings"] == 2 and voice.pipeline.opening == "delivered"
     assert (await store.get("owner")).revision == 1
 
 
-async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, synthesis):
+async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, synthesis, store):
     """Verify external refresh does not replay an opening once audio has been delivered."""
-    voice.responses.put_nowait(text_reply("Hello, what money concern is on your mind?"))
     await ready(voice)
-    await asyncio.wait_for(voice.requests.get(), 2)
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+    instance, _ = await spoken_opening(voice, synthesis, store, complete=False)
     await asyncio.to_thread(
         instance.synthesizing.connect.call_args.args[0],
         SimpleNamespace(result=SimpleNamespace(audio_data=b"\x01\x00" * 480)),
@@ -249,70 +259,21 @@ async def test_external_refresh_does_not_replay_an_opening_already_heard(voice, 
     await ready(voice)
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(voice.requests.get(), 0.05)
-    assert synthesis.requests.empty()
-
-
-async def test_first_request_refresh_still_completes_one_opening(voice, synthesis, monkeypatch):
-    """Verify refreshing state on the first request still delivers only one opening."""
-    with monkeypatch.context() as patch:
-        patch.setattr(voice.pipeline.tools, "refresh", lambda snapshot: None)
-        await voice.pipeline.tools.update_facts(
-            {"expectedRevision": 0, "opening": money("100")}, "external"
-        )
-    greeting = "Hi, I'm Isha; what's worrying you about money?"
-    voice.responses.put_nowait(text_reply(greeting))
-    await ready(voice)
-    assert (await asyncio.wait_for(voice.requests.get(), 2))["tool_choice"] == "none"
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    await render(instance, greeting)
-    await next_frame(voice.frames, TTSAudioRawFrame)
-    await next_frame(voice.frames, TTSStoppedFrame)
-    assert voice.pipeline.opening == "delivered"
-    await voice.pipeline.worker.queue_frame(LLMRunFrame())
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(voice.requests.get(), 0.05)
-
-
-@pytest.mark.parametrize("tool", ["read_state", "update_facts"])
-async def test_opening_rejects_provider_tools_without_speech_or_write(voice, store, tool):
-    """Verify opening responses reject scripted tool calls without speech or writes."""
-    baseline = await store.get("owner")
-    voice.expect_failure = True
-    failed = asyncio.Event()
-    voice.failed.side_effect = failed.set
-    voice.responses.put_nowait(
-        tool_reply(
-            tool,
-            {} if tool == "read_state" else {"expectedRevision": 0, "opening": money("999")},
-            "opening-tool",
-        )
-    )
-    await ready(voice)
-    assert (await asyncio.wait_for(voice.requests.get(), 2))["tool_choice"] == "none"
-    await asyncio.wait_for(failed.wait(), 2)
-    assert voice.pipeline.revoked and not voice.pipeline.context.get_messages()
-    assert voice.pipeline.metrics.get("tool_calls", 0) == 0
-    assert await store.get("owner") == baseline
-    voice.synthesizer.speak_ssml_async.assert_not_called()
+    assert synthesis.requests.empty() and voice.pipeline.metrics["openings"] == 1
 
 
 async def test_opening_guidance_cannot_restart_introduction_after_first_user_turn(
     voice, synthesis, store
 ):
-    """Verify first-user-turn requests retain the greeting but remove opening guidance."""
-    greeting = "Hello, what would you like help with?"
-    voice.responses.put_nowait(text_reply(greeting))
+    """Verify first-user-turn requests retain the spoken greeting and add no opening guidance."""
     await ready(voice)
-    await asyncio.wait_for(voice.requests.get(), 2)
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    await render(instance, greeting)
-    await next_frame(voice.frames, TTSStoppedFrame)
+    _, greeting = await spoken_opening(voice, synthesis, store)
     await asyncio.wait_for(synthesis.turns.get(), 2)
     await complete_turn(voice, "My rent is due before payday.")
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert request["tool_choice"] == "required"
     assert not any(
-        message.get("role") == "developer" and message.get("content") == introduction(store.config)
+        message.get("role") == "developer" and message.get("content") in opening_lines(store.config)
         for message in request["messages"]
     )
     assert any(

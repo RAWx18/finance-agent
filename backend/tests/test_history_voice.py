@@ -5,6 +5,7 @@ import asyncio
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from pipecat.frames.frames import (
     AggregatedTextProgressFrame,
     BotStoppedSpeakingFrame,
@@ -20,6 +21,7 @@ from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import TransportParams
 
 from app.history import CaptionHistory, History
+from app.store import Problem
 
 from .test_history import saved
 from .test_voice_errors import lifecycle as lifecycle
@@ -124,13 +126,51 @@ async def test_real_rtvi_observer_and_public_output_save_only_transport_captions
         await output.cleanup()
 
 
-async def test_caption_storage_failure_uses_real_pipeline_fail_safe(voice, store, monkeypatch):
-    """Verify caption storage failure revokes the pipeline, clears context, and reports failure."""
+@pytest.mark.parametrize(
+    "error",
+    [OSError("private storage detail"), Problem(429, "historyLimit", "Capacity reached.")],
+    ids=["storage", "capacity"],
+)
+async def test_caption_storage_failure_keeps_the_live_call(voice, store, monkeypatch, error):
+    """Verify caption storage failure is counted once and never ends the conversation."""
     history = History(store)
     call_id = uuid4()
     await history.start("owner", call_id, (await store.get("owner")).session_id)
     voice.pipeline.history = CaptionHistory(history, "owner", call_id)
-    monkeypatch.setattr(history, "append", AsyncMock(side_effect=OSError("private storage detail")))
+    monkeypatch.setattr(history, "append", AsyncMock(side_effect=error))
+    rtvi = voice.pipeline.worker.rtvi
+    observer = rtvi.create_rtvi_observer()
+    try:
+        for text in ("Hello", "Rent is due"):
+            await observer.on_push_frame(
+                FramePushed(
+                    source=voice.stt,
+                    destination=rtvi,
+                    frame=TranscriptionFrame(text, "human", "2026-09-11T06:00:00Z"),
+                    direction=FrameDirection.DOWNSTREAM,
+                    timestamp=0,
+                )
+            )
+        assert not voice.pipeline.revoked
+        assert voice.pipeline.context.get_messages()
+        assert voice.pipeline.metrics["history_failed"] == 2
+        voice.failed.assert_not_called()
+        assert (await saved(voice.pipeline.history)).messages == []
+    finally:
+        await observer.cleanup()
+
+
+async def test_caption_authorization_loss_uses_real_pipeline_fail_safe(voice, store, monkeypatch):
+    """Verify lost authorization during caption capture revokes the pipeline and clears context."""
+    history = History(store)
+    call_id = uuid4()
+    await history.start("owner", call_id, (await store.get("owner")).session_id)
+    voice.pipeline.history = CaptionHistory(history, "owner", call_id)
+    monkeypatch.setattr(
+        history,
+        "append",
+        AsyncMock(side_effect=Problem(401, "unauthenticated", "Sign in to continue.")),
+    )
     voice.expect_failure = True
     rtvi = voice.pipeline.worker.rtvi
     observer = rtvi.create_rtvi_observer()
@@ -148,7 +188,6 @@ async def test_caption_storage_failure_uses_real_pipeline_fail_safe(voice, store
         assert not voice.pipeline.context.get_messages()
         assert voice.pipeline.metrics["history_failed"] == 1
         voice.failed.assert_called_once()
-        assert (await saved(voice.pipeline.history)).messages == []
     finally:
         await observer.cleanup()
 

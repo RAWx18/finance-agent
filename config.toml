@@ -70,17 +70,30 @@ max_rate_keys = 2000
 
 [voice]
 assistant_name = "Isha"
-# Opening guidance for the model, not a scripted spoken reply.
-introduction = "Introduce yourself as {assistant_name}, an AI financial assistant. Briefly explain that you can help plan the next {horizon_days} days, then invite the user's main money concern. Use natural wording; do not request a specific amount or read existing figures."
+# Spoken as-is before the model takes over; one is chosen per call, so keep them interchangeable.
+openings = [
+  "Hi, I'm {assistant_name}. Let's look at your finances for the next {horizon_days} days. What's on your mind?",
+  "Hi, I'm {assistant_name}. Let's work through your next {horizon_days} days together. What would you like to figure out?",
+  "Hi, I'm {assistant_name}. Tell me what's going on with your money right now, and we'll take it from there.",
+]
+# Spoken before the model continues a saved chat; it must not claim specific memories.
+resumptions = [
+  "Alright, let me check where we left off so we can continue from there.",
+  "Good to have you back. Let me pick up from where we stopped.",
+  "Let me quickly check where we left off, then we'll continue.",
+]
 language = "English"
 tone = "Warm, calm and practical. Speak to an adult as a capable financial assistant, not a form or a lecturer."
 # Use an exact verified Azure deployment name for an approved model.
-model = "gpt-5.6-luna"
+model = "gpt-5.6-terra"
 reasoning_effort = "none"
 # Maximum inactivity during model generation; content and tool chunks refresh this deadline.
 model_timeout_seconds = 35
 max_completion_tokens = 1600
 max_tool_rounds = 6
+# Read-only response attempts per completed user turn; zero requires manual Continue.
+response_retry_attempts = 1
+response_retry_delay_seconds = 0.5
 history_turns = 40
 response_max_sentences = 3
 outcome_max_sentences = 5
@@ -106,4 +119,5 @@ shutdown_seconds = 10
 tool_timeout_seconds = 30
 # Preserve thinking pauses; STT finalization does not itself finish the user turn.
 speech_timeout_seconds = 2.6
-inactive_seconds = 60
+# Quiet this long pauses the call (microphone off) until Continue; ordinary pauses stay live.
+inactive_seconds = 180

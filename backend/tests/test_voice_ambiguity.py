@@ -11,8 +11,8 @@ from .conftest import money
 
 
 @pytest.mark.parametrize("label", ["Loan EMI", " loan emi ", "LOAN-EMI", "Ｌｏａｎ ＥＭＩ"])
-async def test_repeated_or_conflicting_new_record_is_rejected_atomically(store, label):
-    """Verify normalized duplicate debt labels reject the entire fact update."""
+async def test_repeated_new_record_with_the_same_name_corrects_the_existing_item(store, label):
+    """Verify a same-named report without an ID corrects that record instead of duplicating it."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     await tools.update_facts(
@@ -31,10 +31,84 @@ async def test_repeated_or_conflicting_new_record_is_rejected_atomically(store, 
             "opening": money("6000"),
             "records": [{"kind": "debt", "label": label, "amount": money("2500")}],
         },
-        "ambiguous",
+        "corrected",
+    )
+    assert result["saved"] is True
+    corrected = await store.get("owner")
+    assert len(corrected.facts.records) == 1
+    assert corrected.facts.records[0].id == baseline.facts.records[0].id
+    assert corrected.facts.records[0].label == "Loan EMI"
+    assert corrected.facts.records[0].amount.amount_paise == 250000
+    assert corrected.facts.opening.amount_paise == 600000
+
+
+async def test_wrong_id_with_a_unique_name_still_corrects_that_record(store):
+    """Verify a mistyped record ID falls back to the uniquely named record."""
+    await store.create("owner")
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    await tools.update_facts(
+        {
+            "expectedRevision": 0,
+            "records": [
+                {"kind": "essential", "label": "Rent", "amount": money("8000")},
+                {
+                    "kind": "income",
+                    "label": "Salary",
+                    "amount": money("30000"),
+                    "reliability": "reliable",
+                },
+            ],
+        },
+        "reported",
+    )
+    baseline = await store.get("owner")
+    result = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 1,
+            "records": [{"id": str(uuid4()), "label": "salary", "amount": money("32000")}],
+        },
+        "mistyped",
+    )
+    assert result["saved"] is True
+    corrected = await store.get("owner")
+    assert [record.id for record in corrected.facts.records] == [
+        record.id for record in baseline.facts.records
+    ]
+    assert corrected.facts.records[1].amount.amount_paise == 3200000
+    result = await tools.invoke(
+        "update_facts",
+        {"expectedRevision": 2, "records": [{"id": str(uuid4()), "amount": money("1")}]},
+        "unknown",
     )
     assert result["code"] == "invalidFacts"
-    assert "separate" in result["message"]
+
+
+async def test_two_records_with_one_name_still_need_identification(store):
+    """Verify a same-named report cannot silently pick between two similarly named records."""
+    await store.create("owner")
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    await tools.update_facts(
+        {
+            "expectedRevision": 0,
+            "records": [
+                {"kind": "debt", "label": "Loan", "amount": money("2000")},
+                {"kind": "debt", "label": "Loan", "amount": money("2000"), "distinct": True},
+            ],
+        },
+        "two-loans",
+    )
+    baseline = await store.get("owner")
+    result = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 1,
+            "records": [{"kind": "debt", "label": "loan", "amount": money("2500")}],
+        },
+        "which",
+    )
+    assert result["code"] == "invalidFacts"
+    assert "More than one record" in result["message"]
     assert await store.get("owner") == baseline
 
 

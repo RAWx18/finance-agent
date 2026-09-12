@@ -35,7 +35,7 @@ async def test_response_evidence_preserves_unknowns_and_uses_the_active_plan(sto
     assert '"closingPaise":400000' in guidance
     assert '"troughPaise":400000' in guidance
     assert "Present the 30-day plan now" in guidance
-    assert "Finish without another intake" in guidance
+    assert "Would you like me to explain any part of the plan?" in guidance
     assert "ask after goodbye" in guidance
     assert await store.get("owner") == saved
 
@@ -114,7 +114,12 @@ async def test_actual_posttool_request_uses_corrected_figures_before_synthesis(
     assert (
         next(item for item in corrected.workspace.results if item.id == "closing").amount_paise == 0
     )
-    guidance = requests[1]["messages"][-1]
+    guidance = next(
+        message
+        for message in requests[1]["messages"]
+        if isinstance(message.get("content"), str)
+        and message["content"].startswith("Address the entire completed user turn")
+    )
     assert guidance["content"] == response_guidance(canonical(corrected))
     assert '"troughPaise":0' in guidance["content"]
     assert '"troughPaise":50000' not in guidance["content"]

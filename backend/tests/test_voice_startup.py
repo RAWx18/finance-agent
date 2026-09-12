@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+import json
 import logging
 from datetime import timedelta
 from unittest.mock import AsyncMock
@@ -9,6 +10,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.models import Error
 from app.store import Problem
 from app.voice import Call, CallManager
 
@@ -220,7 +222,7 @@ async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, 
 
 async def test_lifecycle_timings_are_monotonic_and_logs_are_safe(manager, monkeypatch, caplog):
     """Verify lifecycle timings are ordered and logs exclude private call details."""
-    caplog.set_level(logging.INFO, logger="app.voice")
+    caplog.set_level(logging.INFO, logger="uvicorn.error.diagnostics")
     active = asyncio.Event()
     mark = Call.mark
 
@@ -267,13 +269,25 @@ async def test_lifecycle_timings_are_monotonic_and_logs_are_safe(manager, monkey
         assert call.timings[f"{operation}Started"] <= call.timings[f"{operation}Complete"]
         assert call.timings[f"{operation}Complete"] <= call.timings["shutdownComplete"]
     assert call.state.cleanup_confirmed
-    messages = [record for record in caplog.records if record.name == "app.voice"]
-    assert len(messages) == len(call.timings)
+    messages = [record for record in caplog.records if getattr(record, "safe_diagnostic", False)]
+    events = [json.loads(record.getMessage()) for record in messages]
+    measured = {event["stage"]: event for event in events if event["event"] == "call.stage"}
+    assert set(measured) == set(call.timings)
+    assert all(
+        measured[stage]["elapsed_seconds"] == round(elapsed, 3)
+        for stage, elapsed in call.timings.items()
+    )
     assert all(record.exc_info is None and record.stack_info is None for record in messages)
-    assert all(str(call.id) in record.message for record in messages)
+    assert all(event["call_id"] == str(call.id) for event in events)
     for private in ("owner", "test-only", "test-token", "https://", call.room_name):
         assert private not in caplog.text
-    assert set(join.model_dump(by_alias=True)) == {"callId", "url", "token", "expiresAt"}
+    assert set(join.model_dump(by_alias=True)) == {
+        "callId",
+        "conversationSlug",
+        "url",
+        "token",
+        "expiresAt",
+    }
 
 
 async def test_shutdown_timings_distinguish_failure_from_confirmed_retry(manager, monkeypatch):
@@ -296,3 +310,148 @@ async def test_shutdown_timings_distinguish_failure_from_confirmed_retry(manager
     assert call.timings["shutdownUnconfirmed"] <= call.timings["shutdownStarted"]
     assert call.timings["pipelineStarted"] <= call.timings["pipelineComplete"]
     assert call.timings["pipelineComplete"] <= call.timings["shutdownComplete"]
+
+
+async def test_startup_cause_precedes_cleanup_failure(manager, monkeypatch, caplog):
+    """Keep the original failure's sanitized chain when cleanup fails independently."""
+
+    async def check():
+        try:
+            raise OSError("private provider payload")
+        except OSError as error:
+            raise Problem(503, "voiceUnavailable", "private startup payload") from error
+
+    monkeypatch.setattr(manager, "prepare_voice", check)
+    monkeypatch.setattr(
+        PipelineDouble, "close", AsyncMock(side_effect=ValueError("private cleanup payload"))
+    )
+    with pytest.raises(Problem):
+        await manager.start("owner", uuid4())
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if getattr(record, "safe_diagnostic", False)
+    ]
+    failure = next(event for event in events if event["event"] == "call.failed")
+    cleanup = next(event for event in events if event["event"] == "call.cleanupFailed")
+    assert events.index(failure) < events.index(cleanup)
+    assert failure["stage"] == "voiceCheckStarted"
+    assert failure["status"] == 503 and failure["code"] == "voiceUnavailable"
+    assert [error["type"] for error in failure["errors"]] == ["Problem", "OSError"]
+    assert cleanup["source"] == "pipeline" and cleanup["errors"][0]["type"] == "ValueError"
+    assert failure["call_id"] == cleanup["call_id"] == str(manager.call.id)
+    assert "private" not in caplog.text
+
+
+async def test_watcher_failure_records_status_and_cause(manager, monkeypatch, caplog):
+    """Watcher failures retain code, status and stack topology without provider messages."""
+
+    async def watch(*args):
+        try:
+            raise OSError("private provider payload")
+        except OSError as error:
+            raise Problem(503, "authUnavailable", "private watcher payload") from error
+
+    monkeypatch.setattr(manager, "watch", watch)
+    await manager.start("owner", uuid4())
+    await asyncio.wait_for(manager.call.task, 1)
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if getattr(record, "safe_diagnostic", False)
+    ]
+    failure = next(event for event in events if event["event"] == "call.watchFailed")
+    assert failure["call_id"] == str(manager.call.id)
+    assert failure["stage"] == "readinessStarted"
+    assert failure["errors"][0]["status"] == 503
+    assert failure["errors"][0]["code"] == "authUnavailable"
+    assert [error["type"] for error in failure["errors"]] == ["Problem", "OSError"]
+    assert (
+        next(event for event in events if event["event"] == "call.stopped")["reason"]
+        == "watcherFailure"
+    )
+    assert "private" not in caplog.text
+
+
+@pytest.mark.parametrize("code", ["accountDeleted", "privateSnapshotCode"])
+async def test_terminal_snapshot_logs_only_controlled_code(manager, caplog, code):
+    """Terminal snapshots cannot turn private codes or messages into log labels."""
+    await manager.start("owner", uuid4())
+    call = manager.call
+    queue = asyncio.Queue()
+    queue.put_nowait(Error(code=code, message="private snapshot payload"))
+    await manager.watch(call, call.pipeline, queue)
+    await asyncio.wait_for(call.task, 1)
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if getattr(record, "safe_diagnostic", False)
+    ]
+    event = next(event for event in events if event["event"] == "call.watchStopped")
+    assert event["call_id"] == str(call.id) and event["reason"] == "terminalSnapshot"
+    assert event.get("code") == (code if code == "accountDeleted" else None)
+    assert "private" not in caplog.text
+
+
+async def test_late_cleanup_confirmation_retains_resource_trail(manager, monkeypatch, caplog):
+    """An unsettled native resource is confirmed only after its owned cleanup completes."""
+    release = asyncio.Event()
+    monkeypatch.setattr(PipelineDouble, "close", AsyncMock(side_effect=release.wait))
+    manager.config = manager.config.model_copy(
+        update={"voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.02})}
+    )
+    try:
+        join = await manager.start("owner", uuid4())
+        await manager.end("owner", join.call_id)
+        await asyncio.wait_for(manager.call.task, 1)
+        assert not manager.call.state.cleanup_confirmed
+        task = manager.call.operations["pipeline"]
+        assert not task.done()
+        release.set()
+        await asyncio.wait_for(task, 1)
+        manager.reconcile(manager.call)
+        events = [
+            json.loads(record.getMessage())
+            for record in caplog.records
+            if getattr(record, "safe_diagnostic", False)
+        ]
+        pending = next(event for event in events if event["event"] == "call.cleanupUnconfirmed")
+        confirmed = next(event for event in events if event["event"] == "call.cleanupConfirmed")
+        assert events.index(pending) < events.index(confirmed)
+        assert confirmed["reason"] == "lateRelease"
+        assert confirmed["call_id"] == pending["call_id"] == str(join.call_id)
+        assert manager.call.state.cleanup_confirmed
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("termination", ["normalEnd", "endRequested", "providerFailure"])
+async def test_stop_diagnostics_distinguish_orderly_and_failed_end(
+    manager, monkeypatch, caplog, termination
+):
+    """End signals keep code-owned reasons separate from unexpected provider stops."""
+    callbacks = {}
+    start = PipelineDouble.start
+
+    async def construct(self, *args):
+        callbacks.update(providerFailure=args[-2], normalEnd=args[-1])
+        await start(self, *args)
+
+    monkeypatch.setattr(PipelineDouble, "start", construct)
+    join = await manager.start("owner", uuid4())
+    if termination == "endRequested":
+        await manager.end("owner", join.call_id)
+    else:
+        callbacks[termination]()
+    await asyncio.wait_for(manager.call.task, 1)
+    events = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if getattr(record, "safe_diagnostic", False)
+    ]
+    event = next(event for event in events if event["event"] == "call.stopped")
+    assert event["reason"] == termination
+    assert event["category"] == (
+        "unexpectedStop" if termination == "providerFailure" else "normalEnd"
+    )
+    assert event["call_id"] == str(join.call_id)

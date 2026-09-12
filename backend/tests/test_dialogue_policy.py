@@ -142,3 +142,96 @@ async def test_unexpected_value_error_keeps_private_details_out_of_repair_hint(s
     assert result["code"] == "invalidFacts"
     assert result["fields"] == []
     assert "private-storage-value" not in str(result)
+
+
+SALARY_TURN = "My salary of 30000 comes on the 25th of September and it's monthly."
+
+
+async def test_schema_validator_rejection_names_the_rule_and_repair_commits(store):
+    """A model-validator rejection must state its rule so the retained write can be repaired."""
+    await store.create("owner")
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = SALARY_TURN
+    salary = {
+        "kind": "income",
+        "label": "Salary",
+        "amount": {"amount": "30000", "status": "exact"},
+        "reliability": "reliable",
+    }
+    result = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 0,
+            "records": [
+                {
+                    **salary,
+                    "schedule": {
+                        "date": "2026-09-25",
+                        "recurrence": "monthly",
+                        "pattern": {"kind": "dayOfMonth", "day": 25},
+                    },
+                }
+            ],
+        },
+        "salary-pattern",
+    )
+    assert result["saved"] is False
+    assert result["code"] == "invalidFacts"
+    assert result["fields"] == [
+        {
+            "path": "records.0.schedule",
+            "reason": "value_error",
+            "hint": "A monthly pattern cannot also supply a date, certainty or finite sequence",
+        }
+    ]
+    assert result["financialWrite"]["status"] == "rejected"
+    assert (await store.get("owner")).revision == 0
+    repaired = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 0,
+            "records": [{**salary, "schedule": {"date": "2026-09-25", "recurrence": "monthly"}}],
+            "retryWriteId": result["financialWrite"]["writeId"],
+        },
+        "salary-repaired",
+    )
+    assert repaired["saved"] is True
+    assert repaired["financialWrite"]["status"] == "committed"
+    assert repaired["financialWrite"]["receipt"]["revision"] == 1
+    current = await store.get("owner")
+    assert current.revision == 1
+    assert repaired["snapshot"]["revision"] == 1
+    assert [record.label for record in current.facts.records] == ["Salary"]
+    assert current.plan.reliable_income_paise == 3000000
+
+
+async def test_merged_record_rejection_names_the_rule_without_saving(store):
+    """A rejection found only after merging into saved facts must still name the violated rule."""
+    baseline = await store.create("owner")
+    tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
+    tools.user_turn = SALARY_TURN
+    result = await tools.invoke(
+        "update_facts",
+        {
+            "expectedRevision": 0,
+            "records": [
+                {
+                    "kind": "income",
+                    "label": "Salary",
+                    "amount": {"amount": "30000", "status": "exact"},
+                    "schedule": {"date": "2026-09-25", "recurrence": "monthly"},
+                    "reliability": "reliable",
+                    "controllability": "committed",
+                }
+            ],
+        },
+        "salary-controllability",
+    )
+    assert result["saved"] is False
+    assert result["code"] == "invalidFacts"
+    assert result["message"] == (
+        "Invalid financial fields; no changes saved. "
+        "records.0: Controllability applies only to outflows"
+    )
+    assert "30000" not in result["message"]
+    assert await store.get("owner") == baseline

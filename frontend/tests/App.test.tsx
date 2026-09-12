@@ -54,6 +54,8 @@ it('explains shared and chat-only memory without creating a plan', async () => {
   expect(privacy).toHaveTextContent('Deleting your account removes its saved application records');
   expect(privacy).toHaveTextContent('does not save audio recordings');
   expect(privacy).toHaveTextContent('does not guarantee deletion of provider-held data');
+  expect(privacy).toHaveTextContent('the backend sends only currency pairs to Frankfurter');
+  expect(privacy).toHaveTextContent('not amounts, user details or financial records');
   expect(api.start).not.toHaveBeenCalled();
   expect(api.save).not.toHaveBeenCalled();
 });

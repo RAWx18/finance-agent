@@ -68,7 +68,9 @@ async def test_invalid_money_shape_is_repaired_before_speech(voice, synthesis, s
     assert not voice.pipeline.waiting and not voice.pipeline.revoked
 
 
-@pytest.mark.parametrize("voice", [{"max_tool_rounds": 2}], indirect=True)
+@pytest.mark.parametrize(
+    "voice", [{"max_tool_rounds": 2, "response_retry_attempts": 0}], indirect=True
+)
 @pytest.mark.parametrize("write", [False, True], ids=["read", "write"])
 async def test_empty_success_waits_for_continue_from_committed_state(
     voice, synthesis, store, write
@@ -90,11 +92,19 @@ async def test_empty_success_waits_for_continue_from_committed_state(
         if len(observed) == 2:
             assert body["tool_choice"] == "auto"
             assert body["messages"][-1]["role"] == "developer"
-            assert "entire completed user turn" in body["messages"][-1]["content"]
+            assert any(
+                "entire completed user turn" in message.get("content", "")
+                for message in body["messages"]
+                if message.get("role") == "developer"
+            )
             return text_reply("")
         assert len(observed) == 3
         assert body["tool_choice"] == "none"
-        assert "Continue" in body["messages"][-1]["content"]
+        assert any(
+            "The user chose Continue" in message.get("content", "")
+            for message in body["messages"]
+            if message.get("role") == "developer"
+        )
         state = next(
             message["content"]
             for message in body["messages"]
@@ -103,9 +113,8 @@ async def test_empty_success_waits_for_continue_from_committed_state(
         assert json.loads(state.split("\n", 1)[1])["snapshot"] == (
             await store.get("owner")
         ).model_dump(mode="json", by_alias=True, exclude={"workspace", "latest_change", "plan"})
-        assert [m for m in body["messages"] if m["role"] == "tool"] == [
-            m for m in observed[1]["messages"] if m["role"] == "tool"
-        ]
+        # Recovery discards the unfinished turn's tool chain; canonical state carries the facts.
+        assert not any(m["role"] == "tool" for m in body["messages"])
         return text_reply("Your recorded cash is two hundred." if write else "What is your cash?")
 
     await voice.pipeline.llm._client._client.aclose()
@@ -167,45 +176,6 @@ def mixed_reply(name, arguments, call_id):
     )
 
 
-async def test_empty_response_cannot_pause_a_newer_generation(voice, monkeypatch):
-    """Verify delayed empty-response handling cannot pause an interrupted generation."""
-    voice.pipeline.client_ready.set()
-    reached, release, interrupted = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    create_task = voice.pipeline.llm.create_task
-
-    def delayed(coroutine, name=None):
-        """Delay only empty-response tasks while forwarding other task creation."""
-        if name != "empty-response":
-            return create_task(coroutine, name)
-
-        async def run():
-            """Signal task entry and defer the supplied coroutine until released."""
-            reached.set()
-            await release.wait()
-            await coroutine
-
-        return create_task(run(), name)
-
-    monkeypatch.setattr(voice.pipeline.llm, "create_task", delayed)
-    voice.responses.put_nowait(tool_reply("read_state", {}, "read"))
-    voice.responses.put_nowait(text_reply(""))
-    await complete_turn(voice, "Please help me.")
-    await asyncio.wait_for(reached.wait(), 2)
-
-    async def observed(_, frame):
-        """Signal when an interruption frame has passed through the LLM service."""
-        if isinstance(frame, InterruptionFrame):
-            interrupted.set()
-
-    voice.pipeline.llm.add_event_handler("on_after_process_frame", observed)
-    await voice.pipeline.worker.queue_frame(InterruptionFrame())
-    await asyncio.wait_for(interrupted.wait(), 2)
-    release.set()
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(next_state(voice), 0.1)
-    assert not voice.pipeline.waiting and not voice.pipeline.revoked
-
-
 @pytest.mark.parametrize("voice", [{"max_tool_rounds": 2}], indirect=True)
 async def test_each_posttool_request_has_temporary_response_guidance(voice, synthesis, store):
     """Verify each post-tool request gets one temporary guidance message outside history."""
@@ -236,7 +206,9 @@ async def test_each_posttool_request_has_temporary_response_guidance(voice, synt
 
 @pytest.mark.parametrize("write", [False, True], ids=["read", "write"])
 @pytest.mark.parametrize("text", ["", " \n\t"])
-@pytest.mark.parametrize("voice", [{"max_tool_rounds": 1}], indirect=True)
+@pytest.mark.parametrize(
+    "voice", [{"max_tool_rounds": 1, "response_retry_attempts": 0}], indirect=True
+)
 async def test_repeated_empty_continue_resets_budgets_without_repeating_tools(
     voice, store, write, text
 ):
@@ -277,7 +249,7 @@ async def test_repeated_empty_continue_resets_budgets_without_repeating_tools(
     voice.synthesizer.speak_ssml_async.assert_not_called()
 
 
-@pytest.mark.parametrize("cause", ["http", "refusal", "content_filter", "length", "unfinished"])
+@pytest.mark.parametrize("cause", ["http", "refusal", "content_filter", "unfinished"])
 async def test_failed_or_blocked_response_is_never_regenerated(voice, store, cause):
     """Verify failed or blocked responses revoke output without retrying or losing saved facts."""
     voice.expect_failure = True
@@ -317,6 +289,7 @@ async def test_failed_or_blocked_response_is_never_regenerated(voice, store, cau
     voice.synthesizer.speak_ssml_async.assert_not_called()
 
 
+@pytest.mark.parametrize("voice", [{"response_retry_attempts": 0}], indirect=True)
 async def test_continue_rejects_provider_tool_calls_even_with_text(voice, store):
     """Verify Continue rejects scripted tool calls even when accompanied by text."""
     voice.pipeline.client_ready.set()
@@ -342,6 +315,7 @@ async def test_continue_rejects_provider_tool_calls_even_with_text(voice, store)
     voice.synthesizer.speak_ssml_async.assert_not_called()
 
 
+@pytest.mark.parametrize("voice", [{"response_retry_attempts": 0}], indirect=True)
 @pytest.mark.parametrize("cause", ["interruption", "waiting", "correction"])
 async def test_empty_pause_blocks_queued_inference_after_state_changes(voice, store, cause):
     """Verify empty-response waiting blocks queued inference despite later state changes."""
@@ -381,6 +355,7 @@ async def test_empty_pause_blocks_queued_inference_after_state_changes(voice, st
     voice.synthesizer.speak_ssml_async.assert_not_called()
 
 
+@pytest.mark.parametrize("voice", [{"response_retry_attempts": 0}], indirect=True)
 @pytest.mark.parametrize("reply", ["text", "tool"])
 async def test_interrupted_continue_discards_late_provider_output(voice, store, reply):
     """Verify interrupted continuations discard late scripted text and tool output."""
@@ -594,14 +569,12 @@ async def test_required_tool_violation_fails_closed_without_speech_or_write(voic
 
 @pytest.mark.parametrize("voice", [{"max_tool_rounds": 2}], indirect=True)
 async def test_runaway_tools_stop_at_configured_budget(voice, store):
-    """Verify repeated tool calls stop at the configured round budget without speech."""
-    voice.expect_failure = True
-    failed = asyncio.Event()
-    voice.failed.side_effect = failed.set
+    """Verify tool execution stops at its budget while the call remains recoverable."""
     for index in range(4):
         voice.responses.put_nowait(tool_reply("read_state", {}, str(index)))
     await complete_turn(voice, "Please help me plan.")
-    await asyncio.wait_for(failed.wait(), 2)
+    assert (await next_state(voice))["reason"] == "response"
+    assert not voice.pipeline.revoked
     assert voice.pipeline.metrics["model_requests"] == 3
     assert voice.pipeline.metrics["tool_calls"] == 2
     assert voice.pipeline.tool_rounds == 2
@@ -742,22 +715,22 @@ async def test_tool_timeout_cancels_write_and_reconciles_before_any_guidance(
     voice, synthesis, store, monkeypatch
 ):
     """Verify timed-out writes are cancelled and state is reconciled before guidance."""
-    invoke = voice.pipeline.tools.invoke
 
-    async def delayed(name, arguments, call_id):
-        """Block fact writes while forwarding other tool invocations."""
-        if name == "update_facts":
-            await asyncio.Event().wait()
-        return await invoke(name, arguments, call_id)
+    async def delayed(*args, **kwargs):
+        """Hold storage while the real financial-tool deadline retains retry intent."""
+        await asyncio.Event().wait()
 
-    monkeypatch.setattr(voice.pipeline.tools, "invoke", delayed)
+    monkeypatch.setattr(store, "command", delayed)
     voice.responses.put_nowait(
         mixed_reply("update_facts", {"expectedRevision": 0, "opening": money("100")}, "timeout")
     )
     voice.responses.put_nowait(tool_reply("read_state", {}, "reconcile-timeout"))
     voice.responses.put_nowait(text_reply("Please confirm your cash."))
     await complete_turn(voice, "I have one hundred rupees.")
-    assert (await next_frame(voice.frames, FunctionCallCancelFrame)).tool_call_id == "timeout"
+    timeout = await next_frame(voice.frames, FunctionCallResultFrame)
+    assert timeout.tool_call_id == "timeout"
+    assert timeout.result["code"] == "financialWriteUnconfirmed"
+    assert timeout.result["saved"] is None
     result = await next_frame(voice.frames, FunctionCallResultFrame)
     assert result.tool_call_id == "reconcile-timeout"
     assert result.result["snapshot"] == (await store.get("owner")).model_dump(

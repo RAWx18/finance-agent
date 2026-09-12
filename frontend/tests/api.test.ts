@@ -1,10 +1,187 @@
 // SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 // SPDX-License-Identifier: AGPL-3.0-only
 import { describe, expect, it, vi } from 'vitest';
-import { api, ApiError, authEpoch, errorMessage, invalidateRequests } from '../src/api';
-import { settings, snapshot } from './fixtures';
+import { api, ApiError, authEpoch, errorMessage, invalidateRequests, readSnapshot } from '../src/api';
+import type { Command } from '../src/api';
+import { adjustmentOptions, scenario, settings, snapshot } from './fixtures';
+import { initialState, reducer } from '../src/session';
 
 describe('same-origin API contract', () => {
+  it('preserves the complete ordered options response, including choices that are not acceptance-ready', async () => {
+    const value = structuredClone(adjustmentOptions);
+    value.options.reverse(); value.options[0].acceptanceReady = false;
+    const fetch = vi.fn().mockImplementation(async () => new Response(JSON.stringify(value)));
+    vi.stubGlobal('fetch', fetch);
+    const controller = new AbortController();
+    await expect(api.options(controller.signal)).resolves.toEqual(value);
+    expect(fetch).toHaveBeenCalledWith('/api/session/options', { credentials: 'same-origin', signal: controller.signal });
+    value.options = [];
+    await expect(api.options()).resolves.toEqual(value);
+  });
+
+  it.each([null, false, [], {}])('rejects missing options envelopes %j', async value => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+    await expect(api.options()).rejects.toThrow('Planning choices could not be read safely.');
+  });
+
+  it.each([
+    { sessionId: undefined }, { sessionId: null }, { sessionId: '' }, { sessionId: '  ' }, { sessionId: 1 },
+    ...['revision', 'sequence'].flatMap(field => [undefined, null, -1, 0.5, '1', Number.MAX_SAFE_INTEGER + 1].map(value => ({ [field]: value }))),
+    ...[undefined, null, 'September 11, 2026', '2026-9-11', '2026-02-30', '2026-09-11T00:00:00Z'].map(today => ({ today })),
+    { options: undefined }, { options: null }, { options: {} }, { options: [null] },
+    { options: [adjustmentOptions.options[0], adjustmentOptions.options[0]] },
+  ])('rejects malformed options envelope %j', async fields => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...adjustmentOptions, ...fields }))));
+    await expect(api.options()).rejects.toThrow();
+  });
+
+  it.each([
+    ...['eventId', 'recordId', 'label', 'dependencyKey'].flatMap(field => [undefined, null, '', '  ', 1].map(value => ({ [field]: value }))),
+    { kind: 'essential' }, { kind: undefined }, { date: '2026-02-29' }, { date: '2026-09-27T00:00:00Z' }, { date: undefined },
+    ...['originalPaise', 'minimumPaise'].flatMap(field => [undefined, null, -1, 0.5, '100', Number.MAX_SAFE_INTEGER + 1].map(value => ({ [field]: value }))),
+    { originalPaise: 0 }, { minimumPaise: 200000 }, { minimumPaise: 200001 },
+    { acceptanceReady: undefined }, { acceptanceReady: null }, { acceptanceReady: 'true' }, { acceptanceReady: 1 },
+  ])('rejects the whole response instead of filtering a malformed option %j', async fields => {
+    const value = { ...adjustmentOptions, options: [adjustmentOptions.options[1], { ...adjustmentOptions.options[0], ...fields }] };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+    await expect(api.options()).rejects.toThrow();
+  });
+
+  it('accepts nullable and omitted scenarios and optional consent metadata without inventing fields', async () => {
+    const value = snapshot();
+    const fetch = vi.fn().mockImplementation(async () => new Response(JSON.stringify(value)));
+    vi.stubGlobal('fetch', fetch);
+    await expect(api.current()).resolves.toEqual(value);
+    value.preview = null; value.accepted = null;
+    await expect(api.current()).resolves.toEqual(value);
+    value.preview = scenario(); value.accepted = scenario('accepted-one');
+    value.preview.adjustments[0].acceptanceReady = false;
+    value.accepted.adjustments[0].acceptedRevision = 0;
+    delete value.preview.adjustments[0].acceptedRevision;
+    await expect(api.current()).resolves.toEqual(value);
+    expect(readSnapshot(value)).toBe(value);
+  });
+
+  it('preserves full multi-occurrence review data, minimum amounts, unknowns and removal identities', async () => {
+    const value = snapshot();
+    value.preview = scenario();
+    value.preview.adjustments.push({ ...adjustmentOptions.options[1], amountPaise: adjustmentOptions.options[1].minimumPaise, acceptedRevision: 0 });
+    value.preview.removedAssumptionIds = ['another:2026-09-28'];
+    value.preview.plan.budgetBasis = { datedProjectionComplete: false, unresolvedAmounts: [
+      { recordId: 'undated', reason: 'missingDate', amount: { amountPaise: null, status: 'unknown' }, recurrence: 'once' },
+    ] };
+    value.preview.plan.timingRisks = [{ date: '2026-09-13', exposurePaise: 700000, remainingGapPaise: 0 }];
+    value.preview.plan.events[0].amountPaise = null;
+    value.preview.plan.events[0].amountStatus = 'unknown';
+    value.preview.plan.events[0].balancePaise = null;
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+    await expect(api.current()).resolves.toEqual(value);
+  });
+
+  it.each([
+    { id: undefined }, { id: '' }, { id: ' ' }, { id: 1 },
+    ...[undefined, null, -1, 0.5, '1', Number.MAX_SAFE_INTEGER + 1].map(sourceRevision => ({ sourceRevision })),
+    ...[undefined, null, '', '2026-09-11', '2026-02-30T04:00:00Z', '2026-09-11T99:00:00Z'].map(createdAt => ({ createdAt })),
+    { adjustments: undefined }, { adjustments: null }, { adjustments: {} }, { adjustments: [null] },
+    { adjustments: [scenario().adjustments[0], scenario().adjustments[0]] },
+    ...[undefined, null, -1, 0.5, '100', Number.MAX_SAFE_INTEGER + 1].map(reducedOutflowPaise => ({ reducedOutflowPaise })),
+    { removedAssumptionIds: null }, { removedAssumptionIds: {} }, { removedAssumptionIds: [''] },
+    { removedAssumptionIds: [1] }, { removedAssumptionIds: ['one', 'one'] }, { plan: undefined }, { plan: null }, { plan: {} },
+  ])('rejects malformed preview and accepted scenario metadata %j', async fields => {
+    for (const key of ['preview', 'accepted']) {
+      const value = { ...snapshot(), [key]: { ...scenario(), ...fields } };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+      await expect(api.current()).rejects.toThrow();
+      expect(() => readSnapshot(value)).toThrow();
+    }
+  });
+
+  it.each([
+    { eventId: '' }, { recordId: null }, { label: undefined }, { dependencyKey: '' }, { kind: 'debt' },
+    { date: '2026-02-30' }, { acceptanceReady: 'false' }, { acceptanceReady: undefined },
+    { originalPaise: 0 }, { minimumPaise: -1 }, { minimumPaise: 200000 },
+    ...[undefined, null, -1, 0.5, '0', 200000, 200001, Number.MAX_SAFE_INTEGER + 1].map(amountPaise => ({ amountPaise })),
+    ...[-1, 0.5, '0', Number.MAX_SAFE_INTEGER + 1].map(acceptedRevision => ({ acceptedRevision })),
+    { kind: 'card', minimumPaise: 100000, amountPaise: 99999 },
+  ])('rejects malformed adjustments in either scenario %j', async fields => {
+    for (const key of ['preview', 'accepted']) {
+      const value = { ...snapshot(), [key]: { ...scenario(), adjustments: [{ ...scenario().adjustments[0], ...fields }] } };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+      await expect(api.current()).rejects.toThrow();
+      expect(() => readSnapshot(value)).toThrow();
+    }
+  });
+
+  it.each([
+    ...['reliableIncomePaise', 'uncertainIncomePaise', 'outflowPaise', 'peakGapPaise', 'reserveShortfallPaise']
+      .flatMap(field => [undefined, -1, '1', Number.MAX_SAFE_INTEGER + 1].map(value => ({ [field]: value }))),
+    { closingPaise: undefined }, { closingPaise: '100' }, { troughPaise: 0.5 },
+    { firstGap: undefined }, { firstGap: {} }, { firstGap: { date: '2026-02-30', amountPaise: 1 } },
+    { firstGap: { date: '2026-09-11', amountPaise: -1 } }, { peakGapDate: 'tomorrow' },
+    { evaluatedOn: undefined }, { evaluatedOn: '2026-02-30' }, { projectionPartial: 'false' },
+    { events: null }, { events: {} }, { events: [null] },
+    { events: [scenario().plan.events[0], scenario().plan.events[0]] },
+    ...[{ id: '' }, { recordId: undefined }, { kind: 'card' }, { date: '2026-02-30' }, { amountPaise: -1 },
+      { balancePaise: '1' }, { amountBasis: 'invented' }, { included: 'false' }]
+      .map(fields => ({ events: [{ ...scenario().plan.events[0], ...fields }] })),
+    { timingRisks: null }, { timingRisks: [null] }, { timingRisks: [{ date: '2026-09-11', exposurePaise: 1, remainingGapPaise: -1 }] },
+    { budgetBasis: null }, { budgetBasis: {} }, { budgetBasis: { datedProjectionComplete: 'true', unresolvedAmounts: [] } },
+    { budgetBasis: { datedProjectionComplete: false, unresolvedAmounts: null } },
+    { budgetBasis: { datedProjectionComplete: false, unresolvedAmounts: [null] } },
+    ...[{ recordId: '' }, { reason: 'invented' }, { amount: { amountPaise: '100', status: 'exact' } },
+      { amount: { amountPaise: -1, status: 'exact' } }, { amount: { amountPaise: null, status: 'invented' } }, { recurrence: 'yearly' }]
+      .map(fields => ({ budgetBasis: { datedProjectionComplete: false, unresolvedAmounts: [
+        { recordId: 'undated', reason: 'missingDate', amount: { amountPaise: null, status: 'unknown' }, recurrence: 'once', ...fields },
+      ] } })),
+  ])('rejects malformed review plans in baseline, preview and accepted data %j', async fields => {
+    for (const key of ['plan', 'preview', 'accepted']) {
+      const plan = { ...scenario().plan, ...fields };
+      const value = { ...snapshot(), [key]: key === 'plan' ? plan : { ...scenario(), plan } };
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+      await expect(api.current()).rejects.toThrow();
+      expect(() => readSnapshot(value)).toThrow();
+    }
+  });
+
+  it('validates command responses and preserves command concurrency guards', async () => {
+    const command: Command = { commandId: crypto.randomUUID(), expectedRevision: 0, expectedSequence: 0,
+      operation: { type: 'previewAdjustments', adjustments: [{ eventId: adjustmentOptions.options[0].eventId, amount: '0' }] } };
+    const value = { ...snapshot(), preview: scenario(), accepted: null };
+    const fetch = vi.fn().mockImplementation(async () => new Response(JSON.stringify(value)));
+    vi.stubGlobal('fetch', fetch);
+    await expect(api.save(command)).resolves.toEqual(value);
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual(command);
+    value.preview.adjustments[0].amountPaise = -1;
+    await expect(api.save(command)).rejects.toThrow('The saved figures could not be read safely.');
+  });
+
+  it.each([false, [], {}, { ...snapshot(), sequence: 1, preview: {} },
+    { ...snapshot(), sequence: 1, accepted: { ...scenario(), plan: {} } },
+    { ...snapshot(), sequence: 1, workspace: { ...snapshot().workspace, cards: [null] } },
+    { ...snapshot(), sequence: Number.MAX_SAFE_INTEGER + 1 },
+  ])('prevents malformed error snapshots from replacing the last valid reducer state: %j', async value => {
+    const state = reducer(initialState, { type: 'loaded', snapshot: snapshot(), settings });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: 'stalePreview', message: 'Private diagnostic', snapshot: value }), { status: 409 })));
+    const error = await api.current().catch(error => error);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error.body).toEqual({ code: 'unavailable', message: 'The request could not be completed.' });
+    const failed = reducer(state, { type: 'failure', message: errorMessage(error), snapshot: error.body.snapshot });
+    expect(failed.snapshot).toBe(state.snapshot);
+    expect(failed.messageKind).toBe('error');
+  });
+
+  it('allows a validated error snapshot to reach the reducer with the original error semantics', async () => {
+    const state = reducer(initialState, { type: 'loaded', snapshot: snapshot(), settings });
+    const value = { ...snapshot(), sequence: 1, preview: scenario(), accepted: null };
+    const body = { code: 'stalePreview', message: 'Private diagnostic', snapshot: value };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 409 })));
+    const error = await api.current().catch(error => error);
+    expect(error).toBeInstanceOf(ApiError); expect(error.body).toEqual(body);
+    const failed = reducer(state, { type: 'failure', message: errorMessage(error, 'previewAdjustments'), snapshot: error.body.snapshot });
+    expect(failed.snapshot).toEqual(value); expect(failed.messageKind).toBe('error');
+    expect(failed.message).not.toContain('Private diagnostic');
+  });
+
   it.each(['voiceStartupSeconds', 'voiceShutdownSeconds'] as const)('rejects missing or invalid %s instead of inventing a deadline', async field => {
     for (const value of [undefined, null, 0, -1, '45', Infinity]) {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...settings, [field]: value }))));
@@ -32,8 +209,22 @@ describe('same-origin API contract', () => {
     expect(errorMessage(error, 'respondToAction')).toBe('Your answer was not saved because the open proposal differs from this suggested cut. Review the proposal or choose “Reject preview” before answering again.');
     expect(errorMessage(error, 'respondToAction')).not.toContain('private proposal diagnostic');
     expect(errorMessage(error, 'acceptPreview')).toContain('no longer available to accept');
-    expect(errorMessage(error, 'discardPreview')).toBe('This preview is no longer available to reject. Review the current proposal before trying again.');
+    expect(errorMessage(error, 'previewAdjustments')).toBe('Another preview changed while you were choosing amounts. Review the current preview before replacing it.');
+    expect(errorMessage(error, 'discardPreview')).toBe('This preview is no longer available to close. Review the current proposal before trying again. Closing a preview does not reject it.');
     expect(errorMessage(error, 'rejectPreview')).toBe('This preview is no longer available to reject. Review the current proposal before trying again.');
+  });
+  it('explains an exact declined proposal without sending the consumer through a pointless refresh', () => {
+    const message = errorMessage(new ApiError(409, { code: 'proposalRejected', message: 'Private diagnostic' }), 'previewAdjustments');
+    expect(message).toBe('This exact set of proposed changes was previously declined. Choose another amount or a different set of changes to preview.');
+    expect(message).not.toMatch(/refresh|Private diagnostic/i);
+  });
+  it.each(['previewAdjustments', 'acceptPreview', 'discardPreview', 'rejectPreview', 'clearAccepted'] as const)('keeps unconfirmed %s failures safe to retry without claiming anything was saved', operation => {
+    for (const error of [new TypeError('Failed to fetch'), new Error('The saved figures could not be read safely.'), new SyntaxError('Malformed JSON')]) {
+      const message = errorMessage(error, operation);
+      expect(message).toBe('This proposal action could not be confirmed. Keep this page open, check your connection, and retry the same action safely.');
+      expect(message).not.toMatch(/is saved|was saved|not saved|has not changed|Failed to fetch|Malformed JSON/);
+    }
+    expect(errorMessage(new Error(), 'replaceFacts')).toBe('We could not reach your projection. Check your connection and retry.');
   });
   it.each([[422, 'invalidActionResponse'], [409, 'staleRevision']] as const)('explains an unsupported or stale answer (%s %s) as a changed next step', (status, code) => {
     const message = errorMessage(new ApiError(status, { code, message: 'private action diagnostic' }), 'respondToAction');

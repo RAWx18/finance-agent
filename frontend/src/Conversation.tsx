@@ -10,6 +10,7 @@ import { LiveCaption } from './Captions';
 import type { Caption, Transcript } from './Captions';
 import { CallIcon } from './CallIcon';
 import { startRingback } from './ringback';
+import { errorFields, log } from './telemetry';
 import { dismiss, notify } from './Toast';
 import type { Notice } from './Toast';
 import { VoiceOrb } from './components/assistant-ui/elements/voice';
@@ -22,17 +23,20 @@ type Release = 'ended' | 'error' | 'unconfirmed';
 type CallOwner = { callId?: string; authEpoch: number; conversationSlug?: string };
 type Problem = Omit<Notice, 'action'> & { type: 'retry' | 'reconnect' | 'availability' | 'end' | 'session' };
 const notices = ['voice:problem', 'voice:audio', 'voice:availability', 'voice:previous'];
+// Remote audio lags the server's end-of-speech; the goodbye finishes playing within this window.
+const finishedGraceMs = 1500;
 const unavailable: Problem = { id: 'voice:availability', type: 'availability', title: 'Conversations unavailable', severity: 'error', duration: null,
   message: 'Try again shortly.' };
 const quiet = { user: false, bot: false, generating: false, tool: false, muted: false, paused: false,
   capture: false, interrupted: false, connected: false, reconnecting: false, remote: false, playing: false, blocked: false,
-  waiting: false, continuing: false, resumeFailed: false, responseMissing: false };
+  waiting: false, continuing: false, resumeFailed: false, responseMissing: false, autoRetry: false };
 type Attempt = {
   client: PipecatClient; cancelled: boolean; ready: boolean; activity: typeof quiet;
   authEpoch: number; callId: string; shutdownSeconds: number;
   startupTimer?: ReturnType<typeof setTimeout>; expiryTimer?: ReturnType<typeof setTimeout>;
   devicesPending?: boolean; connectionPending?: boolean; connection?: Promise<unknown>;
   sequence: number; resumeSequence?: number; resumeTimer?: ReturnType<typeof setTimeout>;
+  retrySequence?: number; waitingMuted?: boolean;
   sessionId?: string; parentSession?: string; conversationSlug?: string;
   devices?: Promise<void>; join?: Promise<CallJoin>; cleanup?: Promise<Release>;
   financialReady?: () => void;
@@ -45,9 +49,10 @@ type Attempt = {
   stopRinging?: () => void;
 };
 
-/** Record a voice lifecycle milestone for latency measurement. */
-function mark(stage: string) {
+/** Record a voice lifecycle milestone for latency measurement and correlated console logs. */
+function mark(stage: string, callId?: string) {
   performance.mark(`voice:${stage}`);
+  log(`voice.${stage}`, { callId, elapsedMs: Math.round(performance.now()) });
 }
 
 /** Request owned call termination and report whether cleanup is confirmed. */
@@ -67,7 +72,7 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
     if (call.callId !== owner.callId && !(status && call.callId === null && call.status === 'idle')) return;
     if (call.callId === owner.callId && call.conversationSlug) owner.conversationSlug = call.conversationSlug;
     if (call.cleanupConfirmed !== true || !['idle', 'ended', 'error'].includes(call.status)) return;
-    mark('end-confirmed');
+    mark('end-confirmed', owner.callId);
     return call.status === 'error' ? 'error' : 'ended';
   }
   try {
@@ -80,7 +85,7 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
           owner.callId = call.callId ?? undefined;
         }
         if (!owner.callId || owner.authEpoch !== authEpoch() || controller.signal.aborted) return 'unconfirmed';
-        mark('end-request');
+        mark('end-request', owner.callId);
         // The deadline limits confirmation, not delivery of the keepalive termination request.
         const ended = api.endCall(owner.callId).then(call => confirmed(call), error =>
           error instanceof ApiError && [401, 403].includes(error.status) ? 'unconfirmed' as const : undefined);
@@ -140,6 +145,7 @@ function dispose(attempt: Attempt): Promise<Release> {
   attempt.financialReady?.();
   clearTimeout(attempt.meter);
   clearTimeout(attempt.resumeTimer);
+  attempt.sequence = 0; attempt.resumeSequence = undefined; attempt.retrySequence = undefined; attempt.waitingMuted = undefined;
   clearTimeout(attempt.startupTimer);
   clearTimeout(attempt.expiryTimer);
   window.removeEventListener('pagehide', attempt.onPageHide);
@@ -147,7 +153,7 @@ function dispose(attempt: Attempt): Promise<Release> {
     for (const event of ['mute', 'unmute', 'ended']) track.removeEventListener?.(event, observer);
   }
   stopTracks(attempt);
-  mark('local-stop');
+  mark('local-stop', attempt.callId);
   attempt.cleanup = attempt.join ? releaseCall(attempt, attempt.shutdownSeconds) : Promise.resolve('ended');
   // Pending permission cannot be cancelled by the browser; release any eventual capture in the background.
   if (attempt.devicesPending) void attempt.devices?.then(() => disconnect(attempt), () => disconnect(attempt));
@@ -400,7 +406,8 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     const current = attempt.current;
     if (!mounted.current || current?.cancelled || ending.current || !current && sessionBlocked) return;
     ending.current = true;
-    mark('end');
+    mark('end', current?.callId);
+    if (issue) log('voice.failed', { callId: current?.callId, phase: next, issue: issue.type, title: issue.title }, 'warn');
     generation.current += 1;
     setCleanupPending(true);
     setInterim(null); interimTime.current = null;
@@ -502,7 +509,11 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         current.observers.set(track, updateTracks);
         for (const event of ['mute', 'unmute', 'ended']) track.addEventListener?.(event, updateTracks);
       };
-      const fail = (issue: Problem) => { if (live()) void actions.current.finish('error', issue); };
+      const fail = (issue: Problem, error?: unknown) => {
+        if (!live()) return;
+        log('voice.failed', { callId: current?.callId, issue: issue.type, title: issue.title, ...errorFields(error) }, 'warn');
+        void actions.current.finish('error', issue);
+      };
       /** Stop the call and explain how to recover a disconnected microphone. */
       const microphoneLost = () => fail({ id: 'voice:problem', type: 'retry', title: 'Microphone disconnected', severity: 'error', duration: null,
         message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
@@ -517,7 +528,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         onBotReady: () => {
           if (!live() || !current || current.ready) return;
           current.stopRinging?.();
-          mark('bot-ready'); clearTimeout(current.startupTimer);
+          mark('bot-ready', current.callId); clearTimeout(current.startupTimer);
           current.ready = true; setPhase('active'); update({ reconnecting: false });
           try { client.enableMic(true); updateTracks(); }
           catch { fail({ ...callError(undefined), title: 'Microphone unavailable',
@@ -537,6 +548,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         /** Reconcile transport readiness, reconnection, and disconnection. */
         onTransportStateChanged: (state) => {
           if (!live()) return;
+          log('daily.transportState', { callId: current?.callId, state, ready: current?.ready ?? false });
           if (state === 'connecting' && current?.ready && !current.activity.reconnecting) {
             update({ reconnecting: true, connected: false, user: false, bot: false, interrupted: false });
             deadline();
@@ -552,12 +564,15 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         onBotDisconnected: disconnected,
         /** End fatal SDK failures or expose an unsuccessful continuation. */
         onError: (message) => {
-          if (!message.data || typeof message.data !== 'object' || !('fatal' in message.data) || message.data.fatal !== false)
+          const fatal = !message.data || typeof message.data !== 'object' || !('fatal' in message.data) || message.data.fatal !== false;
+          log('pipecat.error', { callId: current?.callId, fatal }, 'warn');
+          if (fatal)
             fail({ ...callError(undefined), title: 'Conversation stopped',
               message: 'The assistant could not continue. Your saved figures are still available. Reconnect to continue.' });
-          else if (live() && current?.activity.continuing) {
+          else if (live() && current && (current.activity.continuing || current.activity.autoRetry)) {
             clearTimeout(current.resumeTimer);
-            update({ continuing: false, resumeFailed: true });
+            current.resumeSequence = undefined; current.retrySequence = undefined;
+            update({ continuing: false, autoRetry: false, resumeFailed: true });
           }
         },
         /** Apply server-authorized pause and resume transitions for the current call. */
@@ -567,14 +582,28 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
             || data.state !== 'waiting' && data.state !== 'active' || !('sequence' in data)
             || typeof data.sequence !== 'number' || !Number.isSafeInteger(data.sequence) || data.sequence <= current.sequence) return;
           if (data.state === 'waiting' && !current.ready) return;
-          // Only this attempt's explicit Continue can authorize capture after a wait.
-          if (data.state === 'active' && current.activity.waiting && current.resumeSequence !== current.sequence) return;
+          if (data.state === 'waiting' && 'reason' in data && data.reason === 'finished') {
+            current.sequence = data.sequence;
+            log('voice.state', { callId: current.callId, state: 'finished', sequence: data.sequence });
+            // The goodbye is still draining through the remote track; end after it has played.
+            setTimeout(() => { if (live() && attempt.current === current) void actions.current.finish('ended'); }, finishedGraceMs);
+            return;
+          }
+          const retry = data.state === 'active' && 'reason' in data && data.reason === 'retry';
+          // A retry offer belongs only to the exact automatic wait, never a superseding Continue.
+          if (retry && (!current.activity.waiting || current.retrySequence !== current.sequence
+            || !('retryOf' in data) || data.retryOf !== current.sequence || data.sequence !== current.sequence + 1)) return;
+          if (data.state === 'active' && !retry && current.activity.waiting && current.resumeSequence !== current.sequence) return;
           const resuming = current.activity.waiting && data.state === 'active';
           current.sequence = data.sequence;
-          clearTimeout(current.resumeTimer); current.resumeSequence = undefined;
+          log('voice.state', { callId: current.callId, state: data.state, sequence: data.sequence, reason: 'reason' in data ? data.reason : undefined, retry });
+          clearTimeout(current.resumeTimer); current.resumeSequence = undefined; current.retrySequence = undefined;
           if (data.state === 'waiting') {
+            if (!current.activity.waiting) current.waitingMuted = !client.isMicEnabled;
+            const autoRetry = 'reason' in data && data.reason === 'response' && 'autoRetry' in data && data.autoRetry === true;
+            current.retrySequence = autoRetry ? data.sequence : undefined;
             updateActivity(current, { waiting: true, continuing: false, resumeFailed: false, user: false, bot: false,
-              responseMissing: 'reason' in data && data.reason === 'response',
+              responseMissing: 'reason' in data && data.reason === 'response', autoRetry,
               generating: false, tool: false, paused: false, interrupted: false, capture: false, playing: false, blocked: false });
             tools.clear();
             setInterim(null); interimTime.current = null;
@@ -583,10 +612,25 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
             current.suspendedTrack = current.localTrack;
             try { client.enableMic(false); updateTracks(); }
             catch { fail({ ...callError(undefined), title: 'Microphone unavailable', message: 'The microphone could not be paused. The conversation has stopped.' }); }
+            if (autoRetry && live()) current.resumeTimer = setTimeout(() => {
+              if (!live() || !current || current.retrySequence !== data.sequence) return;
+              current.retrySequence = undefined;
+              update({ autoRetry: false, resumeFailed: true });
+            }, settings.voiceStartupSeconds * 1000);
           } else if (resuming) {
-            updateActivity(current, { waiting: false, continuing: false, resumeFailed: false, responseMissing: false });
+            if (retry) {
+              try { client.sendClientMessage('acknowledge-response-retry', { sequence: data.sequence, retryOf: data.sequence - 1 }); }
+              catch {
+                update({ autoRetry: false, continuing: false, resumeFailed: true });
+                return;
+              }
+              if (!live() || current.sequence !== data.sequence || !current.activity.waiting || current.resumeSequence !== undefined) return;
+            }
+            const muted = retry && current.waitingMuted;
+            current.waitingMuted = undefined;
+            updateActivity(current, { waiting: false, continuing: false, autoRetry: false, resumeFailed: false, responseMissing: false });
             try {
-              client.enableMic(true);
+              client.enableMic(!muted);
               if (!live()) return;
               current.localTrack = client.tracks().local.audio ?? current.localTrack;
               if (current.localTrack?.readyState === 'ended') current.localTrack = undefined;
@@ -597,7 +641,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
             } catch { fail({ ...callError(undefined), title: 'Microphone unavailable', message: 'The microphone could not resume. Check microphone access, then try again.' }); }
           }
         },
-        onDeviceError: (error) => fail(callError(error)),
+        onDeviceError: (error) => fail(callError(error), error),
         onLocalAudioLevel: (value) => { if (current) measure(current, 'local', value); },
         onRemoteAudioLevel: (value, participant) => {
           if (current && !participant.local && participant.id === current.remoteId) measure(current, 'remote', value);
@@ -723,17 +767,17 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         }
       });
       // Prepare devices without opening capture; BotReady owns the first microphone enable.
-      mark('mic-request');
+      mark('mic-request', current.callId);
       current.devicesPending = true;
       try { current.devices = current.client.initDevices(); await current.devices; }
       finally { current.devicesPending = false; }
       if (!live()) return;
-      mark('mic-ready');
+      mark('mic-ready', current.callId);
       deadline();
       current.localTrack = current.client.tracks().local.audio ?? current.localTrack;
       if (current.localTrack) { current.tracks.add(current.localTrack); observe(current.localTrack); }
       updateTracks();
-      mark('setup-request');
+      mark('setup-request', current.callId);
       let saved = await api.start();
       if (!live()) return;
       const slug = logicalChat.current.slug ?? saved.conversationSlug ?? undefined;
@@ -746,9 +790,9 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       if (actions.current.sessionId && actions.current.sessionId !== saved.sessionId || !actions.current.updatesReady)
         await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
       if (!live()) return;
-      mark('setup-ready');
+      mark('setup-ready', current.callId);
       deadline(settings.voiceStartupSeconds + settings.voiceShutdownSeconds);
-      mark('join-request');
+      mark('join-request', current.callId);
       current.conversationSlug = slug;
       current.join = api.startCall(current.callId, slug);
       let join: CallJoin;
@@ -778,15 +822,16 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       if (!Number.isFinite(remaining)) throw new Error('Call credentials could not be confirmed.');
       const expired = new ApiError(410, { code: 'callExpired', message: 'Call expired.' });
       if (remaining <= 0) throw expired;
-      current.expiryTimer = setTimeout(() => fail(callError(expired)), remaining);
-      mark('join-ready');
+      current.expiryTimer = setTimeout(() => fail(callError(expired), expired), remaining);
+      mark('join-ready', current.callId);
       deadline();
-      mark('connect');
+      mark('connect', current.callId);
       current.connectionPending = true;
       current.connection = current.client.connect({ url: join.url, token: join.token });
       try { await current.connection; } finally { current.connectionPending = false; }
     } catch (error) {
       if (mounted.current && attempt.current === current && !current?.cancelled && !actions.current.sessionBlocked) {
+        log('voice.failed', { callId: current?.callId, stage: 'start', ...errorFields(error) }, 'warn');
         if (current) await actions.current.finish('error', callError(error));
         else {
           setPhase('error'); setProblem(callError(error));
@@ -814,17 +859,23 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
   function continueConversation() {
     const current = attempt.current;
     if (!mounted.current || !current || current.cancelled || current.authEpoch !== authEpoch() || sessionBlocked || disabled
-      || phase !== 'active' || !current.activity.waiting || current.activity.continuing || current.activity.reconnecting) return;
+      || !settings || phase !== 'active' || !current.activity.waiting || current.activity.continuing || current.activity.reconnecting) return;
+    clearTimeout(current.resumeTimer);
+    current.retrySequence = undefined; current.waitingMuted = undefined;
     current.resumeSequence = current.sequence;
-    updateActivity(current, { continuing: true, resumeFailed: false });
+    updateActivity(current, { continuing: true, autoRetry: false, resumeFailed: false });
     // This deadline only offers retry; the server alone authorizes leaving waiting.
     current.resumeTimer = setTimeout(() => {
-      if (!current.cancelled && current.activity.waiting) updateActivity(current, { continuing: false, resumeFailed: true });
-    }, 10_000);
+      if (!current.cancelled && current.activity.waiting) {
+        current.resumeSequence = undefined;
+        updateActivity(current, { continuing: false, resumeFailed: true });
+      }
+    }, settings.voiceStartupSeconds * 1000);
     void playAudio();
     try { current.client.sendClientMessage('continue-conversation', { sequence: current.sequence }); }
     catch {
       clearTimeout(current.resumeTimer);
+      current.resumeSequence = undefined;
       updateActivity(current, { continuing: false, resumeFailed: true });
     }
   }
@@ -870,11 +921,12 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
   const status = { idle: checkingCall ? 'Checking for an open conversation…' : 'Ready when you are',
     connecting: activity.connected ? 'Connecting to assistant' : 'Connecting', reconnecting: 'Reconnecting',
     listening: 'Listening', userSpeaking: 'Listening to you', assistantSpeaking: 'Speaking', processing: 'Thinking', interrupted: 'Interrupted · listening',
-    muted: 'Microphone muted', paused: activity.waiting ? 'Paused' : activity.blocked || activity.bot ? 'Assistant audio paused' : 'Listening paused',
+    muted: 'Microphone muted', paused: activity.waiting ? activity.autoRetry ? 'Trying again' : 'Paused' : activity.blocked || activity.bot ? 'Assistant audio paused' : 'Listening paused',
     unavailable: sessionBlocked ? 'Conversation unavailable' : phase === 'error' ? 'Unable to connect' : !running ? 'Conversations unavailable'
       : activity.bot ? 'Assistant audio unavailable' : 'Microphone not connected',
     disconnected: 'Disconnected', ended: 'Conversation ended' }[state];
   const hint = phase === 'active' ? activity.waiting ? activity.resumeFailed ? 'No response yet. Try Continue again.'
+    : activity.autoRetry ? 'Microphone off while the assistant tries again. You can also choose Continue.'
     : activity.continuing ? 'Waiting for the assistant…' : activity.responseMissing ? 'The assistant did not finish a response. Continue to try again.' : 'Continue when you’re ready.' : activity.blocked || activity.reconnecting ? '' : activity.muted ? 'Unmute to speak'
     : capturing ? activity.bot && audible && !activity.interrupted ? 'Speak to interrupt' : 'Go ahead' : activity.paused ? '' : 'Reconnect your microphone'
     : phase === 'connecting' ? 'Allow microphone access if asked' : cleanupPending ? 'Your microphone is off. Confirming the call is closed.' : '';

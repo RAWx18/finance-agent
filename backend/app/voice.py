@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
-import logging
 import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -13,17 +12,22 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 import aiohttp
+from structlog.contextvars import bind_contextvars, clear_contextvars
+from structlog.stdlib import BoundLogger
 
 from .auth import Auth, AuthProblem
 from .auth_models import Access, Owner
 from .config import Config, Environment
+from .diagnostics import record_event
 from .history import CaptionHistory, History
 from .models import CallJoin, CallState, Error, Snapshot
 from .store import Problem, Store
+from .telemetry import Span, error_fields, get_logger
 from .voice_pipeline import VoicePipeline
 
 VOICE_UNAVAILABLE = "Conversations are temporarily unavailable. Please try again shortly."
-logger = logging.getLogger(__name__)
+log = get_logger(__name__, "call")
+daily_log = get_logger(__name__, "daily")
 
 
 def unavailable_reason(config: Config, environment: Environment) -> str | None:
@@ -104,6 +108,7 @@ class DailyRooms:
     def __init__(self, environment: Environment, timeout: float):
         """Create an authenticated HTTP session with the supplied timeout."""
         assert environment.daily_api_key
+        self.call_id: UUID | None = None
         self.http = aiohttp.ClientSession(
             headers={"Authorization": "Bearer " + environment.daily_api_key.get_secret_value()},
             timeout=aiohttp.ClientTimeout(total=timeout),
@@ -111,28 +116,50 @@ class DailyRooms:
 
     async def request(self, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
         """Send a Daily API request and translate invalid responses into service errors."""
-        async with self.http.request(
-            method,
-            "https://api.daily.co/v1" + path,
-            json=body,
-            allow_redirects=False,
-        ) as response:
-            if method == "DELETE" and response.status == 404:
-                return None
-            if response.status not in {200, 201, 204}:
-                logger.warning(
-                    "Daily %s %s returned HTTP %s", method, path.split("/")[1], response.status
+        # Room names identify a private meeting; log only the resource type being addressed.
+        span = Span(
+            daily_log, "daily.request", method=method, resource=path.strip("/").split("/")[0]
+        ).begin()
+        status: int | None = None
+        failure: BaseException | None = None
+        try:
+            async with self.http.request(
+                method,
+                "https://api.daily.co/v1" + path,
+                json=body,
+                allow_redirects=False,
+            ) as response:
+                status = response.status
+                if method == "DELETE" and status == 404:
+                    return None
+                if status not in {200, 201, 204}:
+                    raise Problem(503, "voiceUnavailable", "Daily room service is unavailable.")
+                if method == "DELETE":
+                    return None
+                try:
+                    return await response.json()
+                except (ValueError, aiohttp.ContentTypeError) as error:
+                    raise Problem(
+                        503, "voiceUnavailable", "Daily room service is unavailable."
+                    ) from error
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            if failure is not None:
+                record_event(
+                    "daily.requestFailed",
+                    call_id=self.call_id,
+                    error=failure,
+                    status="cancelled" if isinstance(failure, asyncio.CancelledError) else status,
+                    method=method,
+                    stage="roomDelete"
+                    if method == "DELETE"
+                    else "roomCreate"
+                    if path == "/rooms"
+                    else "tokenCreate",
                 )
-                raise Problem(503, "voiceUnavailable", "Daily room service is unavailable.")
-            if method == "DELETE":
-                return None
-            try:
-                return await response.json()
-            except (ValueError, aiohttp.ContentTypeError) as error:
-                logger.warning("Daily response HTTP %s (%s)", response.status, type(error).__name__)
-                raise Problem(
-                    503, "voiceUnavailable", "Daily room service is unavailable."
-                ) from None
+            span.finish(failure, httpStatus=status)
 
     async def create(self, name: str, expires: int) -> str:
         """Create a private audio room and validate its returned URL and identity."""
@@ -172,7 +199,7 @@ class DailyRooms:
             ):
                 raise ValueError
         except ValueError:
-            logger.warning("Daily room response type %s", type(room).__name__)
+            daily_log.warning("daily.invalidRoom", responseType=type(room).__name__)
             raise Problem(503, "voiceUnavailable", "Daily returned an invalid room.") from None
         return str(room["url"])
 
@@ -197,7 +224,7 @@ class DailyRooms:
             or not isinstance(result.get("token"), str)
             or not result["token"].strip()
         ):
-            logger.warning("Daily token response type %s", type(result).__name__)
+            daily_log.warning("daily.invalidToken", responseType=type(result).__name__)
             raise Problem(503, "voiceUnavailable", "Daily returned an invalid token.")
         return str(result["token"])
 
@@ -205,8 +232,9 @@ class DailyRooms:
         """Delete the named room, treating an absent room as already deleted."""
         try:
             await self.request("DELETE", "/rooms/" + name)
-        except (aiohttp.ClientError, TimeoutError):
+        except (aiohttp.ClientError, TimeoutError) as error:
             # An ambiguous response may follow a committed deletion; the same DELETE is safe.
+            daily_log.info("daily.deleteRetry", resource="rooms", **error_fields(error))
             await self.request("DELETE", "/rooms/" + name)
 
     async def close(self) -> None:
@@ -236,8 +264,17 @@ class Call:
     watchers: list[asyncio.Task[Any]] = field(default_factory=list)
     admitted_at: float = field(default_factory=monotonic)
     timings: dict[str, float] = field(default_factory=dict)
+    stop_reason: str | None = None
     session_id: UUID | None = None
     resume_slug: str | None = None
+    log: BoundLogger = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Bind the call and financial session identities to every call log line."""
+        self.log = log.bind(
+            callId=str(self.id),
+            sessionId=str(self.session_id) if self.session_id is not None else None,
+        )
 
     def completed(self, name: str) -> bool:
         """Check whether a tracked cleanup operation finished successfully."""
@@ -248,11 +285,12 @@ class Call:
         """Record and log a lifecycle stage's elapsed time since admission."""
         # Monotonic seconds since admission; repeated stages record the latest attempt.
         self.timings[stage] = monotonic() - self.admitted_at
-        logger.info(
-            "Voice lifecycle call=%s stage=%s elapsed_seconds=%.6f",
-            self.id,
-            stage,
-            self.timings[stage],
+        record_event(
+            "call.stage",
+            call_id=self.id,
+            stage=stage,
+            status=self.state.status,
+            elapsed_seconds=self.timings[stage],
         )
 
 
@@ -391,6 +429,7 @@ class CallManager:
                     lambda future: None if future.cancelled() else future.exception()
                 )
                 self.call = call
+                call.log.info("call.admitted", resumed=conversation_slug is not None)
                 call.task = asyncio.create_task(self.run(call))
         try:
             # Duplicate starts share this future; a timeout must not cancel it.
@@ -399,6 +438,13 @@ class CallManager:
                 timeout=self.config.voice.startup_seconds + self.config.voice.shutdown_seconds,
             )
             if not done:
+                call.log.warning(
+                    "call.joinTimeout",
+                    stage=next(reversed(call.timings), "setup"),
+                    timeoutSeconds=self.config.voice.startup_seconds
+                    + self.config.voice.shutdown_seconds,
+                )
+                call.stop_reason = call.stop_reason or "joinTimeout"
                 self.stop(call)
                 raise Problem(
                     503, "voiceUnavailable", "Voice setup failed; continue with manual entry."
@@ -409,6 +455,7 @@ class CallManager:
                 await self.store.owner_key(owner)
             if result.expires_at <= self.store.clock():
                 call.state.message = "Call credentials expired; start a new conversation."
+                call.stop_reason = call.stop_reason or "credentialsExpired"
                 self.stop(call)
             if call.stop.is_set():
                 raise Problem(409, "callEnded", "This call has ended; use a fresh call ID.")
@@ -421,11 +468,13 @@ class CallManager:
                     await asyncio.wait({call.task}, timeout=self.config.voice.shutdown_seconds)
             raise
         except asyncio.CancelledError:
+            call.stop_reason = call.stop_reason or "requestCancelled"
             self.stop(call)
             raise
 
     def stop(self, call: Call) -> None:
         """Invalidate call output and request lifecycle cancellation."""
+        call.stop_reason = call.stop_reason or "stopRequested"
         if "shutdownRequested" not in call.timings:
             call.mark("shutdownRequested")
         call.stop.set()
@@ -447,8 +496,16 @@ class CallManager:
         async with self.lock:
             call = self.call
             if not call or call.owner != owner or call.id != call_id:
+                log.info("call.endUnknown", callId=str(call_id))
                 self.remember(owner, call_id)
                 return CallState(call_id=call_id, status="ended")
+            call.log.info(
+                "call.endRequested",
+                callStatus=call.state.status,
+                cleanupConfirmed=call.state.cleanup_confirmed,
+                retry=call.task is not None and call.task.done(),
+            )
+            call.stop_reason = call.stop_reason or "endRequested"
             self.stop(call)
             if (
                 call.task
@@ -485,6 +542,8 @@ class CallManager:
             and (session_hash is None or call.owner.session_hash == session_hash)
         ):
             call.revoked = True
+            call.log.warning("call.revoked", callStatus=call.state.status)
+            call.stop_reason = call.stop_reason or "revoked"
             self.stop(call)
             if call.state.cleanup_confirmed and call.task is not None and call.task.done():
                 self.call = None
@@ -513,6 +572,15 @@ class CallManager:
             except TimeoutError:
                 pass
             if isinstance(value, Error):
+                record_event(
+                    "call.watchStopped",
+                    call_id=call.id,
+                    status="ended",
+                    stage=next(reversed(call.timings), "setup"),
+                    reason="terminalSnapshot",
+                    code=value.code,
+                )
+                call.stop_reason = call.stop_reason or "terminalSnapshot"
                 pipeline.invalidate()
                 call.stop.set()
                 return
@@ -521,6 +589,14 @@ class CallManager:
                 value.session_id != call.session_id
                 or value.conversation_slug != call.state.conversation_slug
             ):
+                record_event(
+                    "call.watchStopped",
+                    call_id=call.id,
+                    status="ended",
+                    stage=next(reversed(call.timings), "setup"),
+                    reason="workspaceChanged",
+                )
+                call.stop_reason = call.stop_reason or "workspaceChanged"
                 pipeline.invalidate()
                 call.stop.set()
                 return
@@ -528,11 +604,26 @@ class CallManager:
                 continue
             sequence = value.sequence
             pipeline.refresh(value)
-            if pipeline.tools and value.sequence != pipeline.tools.written_sequence:
+            external = (
+                pipeline.tools is not None and value.sequence != pipeline.tools.written_sequence
+            )
+            call.log.info(
+                "call.stateRefresh",
+                sequence=sequence,
+                revision=value.revision,
+                interrupt=external,
+            )
+            if external:
                 await pipeline.interrupt()
 
     async def run(self, call: Call) -> None:
         """Set up, supervise, and tear down a call within its lifecycle deadlines."""
+        # Every task spawned for this call, including the pipeline, inherits its identity.
+        clear_contextvars()
+        bind_contextvars(
+            callId=str(call.id),
+            sessionId=str(call.session_id) if call.session_id is not None else None,
+        )
         call.running.set()
         call.mark("setupStarted")
         voice = self.config.voice
@@ -542,6 +633,7 @@ class CallManager:
 
         def fail() -> None:
             """Invalidate the pipeline and mark the call as failed before stopping."""
+            call.stop_reason = call.stop_reason or "providerFailure"
             if call.pipeline is not None:
                 call.pipeline.invalidate()
             if call.state.status == "error":
@@ -554,6 +646,11 @@ class CallManager:
                 cleanup_confirmed=False,
                 message="Voice provider unavailable; continue with manual entry.",
             )
+            call.stop.set()
+
+        def ended() -> None:
+            """Record an orderly pipeline end without taking over native cleanup."""
+            call.stop_reason = call.stop_reason or "normalEnd"
             call.stop.set()
 
         try:
@@ -592,6 +689,7 @@ class CallManager:
                 if call.stop.is_set():
                     raise asyncio.CancelledError
                 rooms = DailyRooms(self.environment, voice.startup_seconds)
+                rooms.call_id = call.id
                 call.rooms = rooms
                 call.mark("roomCreateStarted")
                 url = await rooms.create(call.room_name, int(expires.timestamp()))
@@ -628,7 +726,7 @@ class CallManager:
                     bot_token.result(),
                     self.environment,
                     fail,
-                    call.stop.set,
+                    ended,
                 )
                 call.mark("pipelineConstructionComplete")
                 await self.store.check(call.owner)
@@ -659,6 +757,14 @@ class CallManager:
             def watch_finished(task: asyncio.Task[None]) -> None:
                 """Fail the call when its state watcher exits with an exception."""
                 if not task.cancelled() and task.exception() is not None:
+                    record_event(
+                        "call.watchFailed",
+                        call_id=call.id,
+                        error=task.exception(),
+                        status="failed",
+                        stage=next(reversed(call.timings), "setup"),
+                    )
+                    call.stop_reason = call.stop_reason or "watcherFailure"
                     fail()
 
             watcher.add_done_callback(watch_finished)
@@ -687,10 +793,28 @@ class CallManager:
                 try:
                     await asyncio.wait_for(call.stop.wait(), remaining)
                 except TimeoutError:
+                    call.log.warning("call.credentialsExpired", callSeconds=voice.call_seconds)
+                    call.stop_reason = call.stop_reason or "credentialsExpired"
                     call.state.message = "Call credentials expired; start a new conversation."
         except asyncio.CancelledError:
+            record_event(
+                "call.cancelled",
+                call_id=call.id,
+                status="cancelled",
+                reason=call.stop_reason or "unexpectedCancellation",
+                stage=next(reversed(call.timings), "setup"),
+            )
             call.stop.set()
         except Problem as error:
+            record_event(
+                "call.failed",
+                call_id=call.id,
+                error=error,
+                status=error.status,
+                code=error.body.code,
+                stage=next(reversed(call.timings), "setup"),
+                elapsed_seconds=monotonic() - call.admitted_at,
+            )
             fail()
             setup_error = (
                 AuthProblem(401, error.body.code)
@@ -701,9 +825,36 @@ class CallManager:
             )
             call.state.message = setup_error.body.message
         except (Exception, SystemExit) as error:
-            logger.warning("Voice lifecycle failed (%s)", type(error).__name__)
+            record_event(
+                "call.failed",
+                call_id=call.id,
+                error=error,
+                status="timeout" if isinstance(error, TimeoutError) else "failed",
+                stage=next(reversed(call.timings), "setup"),
+                elapsed_seconds=monotonic() - call.admitted_at,
+            )
             fail()
         finally:
+            record_event(
+                "call.stopped",
+                call_id=call.id,
+                status=call.state.status,
+                reason=call.stop_reason or "unexpectedStop",
+                category=(
+                    "normalEnd"
+                    if call.stop_reason
+                    in {
+                        "normalEnd",
+                        "endRequested",
+                        "stopRequested",
+                        "credentialsExpired",
+                        "revoked",
+                    }
+                    else "unexpectedStop"
+                ),
+                stage=next(reversed(call.timings), "setup"),
+                elapsed_seconds=monotonic() - call.admitted_at,
+            )
             call.stopping = True
             if queue is not None:
                 self.store.unsubscribe(call.owner, queue)
@@ -756,9 +907,11 @@ class CallManager:
             async def execute() -> bool:
                 """Run a cleanup operation and record its timing and success status."""
                 call.mark(name + "Started")
+                span = Span(call.log, "call.cleanup", operation=name).begin()
                 try:
                     await operation()
                     call.mark(name + "Complete")
+                    span.finish()
                     return True
                 except (Exception, asyncio.CancelledError, SystemExit) as error:
                     if (
@@ -767,9 +920,19 @@ class CallManager:
                         and error.status in {401, 404, 410}
                     ):
                         call.mark(name + "Complete")
+                        span.finish(status="ok", skipped=error.body.code)
                         return True
                     call.mark(name + "Failed")
-                    logger.warning("Voice cleanup %s failed (%s)", name, type(error).__name__)
+                    span.finish(error, timeoutSeconds=self.config.voice.shutdown_seconds)
+                    record_event(
+                        "call.cleanupFailed",
+                        call_id=call.id,
+                        error=error,
+                        source=name,
+                        stage="cleanup",
+                        status="failed",
+                        elapsed_seconds=monotonic() - call.admitted_at,
+                    )
                     return False
 
             call.operations[name] = asyncio.create_task(execute())
@@ -786,6 +949,7 @@ class CallManager:
         if call.rooms is None and task is not None and not call.completed("roomDelete"):
             if task.done():
                 call.rooms = DailyRooms(self.environment, self.config.voice.shutdown_seconds)
+                call.rooms.call_id = call.id
                 call.operations.pop("roomClose", None)
         if call.rooms is not None:
             rooms = call.rooms
@@ -807,6 +971,19 @@ class CallManager:
                     task.cancel()
         self.reconcile(call)
         call.mark("shutdownComplete" if call.state.cleanup_confirmed else "shutdownUnconfirmed")
+        if not call.state.cleanup_confirmed:
+            call.log.warning(
+                "call.cleanupUnconfirmed",
+                pending=sorted(name for name in call.operations if not call.completed(name)),
+                timeoutSeconds=self.config.voice.shutdown_seconds,
+            )
+            record_event(
+                "call.cleanupUnconfirmed",
+                call_id=call.id,
+                status="failed",
+                stage="cleanup",
+                elapsed_seconds=monotonic() - call.admitted_at,
+            )
 
     def reconcile(self, call: Call) -> None:
         """Confirm late resource releases without replaying cleanup operations."""
@@ -821,6 +998,13 @@ class CallManager:
             call.pipeline = None
         if confirmed:
             if not call.state.cleanup_confirmed:
+                record_event(
+                    "call.cleanupConfirmed",
+                    call_id=call.id,
+                    status="completed",
+                    reason="lateRelease" if "shutdownUnconfirmed" in call.timings else "released",
+                    elapsed_seconds=monotonic() - call.admitted_at,
+                )
                 call.mark("shutdownComplete")
             if call.state.status != "error":
                 call.state.status = "ended"

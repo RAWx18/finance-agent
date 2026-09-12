@@ -15,14 +15,14 @@ from pipecat.processors.aggregators.llm_response_universal import LLMUserAggrega
 from app.memory import Memory
 from app.speech import SpeechRecognition
 from app.voice_pipeline import VoicePipeline
-from app.voice_tools import conversation
+from app.voice_tools import MEMORY_GUIDANCE, conversation
 
 from .test_auth_races import auth_server as auth_server
 from .test_memory import memory as memory
 from .test_memory import note
 from .test_voice import environment
 from .test_voice_errors import text_reply
-from .test_voice_opening import ready, render
+from .test_voice_opening import ready, render, spoken_opening
 from .test_voice_opening import synthesis as synthesis
 from .test_voice_turns import complete_turn, next_frame, tool_reply
 from .test_voice_turns import voice_boundaries as voice_boundaries
@@ -116,27 +116,35 @@ async def test_profile_and_scoped_notes_reach_opening_and_refresh_without_contex
     ):
         await memory.service.update(note(scope, text), text)
     before = await memory.store.get(memory.owner)
-    greeting = "Hello Ananya, what would you like to discuss?"
-    voice.responses.put_nowait(text_reply(greeting))
+    resumed = voice.pipeline.resume_slug is not None
+    if resumed:
+        greeting = "Let's pick up your options, Ananya."
+        voice.responses.put_nowait(text_reply(greeting))
     await ready(voice)
-    request = await asyncio.wait_for(voice.requests.get(), 2)
-    assert request["tool_choice"] == "none"
-    assert remembered(request) == await memory.service.read()
-    assert memory.profile["email"] not in json.dumps(request["messages"])
+    await spoken_opening(voice, synthesis, memory.store, resumed=resumed)
+    if resumed:
+        request = await asyncio.wait_for(voice.requests.get(), 2)
+        assert request["tool_choice"] == "none"
+        assert remembered(request) == await memory.service.read()
+        assert memory.profile["email"] not in json.dumps(request["messages"])
+        instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
+        await render(instance, greeting)
+        await next_frame(voice.frames, TTSAudioRawFrame)
+        await next_frame(voice.frames, TTSStoppedFrame)
+    else:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(voice.requests.get(), 0.1)
     assert not any(
         message.get("content", "").startswith("Conversational memory;")
         for message in voice.pipeline.context.get_messages()
     )
-    instance, _ = await asyncio.wait_for(synthesis.requests.get(), 2)
-    await render(instance, greeting)
-    await next_frame(voice.frames, TTSAudioRawFrame)
-    await next_frame(voice.frames, TTSStoppedFrame)
     await asyncio.wait_for(synthesis.turns.get(), 2)
     assert await memory.store.get(memory.owner) == before
     await memory.application.state.auth.rename(memory.owner, "Anu")
     await complete_turn(voice, "Let's continue.")
     request = await asyncio.wait_for(voice.requests.get(), 2)
     assert remembered(request)["common"]["profile"]["name"] == "Anu"
+    assert memory.profile["email"] not in json.dumps(request["messages"])
 
 
 async def test_memory_tool_saves_and_forgets_current_preference_without_financial_write(
@@ -241,6 +249,7 @@ async def test_interruption_discards_current_memory_authorization(voice, memory)
 def test_memory_policy_is_conversational_not_financial_authority(config):
     """Verify memory guidance limits authority to explicit conversational preferences."""
     prompt = conversation(config)
+    assert "update_memory" not in prompt
     for rule in (
         "common.profile.name",
         "not in every reply",
@@ -250,6 +259,6 @@ def test_memory_policy_is_conversational_not_financial_authority(config):
         "never an assistant message or restored history",
         "Do not copy old facts",
         "Set text:null",
-        "Do not evade",
+        "must not evade",
     ):
-        assert rule in prompt
+        assert rule in MEMORY_GUIDANCE

@@ -125,7 +125,7 @@ def test_conversation_timing_defaults_are_independent(config):
     assert config.voice.vad_start_seconds == 0.1
     assert config.voice.vad_stop_seconds == 0.2
     assert config.voice.vad_confidence == config.voice.vad_min_volume == 0.5
-    assert config.voice.inactive_seconds == 60
+    assert config.voice.inactive_seconds == 180
     assert config.voice.call_seconds == 1800
 
 

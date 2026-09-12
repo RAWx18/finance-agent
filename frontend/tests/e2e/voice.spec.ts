@@ -420,10 +420,10 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
   }
 
   /** Verify capture and playback are released and the client disconnects once. */
-  async function stopped(page: Page) {
-    await expect.poll(() => page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+  async function stopped(page: Page, timeout = 10000) {
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended')), { timeout }).toBe(true);
     expect(await page.locator('audio').evaluate(element => (element as HTMLAudioElement).srcObject)).toBeNull();
-    await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0].disconnects), { timeout }).toBe(1);
   }
 
   for (const ending of ['ready', 'cancel', 'failure'] as const) test(`connecting ringback emits quiet audio and stops on ${ending}`, async ({ page, voice }) => {
@@ -712,6 +712,78 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect(page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true })).toBeEnabled();
   });
 
+  test('automatic response retry acknowledges before capture, preserves figures in one call, and obeys End', async ({ page, voice }, info) => {
+    await speaking(page);
+    const initial = await current(page);
+    const saved = await submit(page, initial, { type: 'replaceFacts', facts: { ...draftFacts(initial), opening: { amount: '123.45', status: 'exact' } } });
+    const picture = page.getByRole('region', { name: 'Your financial picture', exact: true });
+    const cash = picture.getByRole('article', { name: saved.workspace!.cards!.find(card => card.template === 'cash')!.title, exact: true });
+    await expect(cash).toContainText('₹123.45');
+    const content = await picture.getByRole('article').allTextContents();
+    const microphone = await page.evaluateHandle(() => window.voiceFixture.clients[0].tracks().local.audio!);
+    await page.evaluate(() => {
+      const client = window.voiceFixture.clients[0];
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
+      client.callbacks.onUserTranscript!({ text: 'Keep my saved figures', final: true, timestamp: 'saved', user_id: 'fixture-user' });
+      client.callbacks.onBotStoppedSpeaking!();
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 2, reason: 'response', autoRetry: true });
+    });
+    await expect(page.locator('.voice-status')).toHaveText('Trying again');
+    await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    await expect(page.getByRole('button', { name: 'Continue', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'End conversation', exact: true })).toBeEnabled();
+    expect(await page.evaluate(() => {
+      const client = window.voiceFixture.clients[0];
+      return { mic: client.isMicEnabled, enabled: client.tracks().local.audio!.enabled, messages: client.messages,
+        muted: document.querySelector('audio')!.muted, paused: document.querySelector('audio')!.paused };
+    })).toEqual({ mic: false, enabled: false, messages: [], muted: true, paused: true });
+    await page.screenshot({ path: info.outputPath('automaticRetryWaiting.png'), fullPage: true });
+    expect(await page.evaluate(() => {
+      const client = window.voiceFixture.clients[0];
+      let mutedAtAck = false;
+      const send = client.sendClientMessage.bind(client);
+      client.sendClientMessage = (type, data) => {
+        mutedAtAck = !client.isMicEnabled && !client.tracks().local.audio!.enabled
+          && document.querySelector('audio')!.muted && document.querySelector('audio')!.paused;
+        send(type, data);
+      };
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3, reason: 'retry', retryOf: 1 });
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3, reason: 'retry', retryOf: 2 });
+      client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3, reason: 'retry', retryOf: 2 });
+      return { mutedAtAck, messages: client.messages };
+    })).toEqual({ mutedAtAck: true, messages: [{ type: 'acknowledge-response-retry', data: { sequence: 3, retryOf: 2 } }] });
+    await expect(page.locator('.voice-status')).toHaveText('Listening');
+    await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+    await expect(page.locator('audio')).toHaveJSProperty('muted', false);
+    await expect(page.locator('audio')).toHaveJSProperty('paused', false);
+    await expect(page.getByRole('region', { name: 'Live caption' })).toContainText('Keep my saved figures');
+    expect(await page.evaluate(track => {
+      const client = window.voiceFixture.clients[0];
+      return { same: client.tracks().local.audio === track, enabled: track.enabled, clients: window.voiceFixture.clients.length,
+        connections: client.connections.length, disconnects: client.disconnects };
+    }, microphone)).toEqual({ same: true, enabled: true, clients: 1, connections: 1, disconnects: 0 });
+    await expect.poll(() => picture.getByRole('article').allTextContents()).toEqual(content);
+    expect(await current(page)).toEqual(saved);
+    expect(voice.calls.filter(method => method !== 'GET')).toEqual(['POST']);
+    await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onServerMessage!({
+      type: 'conversation-state', state: 'waiting', sequence: 4, reason: 'response', autoRetry: true,
+    }));
+    await expect(page.locator('.voice-status')).toHaveText('Trying again');
+    await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+    await stopped(page);
+    await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onServerMessage!({
+      type: 'conversation-state', state: 'active', sequence: 5, reason: 'retry', retryOf: 4,
+    }));
+    await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+    await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    expect(await page.evaluate(() => window.voiceFixture.clients[0].messages))
+      .toEqual([{ type: 'acknowledge-response-retry', data: { sequence: 3, retryOf: 2 } }]);
+    await expect.poll(() => picture.getByRole('article').allTextContents()).toEqual(content);
+    expect(await current(page)).toEqual(saved);
+    expect(voice.calls.filter(method => method !== 'GET')).toEqual(['POST', 'DELETE']);
+    await microphone.dispose();
+  });
+
   test('server waiting: Continue keeps the call, captions and financial corrections until an active ACK', async ({ page, voice }, info) => {
     await speaking(page);
     const initial = await current(page);
@@ -850,7 +922,13 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       if (failure !== 'corrupt snapshot') { stream.close(); stream.dispatchEvent(new Event('error')); }
       else stream.dispatchEvent(new MessageEvent('snapshot', { data: '{"facts":null}' }));
     }, failure);
-    await stopped(page);
+    if (failure !== 'corrupt snapshot') {
+      // A dropped stream gets a reconnect grace before live updates count as lost.
+      await page.waitForTimeout(3000);
+      expect(await page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(0);
+      await expect(page.getByRole('status', { name: 'Conversation stopped' })).toHaveCount(0);
+    }
+    await stopped(page, 20000);
     if (failure === 'lost updates on history') {
       await expect(page.getByRole('heading', { level: 1, name: 'History', exact: true })).toBeVisible();
       await expect(page.getByRole('navigation', { name: 'Saved conversations', exact: true })).toHaveText('No conversations yet.');
@@ -1682,7 +1760,7 @@ test('provider double: live picture → salary-date correction over SSE → End 
   }
   await expect(proposal.getByRole('checkbox')).not.toBeChecked();
   await expect(proposal.getByRole('checkbox')).toHaveAccessibleName(/unconditionally—not dependent on uncertain income or payee agreement/);
-  await expect(proposal.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(proposal.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   await expect(proposal.getByRole('button', { name: 'Reject preview' })).toBeEnabled();
   expect((await current(page)).accepted).toBeNull();
   await expect(gap).toContainText(money(saved.plan.firstGap!.amountPaise));
@@ -1910,7 +1988,7 @@ test('provider double: accept an exact whole proposal, replace consent and resto
   await expect(proposal).toContainText('₹2,000.00 Reported → ₹0.00 Proposed');
   await expect(proposal).toContainText('Required minimum ₹2,000.00 · Reported. Not payoff.');
   await expect(proposal.getByRole('region', { name: 'After · preview', exact: true })).toContainText(`₹7,000.00 · ${dateLabel(baseline.plan.firstGap!.date)}`);
-  await expect(proposal.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(proposal.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   const consent = proposal.getByRole('checkbox');
   await consent.focus(); await page.keyboard.press('Space');
   await expect(consent).toBeChecked();
@@ -1923,9 +2001,9 @@ test('provider double: accept an exact whole proposal, replace consent and resto
   await expect(consent).not.toBeChecked();
   await expect(consent).toBeFocused();
   await expect(proposal).toContainText('₹2,000.00 Reported → ₹123.45 Proposed');
-  await expect(proposal.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(proposal.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   await consent.check();
-  const accepted = await actOnPlan(page, 'Accept planning assumptions', replacement,
+  const accepted = await actOnPlan(page, 'Accept changes', replacement,
     { type: 'acceptPreview', previewId: replacement.preview!.id, confirmed: true, consentScope: 'unconditional' });
   await expect(proposal).toHaveCount(0);
   expect(accepted.facts).toEqual(baseline.facts);
@@ -1949,7 +2027,7 @@ test('provider double: accept an exact whole proposal, replace consent and resto
   await expect(page.locator('dialog:modal')).toHaveCount(0);
   await stable(page, ready, 'whole replacement proposal and removals', true);
   await page.screenshot({ path: testInfo.outputPath('provider-double-whole-proposal.png'), fullPage: true });
-  const confirmed = await actOnPlan(page, 'Accept planning assumptions', removals,
+  const confirmed = await actOnPlan(page, 'Accept changes', removals,
     { type: 'acceptPreview', previewId: removals.preview!.id, confirmed: true, consentScope: 'unconditional' });
   await expect(proposal).toHaveCount(0);
   expect(confirmed.accepted!.adjustments.map(item => item.eventId)).toEqual([adjustments[0].eventId]);
@@ -2040,8 +2118,8 @@ test('provider double: close a preview without declining its cut, then explicitl
   const pending = await submit(page, baseline, { type: 'previewAdjustments', adjustments });
   const proposal = page.getByRole('region', { name: 'Spending change preview', exact: true });
   await expect(proposal).toBeVisible();
-  await expect(proposal).toContainText('Reject saves your refusal of this proposal. Close preview only puts it aside; it is not a refusal.');
-  const discarded = await actOnPlan(page, 'Close preview', pending, { type: 'discardPreview', previewId: pending.preview!.id });
+  await expect(proposal).toContainText('Reject records that you don’t want these changes. Discard only clears the preview.');
+  const discarded = await actOnPlan(page, 'Discard preview', pending, { type: 'discardPreview', previewId: pending.preview!.id });
   await expect(proposal).toHaveCount(0);
   expect(discarded.facts).toEqual(baseline.facts);
   expect(discarded.facts.decision!.responses).toEqual([]);
@@ -2149,7 +2227,7 @@ test('provider-double: overlapping purchase refusal shows visible guidance witho
   await expect(controls.getByRole('button', { name: 'Do not suggest this cut' })).toBeEnabled();
   await expect(proposal.getByRole('button', { name: 'Reject preview' })).toBeEnabled();
   await expect(proposal.getByRole('checkbox')).not.toBeChecked();
-  await expect(proposal.getByRole('button', { name: 'Accept planning assumptions' })).toBeDisabled();
+  await expect(proposal.getByRole('button', { name: 'Accept changes' })).toBeDisabled();
   await expect(picture.getByLabel('Saved answers', { exact: true })).toHaveCount(0);
   await expect(picture.getByRole('article', { name: 'Available opening cash', exact: true })).toContainText('₹1,000.00');
   await expect(picture.getByRole('listitem', { name: 'Purchase', exact: true })).toContainText('₹800.00');
@@ -2164,7 +2242,7 @@ test('provider-double: overlapping purchase refusal shows visible guidance witho
   await page.getByRole('button', { name: 'Review proposed change', exact: true }).click();
   await expect(proposal.getByRole('heading', { name: 'Spending change preview', exact: true })).toBeFocused();
   expect(await current(page)).toEqual(pending);
-  const discarded = await actOnPlan(page, 'Close preview', pending, { type: 'discardPreview', previewId: pending.preview!.id });
+  const discarded = await actOnPlan(page, 'Discard preview', pending, { type: 'discardPreview', previewId: pending.preview!.id });
   await expect(proposal).toHaveCount(0);
   await expect(feedback).toHaveCount(0);
   expect(discarded.facts).toEqual(baseline.facts);

@@ -21,6 +21,9 @@ import { ProfileMenu } from './ProfileMenu';
 import brandIcon from './brand.svg?no-inline';
 
 type Journey = 'landing' | 'ready' | 'session';
+// A dropped EventSource reconnects and replays the current snapshot within seconds; only a
+// loss outlasting this grace makes live financial updates untrustworthy for the voice call.
+const updatesGraceMs = 8000;
 
 /** Coordinate the signed-in workspace, saved conversations, and navigation safeguards. */
 function Workspace() {
@@ -56,6 +59,14 @@ function Workspace() {
   const expired = state.phase === 'expired' || state.phase === 'deleted';
   const terminal = expired || state.phase === 'unavailable' || state.phase === 'unreadable';
   const recovering = terminal || state.connection === 'reconnecting' && state.phase === 'ready';
+  const streamLost = state.connection === 'reconnecting' && state.phase === 'ready';
+  const [updatesLost, setUpdatesLost] = useState(false);
+  if (updatesLost && !streamLost) setUpdatesLost(false);
+  useEffect(() => {
+    if (!streamLost) return;
+    const timer = setTimeout(() => setUpdatesLost(true), updatesGraceMs);
+    return () => clearTimeout(timer);
+  }, [streamLost]);
   const fullRecovery = terminal && !snapshot && (conversationVisible || moneyOpen);
   const locked = stale || moneyEditing || !!state.pending || state.busy;
   const hasPicture = !!snapshot && (snapshot.facts.opening.amountPaise !== null || snapshot.facts.records.length > 0
@@ -231,7 +242,7 @@ function Workspace() {
               onPrepare={() => navigate('ready')} onPhaseChange={voiceChanged}
               visible={conversationVisible && !fullRecovery && !selectingRoute}
               updatesReady={state.connection === 'live' && state.phase === 'ready'}
-              updatesLost={!!snapshot && (state.connection === 'reconnecting' || state.phase !== 'ready')}
+              updatesLost={!!snapshot && (updatesLost || state.phase !== 'ready')}
               sessionIssue={state.phase === 'expired' || state.phase === 'deleted' || state.phase === 'unreadable' ? state.phase : undefined}
               onSettings={value => dispatch({ type: 'settings', settings: value })} />
           </div>
@@ -264,6 +275,7 @@ function Workspace() {
       <p>Cash flow stores your Google sign-in details, profile, financial information, plans, corrections and text conversations. Saved preferences and context may be used in later conversations. The application does not save audio recordings, receive your Google password, connect to bank accounts or make payments.</p>
       <h3>Service providers</h3>
       <p>Google provides sign-in. Daily carries live calls. Azure Speech processes audio and spoken replies. Azure OpenAI processes conversation and financial context, including your display name and saved notes, to generate responses. Provider processing and retention are governed by their applicable policies; application deletion does not guarantee deletion of provider-held data.</p>
+      <p>For reference exchange rates, the backend sends only currency pairs to Frankfurter, not amounts, user details or financial records.</p>
       <h3>Retention and deletion</h3>
       <p>{settings ? `Plans and associated conversations expire ${settings.retentionHours} hours after plan creation and are removed during expiry cleanup. ` : 'Plans and associated conversations are removed during configured expiry cleanup. '}Account-level context expires separately; saved preferences remain until forgotten or the account is deleted.</p>
       <p>Deleting a plan removes its conversations and chat notes, but not account-level preferences or context. Deleting your account removes its saved application records. Signing out does not delete saved data. You may ask the assistant to forget a saved note; this does not erase the conversation in which it appeared.</p>

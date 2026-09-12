@@ -640,7 +640,7 @@ describe('account profile and deliberate deletion', () => {
   it('handles committed deletion before the HTTP body without recovery or a Settings return path', async () => {
     const body = deferred<string>();
     vi.mocked(api.account.delete).mockRestore();
-    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, text: () => body.promise } as Response);
+    vi.mocked(fetch).mockResolvedValue({ ok: true, status: 200, headers: new Headers(), text: () => body.promise } as Response);
     const { router } = show('/account');
     await userEvent.click(await screen.findByRole('button', { name: 'Delete app account' }));
     await userEvent.type(screen.getByLabelText('Type DELETE to confirm'), 'DELETE');

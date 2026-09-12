@@ -360,6 +360,7 @@ def test_call_identity_and_deadline_contract(client, config):
     response = client.request("DELETE", "/api/session/call", json=body)
     assert response.json() == {
         **body,
+        "conversationSlug": None,
         "status": "ended",
         "cleanupConfirmed": True,
         "message": None,
