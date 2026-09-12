@@ -123,6 +123,7 @@ async function run(values) {
   let lastProbe = null;
   let lastMedia = [];
   let callId = null;
+  let conversationSlug = null;
   let signedIn = false;
   let passed = false;
   const callIds = new Set();
@@ -243,11 +244,18 @@ async function run(values) {
         const observed = (await probe()).callsObserved;
         if (values.mode === 'prompt') await context.clearPermissions();
         else await permission(values.mode === 'denied' ? 'denied' : 'granted');
-        await expect(page.getByRole('button', { name: /^(Start conversation|Start talking|Reconnect)$/ })).toBeVisible();
-        if (await page.getByRole('button', { name: 'Start conversation', exact: true }).isVisible())
-          await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
-        await Promise.all(page.frames().map(frame => frame.evaluate(() => globalThis.lifecycle?.reset()).catch(() => undefined)));
-        await page.getByRole('button', { name: /^(Start talking|Reconnect)$/ }).click();
+        if (values.mode === 'history' && conversationSlug) {
+          await page.goto(`/history/${conversationSlug}`);
+          await expect(page.getByRole('button', { name: 'Continue talking', exact: true })).toBeEnabled();
+          await page.evaluate(() => globalThis.lifecycle.reset());
+          await page.getByRole('button', { name: 'Continue talking', exact: true }).click();
+        } else {
+          await expect(page.getByRole('button', { name: /^(Start conversation|Start talking|Reconnect)$/ })).toBeVisible();
+          if (await page.getByRole('button', { name: 'Start conversation', exact: true }).isVisible())
+            await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
+          await Promise.all(page.frames().map(frame => frame.evaluate(() => globalThis.lifecycle?.reset()).catch(() => undefined)));
+          await page.getByRole('button', { name: /^(Start talking|Reconnect)$/ }).click();
+        }
         if (values.mode === 'denied') {
           await expect(page.getByText('Microphone access denied', { exact: true })).toBeVisible();
           await until(released);
@@ -278,7 +286,19 @@ async function run(values) {
               && frames.some(frame => frame.enabledTracks > 0);
           }, 100000);
           assert.equal(callIds.size, admitted + 1);
+          const snapshotResponse = await context.request.get('/api/session');
+          assert.equal(snapshotResponse.status(), 200);
+          const snapshot = await snapshotResponse.json();
+          assert.equal(typeof snapshot.conversationSlug, 'string');
+          if (conversationSlug) assert.equal(snapshot.conversationSlug, conversationSlug);
+          conversationSlug = snapshot.conversationSlug;
+          await expect(page).toHaveURL(`${origin}/app/${conversationSlug}`);
+          const historyResponse = await context.request.get('/api/history');
+          assert.equal(historyResponse.status(), 200);
+          assert.deepEqual((await historyResponse.json()).conversations.map(chat => chat.slug), [conversationSlug]);
           report(stage, { passed: true, temperature: cycle === 1 ? 'cold' : 'warm', callId,
+            sameSavedChat: cycle > 1,
+            fromHistory: values.mode === 'history' && cycle > 1,
             ...measurements(await media()), lifecycle: await probe() });
           stage = 'firstRemoteAudio';
           await until(async () => (await media()).some(frame => frame.firstEnergyAt), 20000);
@@ -338,7 +358,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     } });
     assert.equal(values['allow-billable'], true);
     assert.ok(['1', '2'].includes(values.cycles));
-    assert.ok(['cycles', 'denied', 'prompt', 'refresh'].includes(values.mode));
+    assert.ok(['cycles', 'history', 'denied', 'prompt', 'refresh'].includes(values.mode));
     assert.ok(values.url && values.audio && existsSync(values.audio));
     process.exitCode = await run({ ...values, cycles: Number(values.cycles) });
   } catch {

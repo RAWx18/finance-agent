@@ -226,7 +226,7 @@ def main():
     parser.add_argument("--allow-billable", action="store_true", required=True)
     parser.add_argument("--cycles", type=int, choices=(1, 2), default=2)
     parser.add_argument(
-        "--mode", choices=("cycles", "denied", "prompt", "refresh"), default="cycles"
+        "--mode", choices=("cycles", "history", "denied", "prompt", "refresh"), default="cycles"
     )
     arguments = parser.parse_args()
 
