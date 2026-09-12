@@ -94,8 +94,32 @@ class Store:
                 PRIMARY KEY (owner, id)
             );
             CREATE INDEX IF NOT EXISTS session_expiry ON sessions(expires);
+            CREATE TABLE IF NOT EXISTS conversations (
+                call_id TEXT PRIMARY KEY,
+                owner TEXT NOT NULL REFERENCES sessions(owner) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                slug TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                started TEXT NOT NULL,
+                ended TEXT,
+                expires TEXT NOT NULL,
+                search_date TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS conversation_owner ON conversations(owner, started);
+            CREATE TABLE IF NOT EXISTS conversation_messages (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT NOT NULL REFERENCES conversations(call_id) ON DELETE CASCADE,
+                segment TEXT NOT NULL,
+                role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                text TEXT NOT NULL,
+                created TEXT NOT NULL,
+                interrupted INTEGER NOT NULL,
+                finalized INTEGER NOT NULL,
+                UNIQUE(call_id, segment)
+            );
         """
         )
+        await self.db.create_function("casefold", 1, str.casefold, deterministic=True)
         await self.db.commit()
 
     async def close(self) -> None:

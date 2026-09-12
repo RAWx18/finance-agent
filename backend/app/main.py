@@ -31,6 +31,7 @@ from .auth_routes import router as auth_router
 from .config import ROOT, Config, Environment, load_config
 from .finance import export_text
 from .google import Google
+from .history import ConversationList, History, SavedConversation, transcript
 from .models import (
     AdjustmentOptions,
     CallJoin,
@@ -162,8 +163,16 @@ class Boundary:
                         )
                         self.auth.limit(kind, access.user_id, maximum)
                 if scope.get("query_string"):
-                    await reject(400, "invalidQuery", "Query parameters are not accepted.")
-                    return
+                    if not (
+                        path == "/api/history"
+                        and scope["method"] == "GET"
+                        and len(scope["query_string"])
+                        <= self.config.history.max_search_chars * 12 + 7
+                        and len(request.query_params.multi_items()) == 1
+                        and set(request.query_params) == {"search"}
+                    ):
+                        await reject(400, "invalidQuery", "Query parameters are not accepted.")
+                        return
             except Problem as error:
                 await JSONResponse(
                     error.body.model_dump(mode="json", by_alias=True),
@@ -233,6 +242,7 @@ def create_app(
     calls = CallManager(store, config, environment, auth)
     auth.on_revoke = calls.invalidate
     static_dir = (static_dir if static_dir is not None else ROOT / "frontend" / "dist").resolve()
+    history = History(store)
 
     async def cleanup() -> None:
         while True:
@@ -384,6 +394,26 @@ def create_app(
     @application.get("/api/session", response_model=Snapshot)
     async def current(request: Request) -> Snapshot:
         return await store.get(owner(request))
+
+    @application.get("/api/history", response_model=ConversationList)
+    async def history_list(request: Request, search: str = "") -> ConversationList:
+        return await history.list(owner(request), search)
+
+    @application.get("/api/history/{slug}", response_model=SavedConversation)
+    async def history_detail(request: Request, slug: str) -> SavedConversation:
+        return await history.get(owner(request), slug)
+
+    @application.get(
+        "/api/history/{slug}/transcript",
+        response_class=PlainTextResponse,
+        response_model=str,
+    )
+    async def history_transcript(request: Request, slug: str) -> PlainTextResponse:
+        conversation = await history.get(owner(request), slug)
+        return PlainTextResponse(
+            transcript(conversation),
+            headers={"Content-Disposition": f'attachment; filename="{conversation.slug}.txt"'},
+        )
 
     @application.get("/api/session/options", response_model=AdjustmentOptions)
     async def options(request: Request) -> AdjustmentOptions:
