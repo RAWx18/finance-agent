@@ -29,6 +29,8 @@ from .models import (
     Record,
     Snapshot,
     TimingRisk,
+    UndatedImpact,
+    UndatedItem,
     UnresolvedAmount,
 )
 
@@ -253,7 +255,10 @@ def calculate(
             if conflict.field == "schedule.date"
             else getattr(record, conflict.field)
         )
-        if (conflict.field == "schedule.date" and disputed is not None) or (
+        if (
+            conflict.field == "schedule.date"
+            and (disputed is not None or record is not None and record.schedule.pattern is not None)
+        ) or (
             conflict.field != "schedule.date"
             and (not isinstance(disputed, Money) or disputed.amount_paise is not None)
         ):
@@ -345,10 +350,20 @@ def calculate(
                 record,
             )
         due = record.schedule.date
+        pattern = record.schedule.pattern
         if due is None:
             partial = True
-            issue("unknownDate", "Confirm the next unpaid/future date; no date is assumed.", record)
-            continue
+            if pattern is None:
+                issue(
+                    "unknownDate", "Confirm the next unpaid/future date; no date is assumed.", record
+                )
+                continue
+            issue(
+                "monthlyPattern",
+                "Dates calculated from the reported monthly pattern are estimates; timing "
+                "is unconfirmed. No arrears are inferred and income is not assured.",
+                record,
+            )
         if budget:
             issue(
                 "monthlyBudget",
@@ -365,7 +380,31 @@ def calculate(
         ) -> bool:
             return (count is None or index < count) and (end_date is None or day <= end_date)
 
-        if due < anchor and not budget:
+        if pattern is not None:
+            months = {
+                (day.year, day.month)
+                for day in (
+                    anchor + timedelta(days=offset) for offset in range(config.horizon_days)
+                )
+                if end_date is None or day <= end_date
+            }
+            for year, month in sorted(months):
+                month_days = calendar.monthrange(year, month)[1]
+                month_day = pattern.day if pattern.day is not None else month_days
+                if month_day > month_days:
+                    if active(date(year, month, month_days), 0):
+                        issue(
+                            "missingMonthDay",
+                            f"No day {month_day} in {year}-{month:02} for {record.label}; "
+                            "confirm the due date. Month-end is not assumed.",
+                            record,
+                            max(anchor, date(year, month, 1)),
+                        )
+                    continue
+                day = date(year, month, month_day)
+                if anchor <= day < anchor + timedelta(days=config.horizon_days) and active(day, 0):
+                    occurrences.append((day, day, 0))
+        if due is not None and due < anchor and not budget:
             if record.kind == "income":
                 partial = True
                 issue(
@@ -387,7 +426,7 @@ def calculate(
                         record,
                         anchor,
                     )
-        if record.schedule.recurrence == "monthly":
+        if due is not None and record.schedule.recurrence == "monthly":
             months = {
                 (day.year, day.month)
                 for day in (
@@ -409,6 +448,8 @@ def calculate(
                         max(anchor, date(year, month, 1)),
                     )
         for offset in range(config.horizon_days):
+            if due is None:
+                break
             day = anchor + timedelta(days=offset)
             if day < due:
                 continue
@@ -456,6 +497,13 @@ def calculate(
                     kind=record.kind,
                     date=day,
                     original_due_date=original,
+                    date_assumption=(
+                        f"Calculated for {day} from reported monthly "
+                        + (f"day {pattern.day}" if pattern.kind == "dayOfMonth" else "month-end")
+                        + " pattern; timing unconfirmed"
+                    )
+                    if pattern is not None
+                    else None,
                     amount_paise=counted.amount_paise,
                     amount_status=counted.status,
                     required_paise=None
@@ -478,6 +526,7 @@ def calculate(
                             record.reliability == "reliable"
                             and counted.status == "exact"
                             and record.schedule.certainty == "exact"
+                            and pattern is None
                         )
                     ),
                     overdue=original < anchor,
@@ -536,7 +585,10 @@ def calculate(
         if selected.amount_paise == 0 and record.amount.amount_paise == 0:
             continue
         for reason, missing in (
-            ("missingDate", record.schedule.date is None),
+            (
+                "missingDate",
+                record.schedule.date is None and record.schedule.pattern is None,
+            ),
             (
                 "missingAmount",
                 any(event.record_id == record.id and event.amount_paise is None for event in events)
@@ -558,17 +610,102 @@ def calculate(
                         recurrence=record.schedule.recurrence,
                     )
                 )
+    undated_items = []
+    unknown_ids = []
+    for record in sorted(facts.records, key=lambda item: item.id):
+        if (
+            record.kind == "income"
+            or record.schedule.date is not None
+            or record.schedule.pattern is not None
+            or record.schedule.end_date is not None
+            and record.schedule.end_date < anchor
+        ):
+            continue
+        selected = record.target if record.target is not None else record.amount
+        if selected.amount_paise == 0 and record.amount.amount_paise == 0:
+            continue
+        required_only = selected.amount_paise is None and record.amount.amount_paise is not None
+        if required_only:
+            selected = record.amount
+        computable = (
+            record.schedule.recurrence in {"once", "monthly"}
+            and not record.schedule.amounts
+            and record.schedule.count is None
+        )
+        assumption = (
+            f"One monthly payment within this {config.horizon_days}-day period; unpaid status "
+            "and timing need confirmation. This is one occurrence, not a limit on payments."
+            if computable and record.schedule.recurrence == "monthly"
+            else f"If this unpaid payment falls within these {config.horizon_days} days."
+            if computable
+            else "Occurrence count within this period is unknown without a start date; "
+            "variable or unanchored sequences are excluded from the allowance."
+        )
+        if required_only:
+            assumption += " Uses only the required/minimum; the higher intended target is unknown."
+        elif record.target is not None:
+            assumption += " Uses the intended target, not an additional payment."
+        if record.amount.amount_paise is None and not record.schedule.amounts:
+            assumption += (
+                " Required/minimum payment is unknown; the intended target is not a guarantee."
+                if record.kind == "debt"
+                else " Payment amount is unknown."
+            )
+        if (
+            not computable
+            or record.amount.amount_paise is None
+            or record.target is not None
+            and record.target.amount_paise is None
+        ):
+            unknown_ids.append(record.id)
+        undated_items.append(
+            UndatedItem(
+                record_id=record.id,
+                label=record.label,
+                amount_paise=selected.amount_paise if computable else None,
+                status=selected.status if computable else "unknown",
+                recurrence=record.schedule.recurrence,
+                amount_basis="requiredOnly" if required_only else "reported",
+                required_paise=record.amount.amount_paise if record.kind == "debt" else None,
+                target_paise=record.target.amount_paise if record.target is not None else None,
+                assumption=assumption,
+            )
+        )
+    undated_impact = None
+    if undated_items:
+        allowance = sum(item.amount_paise or 0 for item in undated_items)
+        closing = metrics.closing_paise - allowance if metrics.closing_paise is not None else None
+        if max(allowance + metrics.outflow_paise, abs(closing or 0)) > config.max_total_paise:
+            raise ValueError("Projection exceeds the configured aggregate money limit")
+        undated_impact = UndatedImpact(
+            items=undated_items,
+            outflow_paise=allowance,
+            closing_paise=closing,
+            status="unknown" if unknown_ids or closing is None else "estimate",
+            unknown_record_ids=unknown_ids,
+            qualification="What-if only: undated income is excluded. Unknown amounts, additional "
+            "occurrences and unreported payments may increase the need; this is not an upper "
+            "bound or proof of on-time affordability. No dates, consent or payments are assumed.",
+        )
     plan = Plan(
         **metrics.model_dump(),
         evaluated_on=today or anchor,
         projection_partial=partial,
         events=events,
         issues=issues,
+        undated_impact=undated_impact,
         budget_basis=BudgetBasis(
             dated_projection_complete=not unresolved
             and facts.opening.amount_paise is not None
             and not any(
-                item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome", "uncertainDate"}
+                item.code
+                in {
+                    "missingMonthDay",
+                    "overdueRecurrence",
+                    "pastIncome",
+                    "uncertainDate",
+                    "monthlyPattern",
+                }
                 for item in issues
             ),
             unresolved_amounts=unresolved,
@@ -868,6 +1005,12 @@ def export_text(snapshot: Snapshot) -> str:
         f"{rupees(plan.uncertain_income_paise)}.",
         f"Known planned outflows: {rupees(plan.outflow_paise)}.",
         f"Closing = opening + reliable receipts - planned outflows: {rupees(plan.closing_paise)}.",
+        *(
+            qualification
+            for result in snapshot.workspace.results
+            if result.id == "closing"
+            for qualification in result.qualifications
+        ),
         f"Trough: {rupees(plan.trough_paise)}; "
         f"peak cumulative cash gap: {rupees(plan.peak_gap_paise)}.",
         f"Reserve floor (not an expense): {rupees(snapshot.facts.reserve_paise)}; "
@@ -878,6 +1021,12 @@ def export_text(snapshot: Snapshot) -> str:
         if plan.closing_paise is None
         else "First gap: none in known projection.",
         "Same-day debits precede receipts. No payment execution or allocation is performed.",
+        *(
+            f"Timing exposure on {risk.date}: {rupees(risk.exposure_paise)} before same-day "
+            f"receipts; remaining funding gap after included receipts: "
+            f"{rupees(risk.remaining_gap_paise)}. Actual payment timing is not confirmed."
+            for risk in plan.timing_risks
+        ),
         "Closing is a dated requirements remainder, never an available-to-spend claim.",
     ]
     if snapshot.accepted is not None:
@@ -911,6 +1060,20 @@ def export_text(snapshot: Snapshot) -> str:
             )
     else:
         rows.append("Reported baseline only; no accepted planning assumptions.")
+    if plan.undated_impact is not None:
+        impact = plan.undated_impact
+        rows.extend(
+            [
+                f"Undated payment what-if: allowance {rupees(impact.outflow_paise)}; "
+                f"dated closing minus allowance {rupees(impact.closing_paise)} ({impact.status}).",
+                impact.qualification,
+                *(
+                    f"- {item.label} [{item.record_id}]: {rupees(item.amount_paise)} "
+                    f"({item.status}, {item.amount_basis}); {item.assumption}"
+                    for item in impact.items
+                ),
+            ]
+        )
     rows.append("Dated rows:")
     for event in plan.events:
         basis = (
@@ -929,8 +1092,12 @@ def export_text(snapshot: Snapshot) -> str:
             f"schedule index {event.schedule_index}; "
             f"required {rupees(event.required_paise)} ({event.required_status}) | "
             + (source_details(event.source) + " | " if event.source is not None else "")
-            + f"due {event.original_due_date} | "
-            f"{'included' if event.included else 'excluded/unknown'} | "
+            + (
+                f"estimated date: {event.date_assumption} | "
+                if event.date_assumption
+                else f"due {event.original_due_date} | "
+            )
+            + f"{'included' if event.included else 'excluded/unknown'} | "
             f"{'auto-debit' if event.auto_debit else 'reported schedule'} | "
             f"balance {rupees(event.balance_paise)}"
         )
@@ -944,7 +1111,14 @@ def export_text(snapshot: Snapshot) -> str:
             f"auto-debit {'yes' if record.auto_debit else 'no'}; "
             f"reliability {record.reliability or 'not applicable'}"
         )
-        if record.schedule.date is None:
+        if record.schedule.pattern is not None:
+            pattern = record.schedule.pattern
+            rows.append(
+                "Reported monthly pattern: "
+                + (f"day {pattern.day}" if pattern.kind == "dayOfMonth" else "month-end")
+                + "; next date unknown; calculated occurrences have estimated timing."
+            )
+        elif record.schedule.date is None:
             rows.append(
                 f"Unresolved date | {record.kind} | {record.label} [{record.id}] | "
                 f"{amount_details(record)} | excluded from dated projection pending its date"

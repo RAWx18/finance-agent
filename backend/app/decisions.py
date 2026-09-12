@@ -521,6 +521,18 @@ def assess(
         ]
         if not events:
             continue
+        if record.schedule.pattern is not None:
+            question(
+                f"{record.id}:monthlyPattern",
+                "schedule.pattern",
+                f"{record.label}: {events[0].date_assumption}. Revisit if actual timing differs.",
+                [record.id],
+                "The consumer reported a monthly pattern, not a confirmed next date. "
+                "Calculated dates are estimates, with no assumed arrears or assured receipt.",
+                day=events[0].date,
+                kind="uncertain",
+                ask=False,
+            )
         if record.schedule.recurrence == "monthlyBudget":
             question(
                 f"{record.id}:monthlyBudget",
@@ -561,6 +573,10 @@ def assess(
                 f"Will {record.label}, {rupees(selected.amount_paise)}, be available before "
                 f"the payment deadline {relevant_due or deadline}?"
                 if unknown
+                else f"{record.label}'s monthly pattern gives estimated timing, not assured "
+                f"income. Confirm actual receipt before committing payments on "
+                f"{relevant_due or events[0].date}; do not count it yet."
+                if record.schedule.pattern is not None
                 else f"{record.label} is explicitly uncertain. Confirm actual receipt before "
                 f"committing payments on {relevant_due or events[0].date}; do not count it yet."
             )
@@ -1048,9 +1064,7 @@ def assess(
         peak = impact.peak_gap_paise != plan.peak_gap_paise
         useful = (
             first
-            and not (
-                deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0
-            )
+            and not (deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0)
             if plan.first_gap
             else impact.reserve_shortfall_paise != plan.reserve_shortfall_paise
         )
@@ -1432,12 +1446,52 @@ def assess(
             "Other essential costs, required payments or committed spending are not yet "
             "confirmed, so affordability cannot be established from the reported amounts alone."
         )
+    elif any(event.date_assumption for event in plan.events):
+        summary = (
+            f"Reported amounts and estimated monthly timing leave {rupees(plan.closing_paise)} "
+            f"at period end, with a minimum balance of {rupees(plan.trough_paise)}. "
+            "Pattern-based receipts are excluded until confirmed."
+        )
     else:
         summary = (
             "For reported commitments, dated payments fit with a minimum cash cushion of "
             f"{rupees(plan.trough_paise)}; this is conditional on reported amounts and timing"
             + (" and excludes anything not yet reported." if scope else ".")
         )
+    undated = plan.undated_impact
+    if undated is not None:
+        if not plan.first_gap and not facts.decision.ambiguous_record_ids:
+            summary = (
+                f"The dated items leave {rupees(plan.closing_paise)} at the end of this period."
+                if plan.closing_paise is not None
+                else f"Known dated payments total {rupees(plan.outflow_paise)}; opening cash "
+                "is unknown."
+            )
+        if undated.outflow_paise:
+            summary += (
+                f" If the undated-payment allowance of {rupees(undated.outflow_paise)} falls "
+                f"within this period, the remainder would be {rupees(undated.closing_paise)}"
+                if undated.closing_paise is not None
+                else f" The separate undated-payment allowance is {rupees(undated.outflow_paise)}"
+            )
+            summary += (
+                f"; {rupees(-undated.closing_paise)} more would be needed."
+                if undated.closing_paise is not None and undated.closing_paise < 0
+                else "."
+            )
+        summary += (
+            " Timing is not known; this is a what-if, not proof payments can be made on time."
+        )
+        if any(
+            item.recurrence == "monthly" and item.amount_paise is not None for item in undated.items
+        ):
+            summary += " The allowance counts one monthly payment per item, not a maximum."
+        if undated.unknown_record_ids:
+            summary += (
+                " Some amounts or occurrence counts remain unknown and may increase the need."
+            )
+    if any(event.date_assumption for event in plan.events):
+        summary += " Monthly-pattern dates are estimates; timing remains unconfirmed."
     covered = (
         f"Reported opening cash is {rupees(facts.opening.amount_paise)}; payments and receipts "
         "have not been fully placed, so no available-to-spend amount is established."
@@ -1518,6 +1572,10 @@ def assess(
         conditions += " Reported estimates qualify the result; no error range is assumed."
     if not plan.budget_basis.dated_projection_complete:
         conditions += " Unresolved amounts or dates prevent any available-to-spend conclusion."
+    if undated is not None:
+        conditions += " " + undated.qualification
+    if any(event.date_assumption for event in plan.events):
+        conditions += " Monthly-pattern dates are calculated estimates, not confirmed due dates."
     if plan.income_comparisons:
         conditions += " Uncertain receipts are excluded; arrival comparisons are conditional."
     if any(issue.code == "monthlyBudget" for issue in plan.issues):

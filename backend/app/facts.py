@@ -110,8 +110,8 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                 edits.add((record_id, field))
         if change.schedule and "amounts" in change.schedule.model_fields_set:
             edits.add((record_id, "amount"))
-        if change.schedule and {"date", "certainty"} & change.schedule.model_fields_set:
-            if change.id is not None or change.schedule.date is not None:
+        if change.schedule and {"date", "certainty", "pattern"} & change.schedule.model_fields_set:
+            if change.id is not None or change.schedule.date is not None or change.schedule.pattern:
                 edits.add((record_id, "schedule.date"))
         if change.kind is not None and any(
             record.id == change.id and record.kind != change.kind for record in facts.records
@@ -201,6 +201,11 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             },
         )
         if "schedule" in values and isinstance(values["schedule"], dict):
+            if values["schedule"].get("pattern") is not None:
+                values["schedule"]["date"] = None
+                values["schedule"]["certainty"] = "unknown"
+            elif values["schedule"].get("date") is not None:
+                values["schedule"]["pattern"] = None
             if "amounts" in values["schedule"]:
                 if values["schedule"]["amounts"]:
                     for value in values["schedule"]["amounts"]:
@@ -388,6 +393,8 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             raise ValueError("Only records of the same kind can be merged")
         if source["schedule"]["recurrence"] != target["schedule"]["recurrence"]:
             raise ValueError("Clarify differing recurrence before merging")
+        if source["schedule"]["pattern"] != target["schedule"]["pattern"]:
+            raise ValueError("Clarify differing monthly patterns before merging")
         if (source["schedule"]["amounts"] or target["schedule"]["amounts"]) and any(
             item["amount"]["amount"] is not None
             or item["amount"].get("conversion") is not None
@@ -457,7 +464,9 @@ def set_conflict_value(
 ) -> None:
     if conflict.field == "schedule.date":
         records[conflict.record_id or ""]["schedule"].update(
-            date=value.date if value else None, certainty=value.status if value else "unknown"
+            date=value.date if value else None,
+            certainty=value.status if value else "unknown",
+            pattern=None,
         )
         return
     amount = value.amount_paise if value else None

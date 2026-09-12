@@ -274,7 +274,9 @@ def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list
     next_events: dict[str, Event] = {}
     for event in plan.events:
         if event.amount_basis != "budget":
-            next_events.setdefault(event.record_id, event)
+            selected = next_events.get(event.record_id)
+            if selected is None or selected.date < plan.evaluated_on <= event.date:
+                next_events[event.record_id] = event
     exposed = next(
         (
             event
@@ -350,12 +352,13 @@ def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list
                     state="conflicting"
                     if any(item.record_id == identity for item in facts.conflicts)
                     else "missing"
-                    if record.schedule.date is None
+                    if (record.schedule.date is None and record.schedule.pattern is None)
                     or "unknown" in amounts
                     else "uncertain"
                     if record.kind == "income" and record.reliability != "reliable"
                     else "estimated"
                     if record.schedule.recurrence == "monthlyBudget"
+                    or record.schedule.pattern is not None
                     or record.schedule.certainty == "estimate"
                     or "estimate" in amounts
                     else "known",
@@ -478,6 +481,8 @@ def evidence(
                 if event.amount_paise is None
                 else "conditionalReceipt"
                 if not event.included and event.kind == "income"
+                else "monthlyPattern"
+                if event.date_assumption is not None
                 else "monthlyBudget"
                 if event.amount_basis == "budget"
                 else "currencyConversion"
@@ -518,7 +523,9 @@ def evidence(
                     else record.amount.amount_paise,
                     date=record.schedule.date,
                     included=False,
-                    reason="unknownDate"
+                    reason="monthlyPatternOutsideWindow"
+                    if record.schedule.pattern is not None
+                    else "unknownDate"
                     if record.schedule.date is None
                     else "pastReceipt"
                     if record.schedule.date < snapshot.anchor_date and record.kind == "income"
@@ -541,6 +548,8 @@ def evidence(
         )
     if any(event.amount_basis == "budget" for event in plan.events):
         assumptions.append("monthlyBudgetEvenDailyForecastActualMonthLength")
+    if any(event.date_assumption for event in plan.events):
+        assumptions.append("reportedMonthlyPatternEstimatedDatesNoArrears")
     if any(event.source is not None for event in plan.events):
         assumptions.append("currencyConversionReportedRateAndFeeOnly")
     trough_date = (
@@ -659,6 +668,7 @@ def evidence(
             item.event_id is not None
             and (
                 events[item.event_id].amount_status == "estimate"
+                or events[item.event_id].date_assumption is not None
                 or records[events[item.event_id].record_id].schedule.certainty == "estimate"
             )
             for item in included
@@ -687,16 +697,20 @@ def evidence(
                     else " per occurrence"
                 )
             reason = excluded_reasons.get(item.id)
+            if occurrence and occurrence.date_assumption:
+                qualifications.append(f"{label}: {occurrence.date_assumption}.")
             if reason:
                 if (
-                    occurrence is not None and occurrence.amount_status == "estimate"
+                    occurrence is not None
+                    and occurrence.amount_status == "estimate"
                     or source is not None
                     and occurrence is None
                     and (
                         source.target
                         if source.target and source.target.amount_paise is not None
                         else source.amount
-                    ).status == "estimate"
+                    ).status
+                    == "estimate"
                 ):
                     amount_text += " (estimate)"
                 description = {
@@ -706,6 +720,7 @@ def evidence(
                     "conditionalReceipt": "receipt not assured",
                     "pastReceipt": "past receipt not confirmed in opening cash",
                     "approximateDateOutsideWindow": "approximate date outside this period",
+                    "monthlyPatternOutsideWindow": "monthly pattern has no occurrence in this period",
                     "outsideHorizon": "outside this period",
                     "afterResultPoint": "after this balance point",
                     "countedReliableIncome": "counted as reliable income instead",
@@ -792,6 +807,73 @@ def evidence(
                 until_date_exclusive=snapshot.end_date_exclusive,
             )
         )
+    if plan.undated_impact is not None:
+        impact = plan.undated_impact
+        for entry in impact.items:
+            contributions.append(
+                Contribution(
+                    id=f"{prefix}undated:{entry.record_id}",
+                    record_id=entry.record_id,
+                    event_id=None,
+                    amount_paise=entry.amount_paise,
+                    included=entry.amount_paise is not None,
+                    reason="undatedWhatIf"
+                    if entry.amount_paise is not None
+                    else "unknownOccurrenceAmount",
+                    references=[
+                        f"facts.records.{entry.record_id}",
+                        f"{projection_ref}.undatedImpact.items.{entry.record_id}",
+                    ],
+                )
+            )
+        for identity, amount, rule in (
+            ("undatedOutflow", impact.outflow_paise, "sumOneUndatedPaymentAllowancePerItem"),
+            ("undatedClosing", impact.closing_paise, "datedClosingMinusUndatedAllowance"),
+        ):
+            results.append(
+                WorkspaceResult(
+                    id=f"{prefix}{identity}",
+                    from_date=snapshot.anchor_date,
+                    until_date_exclusive=snapshot.end_date_exclusive,
+                    amount_paise=amount,
+                    state="missing"
+                    if amount is None
+                    else "uncertain"
+                    if impact.unknown_record_ids
+                    else "estimated",
+                    rule=rule,
+                    result_ids=[f"{prefix}closing"] if identity == "undatedClosing" else [],
+                    contribution_ids=[
+                        f"{prefix}undated:{item.record_id}"
+                        for item in impact.items
+                        if item.amount_paise is not None
+                    ],
+                    excluded_ids=[
+                        f"{prefix}undated:{item.record_id}"
+                        for item in impact.items
+                        if item.amount_paise is None
+                    ],
+                    excluded_reasons={
+                        f"{prefix}undated:{item.record_id}": "unknownOccurrenceAmount"
+                        for item in impact.items
+                        if item.amount_paise is None
+                    },
+                    qualifications=[impact.qualification]
+                    + [f"{item.label}: {item.assumption}" for item in impact.items],
+                    event_ids=[],
+                    record_ids=[item.record_id for item in impact.items],
+                    issue_ids=[
+                        item.id
+                        for item in plan.decision_assessment.uncertainties
+                        if any(
+                            identity in {entry.record_id for entry in impact.items}
+                            for identity in item.record_ids
+                        )
+                    ],
+                    dependencies=[f"{projection_ref}.undatedImpact"],
+                    assumptions=["undatedPaymentWhatIfNotAccepted", "noPaymentExecution"],
+                )
+            )
     for comparison in plan.income_comparisons:
         conditional_ids = {
             item.event_id for item in comparison.conditions if item.arrival == "reportedDate"
@@ -811,6 +893,7 @@ def evidence(
                     "events": branch,
                     "first_gap": comparison.metrics.first_gap,
                     "income_comparisons": [],
+                    "undated_impact": None,
                 }
             ),
             config,

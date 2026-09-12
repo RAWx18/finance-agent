@@ -76,16 +76,37 @@ class Money(Model):
         return self
 
 
+class MonthlyPattern(Model):
+    kind: Literal["dayOfMonth", "monthEnd"]
+    day: int | None = Field(default=None, ge=1, le=31, strict=True)
+
+    @model_validator(mode="after")
+    def validate_day(self) -> "MonthlyPattern":
+        if (self.kind == "dayOfMonth") != (self.day is not None):
+            raise ValueError("dayOfMonth requires day; monthEnd must not supply a day")
+        return self
+
+
 class Schedule(Model):
     end_date: date | None = None
     date: date | None
     recurrence: Recurrence = "once"
     certainty: Status = "exact"
+    pattern: MonthlyPattern | None = None
     count: int | None = Field(default=None, ge=1, le=1000, strict=True)
     amounts: list[MoneyInput] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
     def validate_certainty(self) -> "Schedule":
+        if self.pattern is not None and (
+            self.date is not None
+            or self.recurrence != "monthly"
+            or self.count is not None
+            or self.amounts
+        ):
+            raise ValueError(
+                "A monthly pattern requires date=null, monthly recurrence and no count/amounts"
+            )
         if self.date is None:
             self.certainty = "unknown"
         elif self.certainty == "unknown":
@@ -312,8 +333,23 @@ class SchedulePatch(Model):
     date: Annotated[date | None, Field(default=None)]
     recurrence: Recurrence | None = None
     certainty: Status | None = None
+    pattern: MonthlyPattern | None = None
     count: int | None = Field(default=None, ge=1, le=1000, strict=True)
     amounts: list[MoneyInput] = Field(default_factory=list, max_length=200)
+
+    @model_validator(mode="after")
+    def validate_pattern(self) -> "SchedulePatch":
+        if self.pattern is not None and (
+            self.date is not None
+            or self.recurrence not in {None, "monthly"}
+            or self.count is not None
+            or self.amounts
+            or self.certainty not in {None, "unknown"}
+        ):
+            raise ValueError(
+                "A monthly pattern cannot also supply a date, certainty or finite sequence"
+            )
+        return self
 
 
 class RecordPatch(Model):
@@ -505,6 +541,7 @@ class Event(Model):
     kind: Kind
     original_due_date: date
     date: date
+    date_assumption: str | None = None
     amount_paise: int | None
     amount_basis: Literal["reported", "requiredOnly", "assumed", "budget"] = "reported"
     amount_status: Status = "exact"
@@ -662,12 +699,34 @@ class IncomeComparison(Model):
     metrics: ProjectionMetrics
 
 
+class UndatedItem(Model):
+    record_id: str
+    label: str
+    amount_paise: int | None
+    status: Status
+    recurrence: Recurrence
+    amount_basis: Literal["reported", "requiredOnly"]
+    required_paise: int | None = None
+    target_paise: int | None = None
+    assumption: str
+
+
+class UndatedImpact(Model):
+    items: list[UndatedItem]
+    outflow_paise: int
+    closing_paise: int | None
+    status: Literal["estimate", "unknown"]
+    unknown_record_ids: list[str]
+    qualification: str
+
+
 class Plan(ProjectionMetrics):
     evaluated_on: date
     projection_partial: bool
     events: list[Event]
     issues: list[Issue]
     budget_basis: BudgetBasis
+    undated_impact: UndatedImpact | None = None
     decision_assessment: DecisionAssessment = Field(default_factory=DecisionAssessment)
     income_comparisons: list[IncomeComparison] = Field(default_factory=list)
 

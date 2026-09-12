@@ -5,6 +5,7 @@ from datetime import date, timedelta
 
 import pytest
 
+from app.finance import export_text
 from app.voice_tools import canonical
 from app.workspace import project as workspace
 
@@ -27,7 +28,9 @@ def test_same_day_risk_keeps_conservative_money_and_explains_remaining_gap(
             "0",
             [
                 record("salary", "income", salary, "2026-09-14", label="Salary"),
-                record("rent", "essential", "6000", "2026-09-14", label="Rent", autoDebit=automatic),
+                record(
+                    "rent", "essential", "6000", "2026-09-14", label="Rent", autoDebit=automatic
+                ),
             ],
         )
     )
@@ -139,15 +142,15 @@ async def test_named_undated_exclusion_is_replaced_by_real_dated_gap(store):
     )
     assert baseline.plan.closing_paise == 900000 and baseline.plan.first_gap is None
     closing = result(baseline, "closing")
-    assert closing.qualifications == [
-        "Excludes Rent and utilities (INR 33000.00): date unknown."
-    ]
+    assert closing.qualifications == ["Excludes Rent and utilities (INR 33000.00): date unknown."]
     assert closing.model_dump(by_alias=True)["qualifications"] == closing.qualifications
+    assert closing.qualifications[0] in export_text(baseline)
     assert result(baseline, "opening").qualifications == []
     assert "INR 9000.00" in baseline.plan.decision_assessment.outcome.summary
     assert next_action(baseline.plan).id == "clarify:rent:schedule.date"
     dated = await store.command(
-        "owner", update(baseline.revision, records=[{"id": "rent", "schedule": {"date": "2026-09-14"}}])
+        "owner",
+        update(baseline.revision, records=[{"id": "rent", "schedule": {"date": "2026-09-14"}}]),
     )
     assert dated.plan.first_gap.date == date(2026, 9, 14)
     assert dated.plan.first_gap.amount_paise == 2400000
@@ -308,7 +311,8 @@ async def test_qualifications_keep_minimum_estimate_and_result_sources_separate(
     assert closing.amount_paise == 1050000
     assert closing.state == "estimated"
     assert closing.qualifications == [
-        "Includes only Card's required/minimum payment (INR 500.00); intended payment amount unknown.",
+        "Includes only Card's required/minimum payment (INR 500.00); "
+        "intended payment amount unknown.",
         "Uses estimated Food (INR 1000.00).",
         "Excludes Rent and utilities (INR 33000.00): date unknown.",
     ]
@@ -396,3 +400,34 @@ async def test_exposed_recurrence_shows_its_actual_occurrence_not_first_funded_o
     assert occurrence.schedule_index == 1 and occurrence.amount_paise == 100000
     assert occurrence.original_due_date == date(2026, 9, 19)
     assert workspace(snapshot, store.config) == snapshot.workspace
+
+
+async def test_funded_recurring_card_moves_to_today_without_claiming_earlier_payment(store):
+    await store.create("owner")
+    snapshot = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "10000",
+                [
+                    record(
+                        "food",
+                        "essential",
+                        "100",
+                        "2026-09-11",
+                        schedule={"date": "2026-09-11", "recurrence": "daily"},
+                    )
+                ],
+            )
+        ),
+    )
+    before = snapshot.plan.model_dump()
+    snapshot.plan.evaluated_on = date(2026, 9, 12)
+    projected = workspace(snapshot, store.config)
+    timeline = next(card for card in projected.cards if card.id == "timeline")
+    assert timeline.event_ids == ["food:2026-09-12"]
+    assert snapshot.plan.events[0].date == date(2026, 9, 11)
+    assert snapshot.plan.closing_paise == before["closing_paise"]
+    assert snapshot.plan.model_dump(exclude={"evaluated_on"}) == {
+        key: value for key, value in before.items() if key != "evaluated_on"
+    }
