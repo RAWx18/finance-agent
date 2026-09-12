@@ -10,6 +10,7 @@ import { chromium, expect } from '@playwright/test';
 const { values } = parseArgs({ options: {
   'allow-billable': { type: 'boolean' },
   audio: { type: 'string' },
+  'synthetic-login': { type: 'boolean' },
   url: { type: 'string', default: 'http://localhost:8000' },
 } });
 assert.equal(values['allow-billable'], true, 'Explicit --allow-billable is required.');
@@ -24,6 +25,7 @@ const browser = await chromium.launch({ headless: true, args: [
   '--autoplay-policy=no-user-gesture-required',
 ] });
 const context = await browser.newContext({ baseURL: origin, permissions: ['microphone'], serviceWorkers: 'block' });
+await context.setExtraHTTPHeaders({ Origin: origin });
 const page = await context.newPage();
 page.setDefaultTimeout(60000);
 let stage = 'startup';
@@ -60,15 +62,21 @@ try {
       return stream;
     };
   });
+  if (values['synthetic-login']) {
+    await page.goto('/login');
+    await page.getByRole('button', { name: 'Continue with Google', exact: true }).click();
+    await expect(page).toHaveURL(`${origin}/app`);
+    console.log(JSON.stringify({ check: 'login', mode: 'testOnlyGoogleIdentity', passed: true }));
+  }
   const settings = await context.request.get('/api/settings');
   assert.equal(settings.status(), 200);
   assert.equal((await settings.json()).voiceAvailable, true);
   assert.equal((await context.request.get('/api/session')).status(), 404);
-  await page.goto('/');
+  await page.goto('/app');
   await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
   stage = 'connect';
   session = true;
-  await page.getByRole('button', { name: 'Connect microphone', exact: true }).click();
+  await page.getByRole('button', { name: 'Start talking', exact: true }).click();
   await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'active', { timeout: 60000 });
   console.log(JSON.stringify({ check: 'daily_browser_ready', passed: true }));
   stage = 'remoteAudio';
@@ -113,7 +121,7 @@ try {
   assert.ok(stats.some(report => report.type === 'inbound-rtp' && report.bytes > 0), 'No inbound audio bytes.');
   assert.ok(stats.some(report => report.type === 'outbound-rtp' && report.bytes > 0), 'No outbound audio bytes.');
   console.log(JSON.stringify({ check: 'daily_webrtc_media', passed: true, streams: stats }));
-  const words = await page.getByRole('list', { name: 'Conversation transcript', exact: true }).innerText();
+  const words = await page.locator('.captions').innerText();
   assert.ok(words.includes('Assistant') && words.includes('You'), 'Actual speech captions missing.');
   stage = 'end';
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
