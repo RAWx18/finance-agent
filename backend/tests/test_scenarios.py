@@ -23,6 +23,7 @@ from .test_finance import scenario_two
 
 
 def operation(kind, revision=1, **values):
+    """Build a scenario command with a fresh ID and default unconditional acceptance consent."""
     if kind == "acceptPreview":
         values = {"confirmed": True, "consentScope": "unconditional", **values}
     return {
@@ -33,12 +34,14 @@ def operation(kind, revision=1, **values):
 
 
 def submit(client, kind, revision=1, **values):
+    """Submit a scenario operation and return its JSON after asserting success."""
     response = client.post("/api/session/commands", json=operation(kind, revision, **values))
     assert response.status_code == 200, response.text
     return response.json()
 
 
 def initialize(client, data=None):
+    """Create a session and populate it with supplied facts or the default scenario."""
     client.post("/api/session", json={})
     response = client.post("/api/session/commands", json=command(data or scenario_two()))
     assert response.status_code == 200
@@ -46,6 +49,7 @@ def initialize(client, data=None):
 
 
 def test_options_are_read_only_baseline_owned_and_schema_is_additive(client):
+    """Verify options preserve baseline state and expose the expected command and plan schemas."""
     assert client.get("/api/session/options").status_code == 404
     baseline = initialize(client)
     assert baseline["preview"] is baseline["accepted"] is None
@@ -87,6 +91,7 @@ def test_options_are_read_only_baseline_owned_and_schema_is_additive(client):
 
 
 def test_preview_accept_clear_keep_reported_baseline_and_frozen_basis(client):
+    """Verify preview, acceptance, and clearing preserve reported facts and their fixed basis."""
     baseline = initialize(client)
     preview = submit(client, "previewAdjustments", adjustments=[adjustment()])
     assert (preview["revision"], preview["sequence"]) == (1, 2)
@@ -113,6 +118,7 @@ def test_preview_accept_clear_keep_reported_baseline_and_frozen_basis(client):
 
 
 def test_replacement_never_stacks_and_discard_preserves_acceptance(client):
+    """Verify replacement previews use the baseline and discarding preserves acceptance."""
     initialize(client)
     preview = submit(client, "previewAdjustments", adjustments=[adjustment()])
     accepted = submit(client, "acceptPreview", previewId=preview["preview"]["id"])
@@ -138,6 +144,7 @@ def test_replacement_never_stacks_and_discard_preserves_acceptance(client):
 
 
 def test_corrections_invalidate_both_scenarios_and_retries_do_not_restore_them(client):
+    """Verify corrections clear scenarios and receipt replay leaves current state untouched."""
     initialize(client)
     preview_command = operation("previewAdjustments", adjustments=[adjustment()])
     preview = client.post("/api/session/commands", json=preview_command).json()
@@ -163,6 +170,7 @@ def test_corrections_invalidate_both_scenarios_and_retries_do_not_restore_them(c
 
 
 def test_cross_owner_and_unknown_preview_ids_cannot_be_accepted(client):
+    """Verify another owner's preview and unknown preview IDs cannot alter the current session."""
     initialize(client)
     preview = submit(client, "previewAdjustments", adjustments=[adjustment()])
     client.cookies.clear()
@@ -193,6 +201,7 @@ def test_cross_owner_and_unknown_preview_ids_cannot_be_accepted(client):
     ],
 )
 def test_invalid_api_adjustments_are_atomic(client, inputs):
+    """Verify invalid adjustment requests fail validation without changing the baseline snapshot."""
     baseline = initialize(client)
     response = client.post(
         "/api/session/commands", json=operation("previewAdjustments", adjustments=inputs)
@@ -202,6 +211,7 @@ def test_invalid_api_adjustments_are_atomic(client, inputs):
 
 
 def test_day_rollover_rejects_acceptance_without_expiring_the_cash_basis(tmp_path, config):
+    """Verify rollover blocks retrospective acceptance without refreshing the cash basis."""
     now = [NOW]
     with TestClient(
         auth_app(config, Environment(data_dir=tmp_path), lambda: now[0]), base_url=ORIGIN
@@ -237,6 +247,7 @@ def test_day_rollover_rejects_acceptance_without_expiring_the_cash_basis(tmp_pat
 
 
 def test_saved_outcomes_and_idempotency_survive_restart(tmp_path, config):
+    """Verify accepted assumptions, pending previews, and idempotent receipts survive restart."""
     environment = Environment(data_dir=tmp_path)
     application = auth_app(config, environment, lambda: NOW)
     with TestClient(application, base_url=ORIGIN) as client:
@@ -260,6 +271,7 @@ def test_saved_outcomes_and_idempotency_survive_restart(tmp_path, config):
 
 
 def test_export_only_accepted_assumptions_and_original_details(client):
+    """Verify exports show only accepted assumptions with original amounts and qualifications."""
     data = scenario_two()
     data["records"][4]["amount"] = money("500")
     data["records"][4]["target"] = money("2000")
@@ -309,6 +321,7 @@ def test_export_only_accepted_assumptions_and_original_details(client):
     "kind", ["previewAdjustments", "acceptPreview", "discardPreview", "clearAccepted"]
 )
 async def test_scenario_transactions_rollback_and_do_not_publish(store, kind):
+    """Verify failed scenarios roll back without publishing and allow idempotent retry."""
     owner = owner_hash("scenario")
     await store.create(owner)
     await store.command(owner, parsed_command(scenario_two()))
@@ -351,6 +364,7 @@ async def test_scenario_transactions_rollback_and_do_not_publish(store, kind):
 
 @pytest.mark.parametrize("action", ["delete", "expire"])
 async def test_scenarios_expire_and_delete_with_session_and_command_results(store, action):
+    """Verify session deletion or expiry removes scenarios and their saved command results."""
     owner = owner_hash("retention")
     await store.create(owner)
     await store.command(owner, parsed_command(scenario_two()))
@@ -379,6 +393,7 @@ async def test_scenarios_expire_and_delete_with_session_and_command_results(stor
 
 
 async def test_retained_baseline_derived_fields_are_canonical_on_read_without_writes(store):
+    """Verify reads reconstruct canonical derived fields without rewriting the retained snapshot."""
     owner = owner_hash("retained")
     await store.create(owner)
     expected = await store.command(owner, parsed_command(scenario_two()))
@@ -400,6 +415,7 @@ async def test_retained_baseline_derived_fields_are_canonical_on_read_without_wr
 
 
 async def test_concurrent_acceptance_is_serialized_and_replay_never_publishes(store):
+    """Verify concurrent acceptance has one winner and historical preview replay never publishes."""
     owner = owner_hash("concurrent")
     await store.create(owner)
     await store.command(owner, parsed_command(scenario_two()))
@@ -423,6 +439,7 @@ async def test_concurrent_acceptance_is_serialized_and_replay_never_publishes(st
 
 
 async def test_preview_caps_retries_and_options_do_not_consume_commands(store):
+    """Verify preview retries and option reads do not consume capacity for distinct commands."""
     owner = owner_hash("caps")
     await store.create(owner)
     await store.command(owner, parsed_command(scenario_two()))
@@ -441,11 +458,13 @@ async def test_preview_caps_retries_and_options_do_not_consume_commands(store):
 
 
 async def test_options_wait_for_the_serialized_boundary(store):
+    """Verify option reads wait for the store lock before returning a revision."""
     owner = owner_hash("options-lock")
     await store.create(owner)
     started = asyncio.Event()
 
     async def read_options():
+        """Signal that the option read has started before waiting for the store lock."""
         started.set()
         return await store.options(owner)
 
@@ -457,6 +476,7 @@ async def test_options_wait_for_the_serialized_boundary(store):
 
 
 async def test_acceptance_rejects_mismatched_source_revision(store):
+    """Verify accepting a preview with a mismatched source revision fails without changing state."""
     owner = owner_hash("source")
     await store.create(owner)
     await store.command(owner, parsed_command(scenario_two()))
@@ -480,6 +500,7 @@ async def test_acceptance_rejects_mismatched_source_revision(store):
 
 
 def test_card_api_acceptance_preserves_minimum_outstanding_and_reserve(client):
+    """Verify card acceptance preserves debt facts and computes the remaining reserve gap."""
     baseline = initialize(
         client,
         facts(
@@ -517,6 +538,7 @@ def test_card_api_acceptance_preserves_minimum_outstanding_and_reserve(client):
 
 
 async def test_cancelled_preview_does_not_save_or_publish(store, monkeypatch):
+    """Verify cancellation rolls back a preview without publishing and permits a later retry."""
     owner = owner_hash("cancel")
     await store.create(owner)
     baseline = await store.command(owner, parsed_command(scenario_two()))
@@ -526,10 +548,12 @@ async def test_cancelled_preview_does_not_save_or_publish(store, monkeypatch):
     execute = db.execute
 
     def cancel(sql, parameters=None):
+        """Wrap session updates to inject cancellation after the database write."""
         result = execute(sql, parameters)
         if sql.startswith("UPDATE sessions"):
 
             async def interrupt():
+                """Complete the session update and cancel before the transaction can commit."""
                 await result
                 raise asyncio.CancelledError
 

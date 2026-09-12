@@ -18,10 +18,12 @@ from .test_finance import ANCHOR, project, scenario_two
 
 
 def adjustment(event_id="optional:2026-09-27", amount="0"):
+    """Build an occurrence-specific adjustment input with an exact decimal amount."""
     return {"eventId": event_id, "amount": amount}
 
 
 def adjusted(data, inputs, config=None, today=ANCHOR):
+    """Normalize facts, resolve eligible adjustments, and calculate the resulting plan."""
     config = config or load_config()
     normalized = normalize(FactsInput.model_validate(data), config)
     baseline = calculate(normalized, ANCHOR, config)
@@ -39,6 +41,7 @@ def adjusted(data, inputs, config=None, today=ANCHOR):
 
 
 def options(data, today=ANCHOR):
+    """Derive eligible adjustment options for the fixed projection horizon and current date."""
     config = load_config()
     normalized = normalize(FactsInput.model_validate(data), config)
     return adjustment_options(
@@ -51,6 +54,7 @@ def options(data, today=ANCHOR):
 
 
 def test_late_reduction_preserves_early_gap_and_facts():
+    """Verify a late spending cut improves closing cash without erasing the earlier gap."""
     data = scenario_two()
     baseline = project(data)
     result = adjusted(data, [adjustment()])
@@ -66,6 +70,7 @@ def test_late_reduction_preserves_early_gap_and_facts():
 
 
 def test_weekly_occurrences_are_independent_and_multiple_selections_are_explicit():
+    """Verify weekly spending cuts affect only explicitly selected occurrences."""
     data = facts(
         "1000",
         [
@@ -95,6 +100,7 @@ def test_weekly_occurrences_are_independent_and_multiple_selections_are_explicit
 
 @pytest.mark.parametrize("amount", ["499.99", "2000", "2000.01", "10000000001"])
 def test_card_invalid_minimum_noop_and_limits(amount):
+    """Verify card adjustments reject below-minimum, unchanged, and excessive amounts."""
     data = facts(
         "100",
         [record("card", "debt", "500", "2026-09-12", debtType="card", target=money("2000"))],
@@ -104,6 +110,7 @@ def test_card_invalid_minimum_noop_and_limits(amount):
 
 
 def test_card_minimum_and_outstanding_are_not_rewritten():
+    """Verify a minimum-payment scenario preserves card facts and warns about residual costs."""
     data = facts(
         "1000",
         [
@@ -190,6 +197,7 @@ def test_card_minimum_and_outstanding_are_not_rewritten():
     ],
 )
 def test_ineligible_occurrences_cannot_be_overridden(item):
+    """Verify unsupported, uncertain, automatic, or out-of-window dues cannot be adjusted."""
     data = facts("1000", [item])
     assert options(data) == []
     with pytest.raises(ValueError, match="not eligible"):
@@ -198,12 +206,14 @@ def test_ineligible_occurrences_cannot_be_overridden(item):
 
 @pytest.mark.parametrize("amount", [0, 1.25, "1.001", "-1", "1e2", "01", ".5", "NaN"])
 def test_adjustment_money_is_exact_decimal_string(amount):
+    """Verify adjustment amounts reject non-string and noncanonical decimal values."""
     with pytest.raises(ValidationError):
         AdjustmentInput.model_validate(adjustment(amount=amount))
 
 
 @pytest.mark.parametrize("confirmed", [False, "true", 1, None])
 def test_acceptance_requires_strict_explicit_consent(confirmed):
+    """Verify preview acceptance requires a literal true consent value."""
     with pytest.raises(ValidationError):
         AcceptPreview.model_validate(
             {
@@ -219,11 +229,13 @@ def test_acceptance_requires_strict_explicit_consent(confirmed):
     "inputs", [[], [adjustment(), adjustment()], [adjustment(amount="2000")], [adjustment("bad")]]
 )
 def test_empty_duplicate_noop_and_unknown_inputs(inputs):
+    """Verify adjustment resolution rejects empty, duplicate, unchanged, and unknown inputs."""
     with pytest.raises(ValueError):
         adjusted(scenario_two(), inputs)
 
 
 def test_adjustment_count_and_current_date_eligibility(config):
+    """Verify adjustment count limits and exclusion of occurrences before the current date."""
     inputs = [
         AdjustmentInput.model_validate(adjustment()),
         AdjustmentInput.model_validate(adjustment("x")),
@@ -234,6 +246,7 @@ def test_adjustment_count_and_current_date_eligibility(config):
 
 
 def test_calculation_requires_matching_recorded_occurrences(config):
+    """Verify calculation rejects duplicate or tampered resolved occurrence adjustments."""
     data = scenario_two()
     normalized = normalize(FactsInput.model_validate(data), config)
     resolved = resolve_adjustments(
@@ -249,6 +262,7 @@ def test_calculation_requires_matching_recorded_occurrences(config):
 
 
 def test_partial_estimates_and_uncertain_income_survive_reductions():
+    """Verify reductions retain uncertainty, incomplete coverage, and the earliest gap."""
     data = scenario_two()
     data["records"][1]["controllability"] = "committed"
     data["coverage"]["debt"] = "notDiscussed"
@@ -264,6 +278,7 @@ def test_partial_estimates_and_uncertain_income_survive_reductions():
 
 
 def test_consequences_group_competing_obligations_without_id_ranking():
+    """Verify same-day obligations share gap consequences independently of record IDs."""
     items = [
         record("a", "debt", "400", "2026-09-15", autoDebit=True),
         record("z", "essential", "300", "2026-09-15"),
@@ -280,6 +295,7 @@ def test_consequences_group_competing_obligations_without_id_ranking():
 
 
 def test_decision_clarifies_missing_cash_and_peak_uses_earliest_tie():
+    """Verify missing cash prompts clarification and tied peak gaps use the earliest date."""
     data = facts("0")
     data["opening"] = money(None, "unknown")
     assert project(data).decision_assessment.next_question_id == "opening"
@@ -299,6 +315,7 @@ def test_decision_clarifies_missing_cash_and_peak_uses_earliest_tie():
 
 @given(st.integers(0, 199999))
 def test_reductions_are_monotone_and_do_not_rewrite_earlier_balances(amount):
+    """Verify reductions improve closing cash without worsening gaps or earlier balances."""
     data = scenario_two()
     before = project(data)
     after = adjusted(data, [adjustment(amount=f"{amount // 100}.{amount % 100:02}")])
@@ -310,6 +327,7 @@ def test_reductions_are_monotone_and_do_not_rewrite_earlier_balances(amount):
 
 @given(st.integers(0, 9999), st.integers(0, 20000))
 def test_early_reduction_never_worsens_trajectory(amount, opening):
+    """Verify early spending cuts never lower event balances or increase funding shortfalls."""
     data = facts(
         f"{opening // 100}.{opening % 100:02}",
         [

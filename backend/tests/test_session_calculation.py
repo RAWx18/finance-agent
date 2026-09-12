@@ -12,6 +12,7 @@ from .conftest import NOW, facts, parsed_command, record
 
 
 async def test_fresh_session_calculates_and_round_trips_unknown_opening(store, config):
+    """Verify fresh sessions round-trip unknown balances and the opening question."""
     snapshot = await store.create("synthetic")
 
     assert snapshot.revision == snapshot.sequence == 0
@@ -28,6 +29,7 @@ async def test_fresh_session_calculates_and_round_trips_unknown_opening(store, c
 
 @pytest.mark.parametrize("arrival", ["2026-09-12", "2026-09-15"])
 def test_receipt_impact_only_prioritizes_income_before_the_exposed_due(config, arrival):
+    """Verify receipt questions take priority only when income can precede the exposed payment."""
     data = facts(
         "100",
         [
@@ -62,6 +64,7 @@ def test_receipt_impact_only_prioritizes_income_before_the_exposed_due(config, a
 
 
 async def test_session_rollover_uses_today_without_rewriting_dated_balances(store, config):
+    """Verify rollover refreshes actions and overdue wording without rewriting balances."""
     await store.create("synthetic")
     saved = await store.command(
         "synthetic",

@@ -19,11 +19,13 @@ ANCHOR = date(2026, 9, 11)
 
 
 def project(data, anchor=ANCHOR, config=None):
+    """Validate and normalize input facts, then calculate a plan at the supplied anchor."""
     config = config or load_config()
     return calculate(normalize(FactsInput.model_validate(data), config), anchor, config)
 
 
 def scenario_two():
+    """Build a scenario with early obligations and later salary, card, and optional payments."""
     return facts(
         "5000",
         [
@@ -38,6 +40,7 @@ def scenario_two():
 
 
 def test_golden_covered():
+    """Verify a fully funded reference scenario has the expected closing balance and cash trough."""
     plan = project(
         facts(
             "12000",
@@ -56,6 +59,7 @@ def test_golden_covered():
 
 
 def test_early_gap_survives_later_correction_and_deletion():
+    """Verify later income corrections and optional deletion cannot erase earlier funding gaps."""
     data = scenario_two()
     plan = project(data)
     assert plan.closing_paise == 1000000
@@ -78,6 +82,7 @@ def test_early_gap_survives_later_correction_and_deletion():
 
 
 def test_removing_optional_is_not_a_complete_solution():
+    """Verify removing optional spending leaves the remaining required-payment shortfall intact."""
     records = [
         record("salary", "income", "8000", "2026-09-12"),
         record("food", "essential", "7000", "2026-09-13"),
@@ -89,6 +94,7 @@ def test_removing_optional_is_not_a_complete_solution():
 
 
 def test_no_allocation_or_partial_payment_claim():
+    """Verify projections retain full payments without allocations and flag exposed auto-debits."""
     data = facts(
         "1000",
         [
@@ -108,6 +114,7 @@ def test_no_allocation_or_partial_payment_claim():
 
 
 def test_same_day_conservative_order():
+    """Verify same-day outflows precede income and expose a qualified timing gap."""
     plan = project(
         facts(
             "0",
@@ -124,6 +131,7 @@ def test_same_day_conservative_order():
 
 
 def test_full_card_target_includes_minimum_and_leaves_outstanding():
+    """Verify card targets include the minimum, preserve debt balance, and cannot fall below minimum."""
     data = facts(
         "12000",
         [
@@ -150,6 +158,7 @@ def test_full_card_target_includes_minimum_and_leaves_outstanding():
 
 @pytest.mark.parametrize("field", ["opening", "amount", "date"])
 def test_unknowns_are_not_zero(field):
+    """Verify unknown cash, amounts, and dates leave projections partial rather than implying zero."""
     data = facts("500", [record("rent", "essential", "200", "2026-09-12")])
     if field == "opening":
         data["opening"] = money(None, "unknown")
@@ -168,6 +177,7 @@ def test_unknowns_are_not_zero(field):
 
 
 def test_uncertain_estimated_and_incomplete_coverage():
+    """Verify uncertain income is excluded and estimates or missing coverage qualify projections."""
     data = facts("0", [record("maybe", "income", "1000", "2026-09-12", reliability="uncertain")])
     plan = project(data)
     assert plan.reliable_income_paise == 0 and plan.uncertain_income_paise == 100000
@@ -179,6 +189,7 @@ def test_uncertain_estimated_and_incomplete_coverage():
 
 
 def test_horizon_overdue_and_past_income():
+    """Verify horizon boundaries, overdue outflow carry-forward, and exclusion of past income."""
     data = facts(
         "100",
         [
@@ -202,6 +213,7 @@ def test_horizon_overdue_and_past_income():
     ("recurrence", "count"), [("weekly", 5), ("fortnightly", 3), ("monthly", 1)]
 )
 def test_explicit_recurrence(recurrence, count):
+    """Verify explicit recurrence produces the expected occurrence count and total outflow."""
     plan = project(
         facts(
             "100",
@@ -220,6 +232,7 @@ def test_explicit_recurrence(recurrence, count):
 
 
 def test_missing_month_day_and_overdue_recurrence_are_not_guessed():
+    """Verify missing month days and overdue recurrence remain unresolved instead of guessed."""
     data = facts(
         "1000",
         [
@@ -240,6 +253,7 @@ def test_missing_month_day_and_overdue_recurrence_are_not_guessed():
 
 
 def test_reserve_is_floor_not_expense():
+    """Verify a reserve creates a cash-floor shortfall without becoming an expense."""
     plan = project(facts("100", reserve="200"))
     assert plan.closing_paise == 10000 and plan.outflow_paise == 0
     assert plan.peak_gap_paise == 0 and plan.reserve_shortfall_paise == 10000
@@ -249,17 +263,20 @@ def test_reserve_is_floor_not_expense():
     "amount", [1, 1.25, "-1", "1.001", "1e3", "01", "1,000", "NaN", " 2", "2.", ".5"]
 )
 def test_money_rejects_ambiguous_or_inexact_input(amount):
+    """Verify monetary input rejects ambiguous formatting, negative values, and excess precision."""
     with pytest.raises(ValidationError):
         project(facts(amount))
 
 
 @given(st.integers(min_value=0, max_value=10000000), st.integers(min_value=0, max_value=99))
 def test_decimal_precision_is_exact(whole, fractional):
+    """Verify decimal monetary strings convert to exact integer paise."""
     assert project(facts(f"{whole}.{fractional:02}")).closing_paise == whole * 100 + fractional
 
 
 @given(st.integers(min_value=0, max_value=50000))
 def test_late_edit_cannot_change_earlier_balances(amount):
+    """Verify changing the final optional amount leaves every earlier event unchanged."""
     data = scenario_two()
     before = project(data)
     changed = deepcopy(data)
@@ -269,6 +286,7 @@ def test_late_edit_cannot_change_earlier_balances(amount):
 
 
 def test_limits_duplicates_and_coverage_validation(config):
+    """Verify amount, record, occurrence, identifier, and coverage constraints are enforced."""
     with pytest.raises(ValueError, match="per-amount"):
         project(facts("10000000001"))
     data = facts("100", [record("a", "debt", "1", "2026-09-12")])
@@ -299,5 +317,6 @@ def test_limits_duplicates_and_coverage_validation(config):
     ],
 )
 def test_invalid_semantic_input(data):
+    """Verify contradictory money states, invalid category fields, and unsafe labels are rejected."""
     with pytest.raises(ValidationError):
         project(data)

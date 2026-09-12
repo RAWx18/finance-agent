@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class AuthConfig(BaseModel):
+    """Authentication lifetimes, provider limits, and abuse-prevention bounds."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     session_hours: int = Field(ge=1, le=168)
@@ -43,12 +45,15 @@ class AuthConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_idle(self) -> "AuthConfig":
+        """Require idle expiry to fit within the absolute session lifetime."""
         if self.idle_hours > self.session_hours:
             raise ValueError("Idle lifetime cannot exceed the absolute session lifetime")
         return self
 
 
 class VoiceConfig(BaseModel):
+    """Conversation, speech recognition, synthesis, and voice lifecycle settings."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     assistant_name: str = Field(min_length=1, max_length=60)
@@ -86,6 +91,7 @@ class VoiceConfig(BaseModel):
     @field_validator("assistant_name", "introduction", "language", "tone")
     @classmethod
     def validate_words(cls, value: str) -> str:
+        """Validate and trim nonempty conversation text without control characters."""
         if not value.strip() or re.search(r"[\x00-\x1f\x7f]", value):
             raise ValueError("Conversation text must be nonempty and contain no control characters")
         return value.strip()
@@ -93,6 +99,7 @@ class VoiceConfig(BaseModel):
     @field_validator("introduction")
     @classmethod
     def validate_introduction(cls, value: str) -> str:
+        """Restrict introduction placeholders to assistant name and planning horizon."""
         for _, field, spec, conversion in Formatter().parse(value):
             if field is not None and (
                 field not in {"assistant_name", "horizon_days"} or spec or conversion
@@ -102,6 +109,8 @@ class VoiceConfig(BaseModel):
 
 
 class HistoryConfig(BaseModel):
+    """Conversation history storage and search limits."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_conversations: int = Field(default=200, ge=1, le=1000)
@@ -111,6 +120,8 @@ class HistoryConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
+    """Conversational note size, count, and user-context retention limits."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     max_notes: int = Field(ge=1, le=20)
@@ -119,6 +130,8 @@ class MemoryConfig(BaseModel):
 
 
 class Config(BaseModel):
+    """Application behavior, financial bounds, and service configuration."""
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     currency: Literal["INR"]
@@ -145,12 +158,15 @@ class Config(BaseModel):
 
     @model_validator(mode="after")
     def validate_limits(self) -> "Config":
+        """Require the aggregate money limit to cover individual amounts."""
         if self.max_total_paise < self.max_money_paise:
             raise ValueError("Aggregate money limit must cover the per-amount limit")
         return self
 
 
 class Environment(BaseModel):
+    """Deployment environment, storage location, and provider credentials."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     app_env: Literal["local", "staging"] = "local"
@@ -170,6 +186,7 @@ class Environment(BaseModel):
     @field_validator("auth_encryption_key")
     @classmethod
     def validate_auth_key(cls, value: SecretStr | None) -> SecretStr | None:
+        """Validate a supplied authentication encryption key or treat blanks as absent."""
         if value is None or not value.get_secret_value().strip():
             return None
         try:
@@ -182,6 +199,7 @@ class Environment(BaseModel):
 
     @property
     def google_available(self) -> bool:
+        """Check whether Google sign-in credentials are complete."""
         return bool(
             self.google_client_id
             and self.google_client_secret
@@ -192,6 +210,7 @@ class Environment(BaseModel):
     @field_validator("azure_openai_endpoint")
     @classmethod
     def validate_azure_endpoint(cls, value: str) -> str:
+        """Validate and normalize an Azure OpenAI resource endpoint."""
         if not value:
             return value
         endpoint = re.fullmatch(
@@ -208,6 +227,7 @@ class Environment(BaseModel):
         return f"https://{endpoint['host']}/openai/v1/"
 
     def missing_azure_openai(self) -> list[str]:
+        """Identify missing Azure OpenAI credentials and endpoint configuration."""
         missing = []
         if (
             not self.azure_openai_api_key
@@ -220,6 +240,7 @@ class Environment(BaseModel):
 
     @model_validator(mode="after")
     def validate_origin(self) -> "Environment":
+        """Validate and normalize the public origin under deployment security rules."""
         origin = urlsplit(self.public_origin)
         if (
             origin.scheme not in {"http", "https"}
@@ -252,6 +273,7 @@ class Environment(BaseModel):
 
     @classmethod
     def load(cls) -> "Environment":
+        """Load deployment settings and credentials from supported environment values."""
         return cls.model_validate(
             {
                 name.lower(): os.environ[name]
@@ -274,5 +296,6 @@ class Environment(BaseModel):
 
 
 def load_config(path: Path = ROOT / "config.toml") -> Config:
+    """Load and validate application behavior from a TOML configuration file."""
     with path.open("rb") as file:
         return Config.model_validate(tomllib.load(file))

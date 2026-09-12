@@ -7,6 +7,7 @@ from .conftest import facts, money, parsed_command, record
 
 
 async def test_change_references_cover_fact_and_dependent_cards_without_rekeying(store):
+    """Verify salary corrections reference dependent cards without changing card identities."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -48,6 +49,7 @@ async def test_change_references_cover_fact_and_dependent_cards_without_rekeying
 
 
 async def test_later_receipt_has_one_active_contribution_even_with_conditional_comparisons(store):
+    """Verify a conditional receipt has only one active contribution in gap evidence."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",

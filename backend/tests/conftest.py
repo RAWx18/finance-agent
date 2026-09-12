@@ -19,10 +19,12 @@ ORIGIN = "http://localhost:8000"
 
 
 def money(amount="0", status="exact"):
+    """Build a money input with an explicit amount and certainty status."""
     return {"amount": amount, "status": status}
 
 
 def record(id, kind, amount, day, **values):
+    """Build a dated financial record with kind-specific defaults and optional overrides."""
     return {
         "id": id,
         "kind": kind,
@@ -37,6 +39,7 @@ def record(id, kind, amount, day, **values):
 
 
 def facts(opening="0", records=(), **values):
+    """Build financial facts with coverage inferred from the supplied record kinds."""
     return {
         "opening": money(opening),
         "reserve": "0",
@@ -50,6 +53,7 @@ def facts(opening="0", records=(), **values):
 
 
 def command(data, revision=0, id=None):
+    """Wrap facts in a replacement command with revision and idempotency metadata."""
     return {
         "commandId": str(id or uuid4()),
         "expectedRevision": revision,
@@ -58,16 +62,19 @@ def command(data, revision=0, id=None):
 
 
 def parsed_command(data, revision=0):
+    """Validate a facts-replacement payload as a command for direct store tests."""
     return Command.model_validate(command(data, revision))
 
 
 @pytest.fixture
 def config() -> Config:
+    """Provide the repository's application configuration."""
     return load_config()
 
 
 @pytest.fixture
 async def store(tmp_path: Path, config: Config):
+    """Provide an isolated open SQLite store at a fixed clock and close it after use."""
     store = Store(tmp_path / "sessions.sqlite3", config, lambda: NOW)
     await store.open()
     try:
@@ -78,6 +85,7 @@ async def store(tmp_path: Path, config: Config):
 
 @pytest.fixture
 def client(tmp_path: Path, config: Config):
+    """Provide a signed-in API client with isolated storage and a fixed clock."""
     application = auth_app(config, Environment(data_dir=tmp_path), clock=lambda: NOW)
     with TestClient(application, base_url=ORIGIN) as client:
         sign_in(client)

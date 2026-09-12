@@ -14,6 +14,7 @@ from .conftest import money
 
 
 def test_conflict_input_converts_rupees_and_preserves_certainty():
+    """Verify conflicts convert rupees, preserve certainty, and reject direct paise input."""
     value = ConflictValueInput.model_validate(
         {"id": "rent-7500", "amount": "7500.25", "status": "estimate"}
     )
@@ -36,6 +37,7 @@ def test_conflict_input_converts_rupees_and_preserves_certainty():
 @pytest.mark.parametrize("location", ["record", "topLevel"])
 @pytest.mark.parametrize("status", ["exact", "estimate"])
 async def test_rent_conflict_resolution_preserves_other_facts(store, location, status):
+    """Verify rent conflict resolution persists the chosen amount and preserves other facts."""
     await store.create("owner")
     refreshed = []
     tools = VoiceTools(store, "owner", uuid4(), refreshed.append)

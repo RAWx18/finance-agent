@@ -23,6 +23,7 @@ from .test_scenarios import initialize, operation
 
 
 def response_command(snapshot, response, action_id=None):
+    """Build an action response against the active accepted or baseline assessment."""
     plan = snapshot.accepted.plan if snapshot.accepted else snapshot.plan
     return Command.model_validate(
         operation(
@@ -36,6 +37,7 @@ def response_command(snapshot, response, action_id=None):
 
 @pytest.fixture
 async def reduction(store):
+    """Provide a saved cash-gap scenario with optional spending cuts and a committed rent due."""
     await store.create("owner")
     return await store.command(
         "owner",
@@ -53,6 +55,7 @@ async def reduction(store):
 
 
 async def test_voice_unavailable_moves_on_without_resolving_unknowns(store):
+    """Verify unavailable voice answers advance questions while retaining financial unknowns."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -115,6 +118,7 @@ async def test_voice_unavailable_moves_on_without_resolving_unknowns(store):
 
 
 async def test_unavailable_opening_and_scope_never_confirm_cash_or_completeness(store):
+    """Verify unavailable cash and coverage answers leave the outcome qualified and incomplete."""
     snapshot = await store.create("owner")
     assert next_action(snapshot.plan).id == "clarify:opening"
     snapshot = await store.command("owner", response_command(snapshot, "unavailable"))
@@ -131,6 +135,7 @@ async def test_unavailable_opening_and_scope_never_confirm_cash_or_completeness(
 
 @pytest.mark.parametrize("kind", ["confirmReceipt", "verifyTerms"])
 async def test_unavailable_supported_followup_keeps_its_financial_risk(store, kind):
+    """Verify unavailable receipt or terms follow-ups retain their underlying financial risks."""
     await store.create("owner")
     data = (
         facts(
@@ -185,6 +190,7 @@ async def test_unavailable_supported_followup_keeps_its_financial_risk(store, ki
 
 
 async def test_decline_selects_contact_without_changing_money_or_controllability(store, reduction):
+    """Verify declining a spending cut selects payee contact without altering financial facts."""
     assert next_action(reduction.plan).id == "preview:purchase:2026-09-12"
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     arguments = {
@@ -221,6 +227,7 @@ async def test_decline_selects_contact_without_changing_money_or_controllability
 
 
 async def test_declined_card_minimum_reviews_target_shortfall_without_changing_obligations(store):
+    """Verify declining a card minimum comparison reviews the unchanged intended-payment gap."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -305,6 +312,7 @@ async def test_declined_card_minimum_reviews_target_shortfall_without_changing_o
 async def test_declined_card_cut_preserves_required_shortfall_action(
     store, cash, items, identity, residual
 ):
+    """Verify declining a card cut retains the action addressing required-payment shortfalls."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -384,6 +392,7 @@ async def test_declined_card_cut_preserves_required_shortfall_action(
 async def test_declined_card_cut_does_not_confirm_funding_with_unresolved_basis(
     store, opening, items, clarification
 ):
+    """Verify declining a card cut cannot imply affordability when funding remains uncertain."""
     await store.create("owner")
     data = facts(
         "1000",
@@ -417,6 +426,7 @@ async def test_declined_card_cut_does_not_confirm_funding_with_unresolved_basis(
 
 
 async def test_card_timing_deferral_does_not_push_or_apply_a_minimum_cut(store):
+    """Verify deferring same-day receipt confirmation reviews risk without offering a card cut."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -470,6 +480,7 @@ async def test_card_timing_deferral_does_not_push_or_apply_a_minimum_cut(store):
 async def test_declined_card_review_reassesses_corrected_cash_without_reoffering_cut(
     store, opening, identity
 ):
+    """Verify corrected cash reassesses a declined card comparison without offering it again."""
     await store.create("owner")
     data = facts(
         "1000",
@@ -491,6 +502,7 @@ async def test_declined_card_review_reassesses_corrected_cash_without_reoffering
 
 
 async def test_declined_only_future_choice_has_qualified_outcome_not_elapsed_cash_question(store):
+    """Verify declining the sole future cut reviews the gap without asking about elapsed cash."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("100", [record("purchase", "optional", "200", "2026-09-12")]))
@@ -513,6 +525,7 @@ async def test_declined_only_future_choice_has_qualified_outcome_not_elapsed_cas
     ],
 )
 async def test_decline_survives_unrelated_facts_and_label_edits(store, reduction, patch):
+    """Verify unrelated fact, preference, and label edits retain a declined action response."""
     declined = await store.command("owner", response_command(reduction, "declined"))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke("update_facts", {"expectedRevision": 2, **patch}, "unrelated")
@@ -535,6 +548,7 @@ async def test_decline_survives_unrelated_facts_and_label_edits(store, reduction
 async def test_relevant_choice_correction_reconsiders_only_matching_response(
     store, reduction, patch
 ):
+    """Verify correcting a declined choice's dependencies clears its response for reassessment."""
     await store.command("owner", response_command(reduction, "declined"))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -550,6 +564,7 @@ async def test_relevant_choice_correction_reconsiders_only_matching_response(
 
 
 async def test_unavailable_record_response_survives_unrelated_cash_then_corrects(store):
+    """Verify deferred income confirmation survives cash edits but clears on reliability edits."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -582,6 +597,7 @@ async def test_unavailable_record_response_survives_unrelated_cash_then_corrects
 
 
 async def test_preference_survives_temporary_headroom_and_manual_conversion(store, reduction):
+    """Verify a declined cut survives manual round-trips, temporary headroom, and store restart."""
     declined = await store.command("owner", response_command(reduction, "declined"))
     manual = facts_input(declined.facts)
     assert manual.decision.responses == declined.facts.decision.responses
@@ -601,6 +617,7 @@ async def test_preference_survives_temporary_headroom_and_manual_conversion(stor
 
 
 async def test_decline_clears_matching_preview_but_discard_does_not_decline(store, reduction):
+    """Verify declining clears the matching preview while discarding alone records no refusal."""
     request = Command.model_validate(
         operation(
             "previewAdjustments", adjustments=[{"eventId": "purchase:2026-09-12", "amount": "0"}]
@@ -650,6 +667,7 @@ async def test_decline_clears_matching_preview_but_discard_does_not_decline(stor
 async def test_decline_rejects_overlapping_incompatible_pending_proposal(
     store, reduction, adjustments
 ):
+    """Verify a decline cannot overwrite an overlapping incompatible pending preview."""
     preview = await store.command(
         "owner", Command.model_validate(operation("previewAdjustments", adjustments=adjustments))
     )
@@ -662,6 +680,7 @@ async def test_decline_rejects_overlapping_incompatible_pending_proposal(
 async def test_decline_preserves_accepted_assumptions_and_unrelated_pending_preview(
     store, reduction
 ):
+    """Verify declining a cut preserves accepted assumptions and an unrelated pending preview."""
     preview = await store.command(
         "owner",
         Command.model_validate(
@@ -713,6 +732,7 @@ async def test_decline_preserves_accepted_assumptions_and_unrelated_pending_prev
     ],
 )
 async def test_action_response_requires_current_typed_action(store, reduction, identity, response):
+    """Verify unknown action IDs and incompatible responses fail without changing state."""
     with pytest.raises(Problem) as error:
         await store.command("owner", response_command(reduction, response, identity))
     assert error.value.body.code == "invalidActionResponse"
@@ -729,6 +749,7 @@ async def test_action_response_requires_current_typed_action(store, reduction, i
 async def test_nonselected_displayable_action_accepts_eligible_response(
     store, reduction, identity, response
 ):
+    """Verify eligible responses can dismiss displayed actions that are not selected next."""
     assert identity != reduction.plan.decision_assessment.next_action_id
     assert identity in {item.id for item in reduction.workspace.actions}
     saved = await store.command("owner", response_command(reduction, response, identity))
@@ -751,6 +772,7 @@ async def test_nonselected_displayable_action_accepts_eligible_response(
     ],
 )
 async def test_voice_response_rejects_invalid_or_client_chosen_fields(store, reduction, fields):
+    """Verify voice responses reject invalid values and client-supplied dependency keys."""
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
         "respond_to_action",
@@ -767,6 +789,7 @@ async def test_voice_response_rejects_invalid_or_client_chosen_fields(store, red
 
 
 async def test_refusal_revision_idempotency_conflicts_and_correction_replay(store, reduction):
+    """Verify refusal commands enforce revisions and replay without undoing later corrections."""
     request = response_command(reduction, "declined")
     queue = await store.subscribe("owner")
     queue.get_nowait()
@@ -794,6 +817,7 @@ async def test_refusal_revision_idempotency_conflicts_and_correction_replay(stor
 
 
 async def test_response_transaction_failure_rolls_back_and_does_not_publish(store, reduction):
+    """Verify failed response transactions roll back without publishing and remain retryable."""
     queue = await store.subscribe("owner")
     queue.get_nowait()
     request = response_command(reduction, "declined")
@@ -814,6 +838,7 @@ async def test_response_transaction_failure_rolls_back_and_does_not_publish(stor
 
 
 async def test_clock_changed_active_action_cannot_receive_stale_decline(store):
+    """Verify a day change prevents declining an action that is no longer current."""
     await store.create("owner")
     initial = await store.command(
         "owner", parsed_command(facts("100", [record("purchase", "optional", "200", "2026-09-11")]))
@@ -829,6 +854,7 @@ async def test_clock_changed_active_action_cannot_receive_stale_decline(store):
 
 
 def test_public_command_and_server_owned_responses_round_trip_without_manual_loss(client):
+    """Verify manual edits retain server-owned responses and reject forged dependency keys."""
     baseline = initialize(
         client, facts("100", [record("purchase", "optional", "200", "2026-09-12")])
     )
@@ -856,6 +882,7 @@ def test_public_command_and_server_owned_responses_round_trip_without_manual_los
 
 
 def test_response_schema_is_additive_strict_and_server_key_is_not_a_tool_argument():
+    """Verify action response tool schemas require typed fields and exclude dependency keys."""
     from app.voice_tools import ActionResponseRequest
 
     assert Decision().responses == []
@@ -888,6 +915,7 @@ def test_response_schema_is_additive_strict_and_server_key_is_not_a_tool_argumen
     ],
 )
 async def test_selected_action_still_requires_compatible_response_semantics(store, kind, response):
+    """Verify selecting an action does not permit a response incompatible with its kind."""
     await store.create("owner")
     data = facts(
         "1000",
@@ -920,6 +948,7 @@ async def test_selected_action_still_requires_compatible_response_semantics(stor
 
 
 async def test_response_uses_accepted_assessment_not_inactive_baseline(store, reduction):
+    """Verify responses target the accepted assessment rather than inactive baseline actions."""
     preview = await store.command(
         "owner",
         Command.model_validate(
@@ -954,6 +983,7 @@ async def test_response_uses_accepted_assessment_not_inactive_baseline(store, re
 async def test_card_response_depends_on_minimum_and_target_not_informational_balance(
     store, field, amount, retained
 ):
+    """Verify card minimum and target edits invalidate refusals but outstanding balance does not."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -984,6 +1014,7 @@ async def test_card_response_depends_on_minimum_and_target_not_informational_bal
 
 
 async def test_unavailable_controllability_never_becomes_committed_spending(store):
+    """Verify unavailable spending-control answers preserve unknown controllability and the gap."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -1009,6 +1040,7 @@ async def test_unavailable_controllability_never_becomes_committed_spending(stor
 
 
 async def test_provider_retraction_reactivates_contact_after_unavailable_terms(store):
+    """Verify retracting terms clears their deferred response and restores payee contact."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -1043,6 +1075,7 @@ async def test_provider_retraction_reactivates_contact_after_unavailable_terms(s
 async def test_corrected_response_dependencies_publish_consistent_baseline_and_accepted(
     store, reduction
 ):
+    """Verify fact corrections publish baseline and accepted plans consistent with retained cuts."""
     await store.command("owner", response_command(reduction, "declined"))
     preview = await store.command(
         "owner",

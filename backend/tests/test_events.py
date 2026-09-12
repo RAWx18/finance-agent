@@ -23,12 +23,16 @@ from .test_scenarios import operation
 
 @pytest.fixture
 async def live_server(tmp_path, config):
+    """Serve an authenticated local app with a controllable clock and guaranteed shutdown."""
     started = asyncio.Event()
     now = [NOW]
     config = config.model_copy(update={"heartbeat_seconds": 1, "cleanup_seconds": 1})
 
     class Server(uvicorn.Server):
+        """Uvicorn server with an observable startup signal."""
+
         async def startup(self, sockets=None):
+            """Signal readiness after Uvicorn completes startup."""
             await super().startup(sockets)
             started.set()
 
@@ -53,6 +57,7 @@ async def live_server(tmp_path, config):
 
 
 async def frame(lines):
+    """Read one blank-line-delimited SSE frame with bounded line waits."""
     result = []
     while True:
         line = await asyncio.wait_for(anext(lines), 5)
@@ -62,6 +67,7 @@ async def frame(lines):
 
 
 async def test_live_sse_current_reconnect_heartbeat_and_delete(live_server):
+    """Verify SSE snapshots, heartbeats, reconnect state, and terminal deletion cleanup."""
     client, store, _ = live_server
     assert (await client.post("/api/session", json={})).status_code == 200
     async with client.stream("GET", "/api/session/events") as response:
@@ -92,6 +98,7 @@ async def test_live_sse_current_reconnect_heartbeat_and_delete(live_server):
 
 
 async def test_live_expiry_closes_stream_and_cleans_database(live_server):
+    """Verify session expiry terminates SSE streams and removes stored commands."""
     client, store, now = live_server
     await client.post("/api/session", json={})
     await client.post("/api/session/commands", json=command(facts("42")))
@@ -110,6 +117,7 @@ async def test_live_expiry_closes_stream_and_cleans_database(live_server):
 
 
 async def test_live_sse_clock_rollover_persists_once_without_rebasing(live_server):
+    """Verify SSE day rollover persists one reevaluation without rebasing cash or command replay."""
     client, store, now = live_server
     await client.post("/api/session", json={})
     request = command(facts("100", [record("purchase", "optional", "200", "2026-09-11")]))
@@ -153,9 +161,11 @@ async def test_live_sse_clock_rollover_persists_once_without_rebasing(live_serve
 
 
 async def test_live_chunked_body_limit(live_server):
+    """Verify oversized chunked request bodies are rejected with a payload-limit response."""
     client, store, _ = live_server
 
     async def body():
+        """Yield chunks whose combined size exceeds the request limit."""
         yield b" " * (store.config.max_request_bytes // 2)
         yield b" " * store.config.max_request_bytes
 
@@ -166,6 +176,7 @@ async def test_live_chunked_body_limit(live_server):
 
 
 async def test_live_sse_scenario_commands_publish_full_snapshots(live_server):
+    """Verify preview, acceptance, and clearing commands publish complete reconnectable snapshots."""
     client, _, _ = live_server
     await client.post("/api/session", json={})
     baseline = (await client.post("/api/session/commands", json=command(scenario_two()))).json()

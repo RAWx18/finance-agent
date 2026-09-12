@@ -14,6 +14,8 @@ from .amounts import money_value
 
 
 class Model(BaseModel):
+    """Strict financial payload with camel-case aliases."""
+
     model_config = ConfigDict(extra="forbid", alias_generator=to_camel, populate_by_name=True)
 
 
@@ -28,6 +30,8 @@ Rupees = Annotated[str, Field(pattern=r"^(0|[1-9][0-9]{0,12})(\.[0-9]{1,2})?$", 
 
 
 class Conversion(Model):
+    """Reported foreign-currency conversion terms and certainty."""
+
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     rate: Annotated[
         str | None,
@@ -40,6 +44,7 @@ class Conversion(Model):
 
     @model_validator(mode="after")
     def validate_terms(self) -> "Conversion":
+        """Validate reported conversion terms and certainty."""
         if self.currency == "INR":
             raise ValueError("Conversion requires a non-INR currency")
         for value, status in ((self.rate, self.rate_status), (self.fee, self.fee_status)):
@@ -51,24 +56,30 @@ class Conversion(Model):
 
 
 class MoneyInput(Model):
+    """Reported monetary amount with certainty and optional conversion terms."""
+
     amount: Rupees | None
     status: Status
     conversion: Conversion | None = None
 
     @model_validator(mode="after")
     def validate_status(self) -> "MoneyInput":
+        """Require the amount's presence to agree with its certainty."""
         if (self.amount is None) != (self.status == "unknown"):
             raise ValueError("Unknown money must be null; exact/estimate money needs an amount")
         return self
 
 
 class Money(Model):
+    """INR amount in paise with certainty and retained foreign source terms."""
+
     amount_paise: int | None
     status: Status
     source: MoneyInput | None = None
 
     @model_validator(mode="after")
     def derive_source(self) -> "Money":
+        """Derive INR value and certainty from foreign source terms."""
         if self.source is not None:
             if self.source.conversion is None:
                 raise ValueError("Money source must contain foreign conversion terms")
@@ -77,17 +88,22 @@ class Money(Model):
 
 
 class MonthlyPattern(Model):
+    """Monthly timing rule without a concrete starting date."""
+
     kind: Literal["dayOfMonth", "monthEnd"]
     day: int | None = Field(default=None, ge=1, le=31, strict=True)
 
     @model_validator(mode="after")
     def validate_day(self) -> "MonthlyPattern":
+        """Require a day only for a day-of-month pattern."""
         if (self.kind == "dayOfMonth") != (self.day is not None):
             raise ValueError("dayOfMonth requires day; monthEnd must not supply a day")
         return self
 
 
 class Schedule(Model):
+    """Payment timing, recurrence, certainty, and optional occurrence amounts."""
+
     end_date: date | None = None
     date: date | None
     recurrence: Recurrence = "once"
@@ -98,6 +114,7 @@ class Schedule(Model):
 
     @model_validator(mode="after")
     def validate_certainty(self) -> "Schedule":
+        """Validate timing certainty and compatible recurrence bounds and amounts."""
         if self.pattern is not None and (
             self.date is not None
             or self.recurrence != "monthly"
@@ -123,6 +140,8 @@ class Schedule(Model):
 
 
 class RecordBase(Model):
+    """Shared identity, timing, and obligations of a financial record."""
+
     id: RecordId
     kind: Kind
     label: str = Field(min_length=1, max_length=120)
@@ -134,6 +153,7 @@ class RecordBase(Model):
 
     @model_validator(mode="after")
     def validate_record(self) -> "RecordBase":
+        """Validate record details against income and outflow requirements."""
         if not self.label.strip() or re.search(r"[\x00-\x1f\x7f]", self.label):
             raise ValueError("Label must be nonempty text without control characters")
         if (self.kind == "income") != (self.reliability is not None):
@@ -156,12 +176,15 @@ class RecordBase(Model):
 
 
 class RecordInput(RecordBase):
+    """Reported financial record with payment and debt amounts."""
+
     amount: MoneyInput
     target: MoneyInput | None = None
     outstanding: MoneyInput | None = None
 
     @model_validator(mode="after")
     def validate_debt_fields(self) -> "RecordInput":
+        """Validate debt amounts, currency eligibility, and variable payments."""
         if self.kind != "debt" and (self.target is not None or self.outstanding is not None):
             raise ValueError("Target and outstanding apply only to debt")
         if (self.amount.conversion and self.kind != "income") or any(
@@ -177,12 +200,16 @@ class RecordInput(RecordBase):
 
 
 class Record(RecordBase):
+    """Financial record with payment and debt amounts expressed in paise."""
+
     amount: Money
     target: Money | None = None
     outstanding: Money | None = None
 
 
 class Coverage(Model):
+    """Discussion coverage of income, spending, and debts."""
+
     income: CoverageStatus = "notDiscussed"
     essential: CoverageStatus = "notDiscussed"
     optional: CoverageStatus = "notDiscussed"
@@ -190,6 +217,8 @@ class Coverage(Model):
 
 
 class FactsInput(Model):
+    """Reported cash, records, and decision context for a financial plan."""
+
     opening: MoneyInput
     reserve: Rupees = "0"
     coverage: Coverage
@@ -202,12 +231,15 @@ class FactsInput(Model):
 
     @model_validator(mode="after")
     def validate_opening(self) -> "FactsInput":
+        """Require opening cash to be reported in INR."""
         if self.opening.conversion is not None:
             raise ValueError("Opening cash must be INR")
         return self
 
 
 class Facts(Model):
+    """Canonical financial facts, decision context, and unresolved conflicts."""
+
     opening: Money
     reserve_paise: int
     coverage: Coverage
@@ -223,6 +255,8 @@ ConflictField = Literal["opening", "amount", "target", "outstanding", "schedule.
 
 
 class ConflictValue(Model):
+    """Concrete competing date or paise amount with reported certainty."""
+
     id: RecordId
     amount_paise: int | None = Field(default=None, ge=0, strict=True)
     date: Annotated[date | None, Field(default=None)]
@@ -231,6 +265,7 @@ class ConflictValue(Model):
 
     @model_validator(mode="after")
     def validate_value(self) -> "ConflictValue":
+        """Require one competing money value or date and validate foreign sources."""
         if self.source is not None:
             if (
                 self.source.conversion is None
@@ -246,6 +281,8 @@ class ConflictValue(Model):
 
 
 class ConflictValueInput(Model):
+    """Reported competing amount or date with certainty and conversion terms."""
+
     id: RecordId
     amount: Rupees | None = None
     date: Annotated[date | None, Field(default=None)]
@@ -254,6 +291,7 @@ class ConflictValueInput(Model):
 
     @model_validator(mode="after")
     def validate_value(self) -> "ConflictValueInput":
+        """Require one competing amount or date and money-only conversion terms."""
         if (self.amount is None) == (self.date is None):
             raise ValueError("A competing value must contain exactly one concrete money or date")
         if self.conversion is not None and self.amount is None:
@@ -262,11 +300,14 @@ class ConflictValueInput(Model):
 
 
 class ConflictValues[ConflictValueType: (ConflictValueInput, ConflictValue)](Model):
+    """Distinct competing values for one financial field."""
+
     field: ConflictField
     values: list[ConflictValueType] = Field(min_length=1, max_length=8)
 
     @model_validator(mode="after")
     def validate_values(self) -> "ConflictValues[ConflictValueType]":
+        """Require unique competing values and IDs matching the field's type."""
         if any((item.date is not None) != (self.field == "schedule.date") for item in self.values):
             raise ValueError("Competing values must address the same field type")
         if len({item.id for item in self.values}) != len(self.values) or len(
@@ -277,36 +318,49 @@ class ConflictValues[ConflictValueType: (ConflictValueInput, ConflictValue)](Mod
 
 
 class RecordConflictInput(ConflictValues[ConflictValueInput]):
+    """Reported competing values for a record's amount, debt, or date field."""
+
     field: Literal["amount", "target", "outstanding", "schedule.date"]
 
 
 class ConflictReport[ConflictValueType: (ConflictValueInput, ConflictValue)](
     ConflictValues[ConflictValueType]
 ):
+    """Competing financial values located at opening cash or a record field."""
+
     record_id: RecordId | None = None
 
     @model_validator(mode="after")
     def validate_location(self) -> "ConflictReport[ConflictValueType]":
+        """Require a record ID for every conflict except opening cash."""
         if (self.field == "opening") != (self.record_id is None):
             raise ValueError("Opening conflicts have no record ID; other conflicts require one")
         return self
 
 
 class ConflictInput(ConflictReport[ConflictValueInput]):
+    """Reported financial conflict with user-supplied competing values."""
+
     pass
 
 
 class FactConflict(ConflictReport[ConflictValue]):
+    """Identified unresolved conflict between canonical financial values."""
+
     id: str = Field(min_length=1, max_length=200)
     values: list[ConflictValue] = Field(min_length=2, max_length=8)
 
 
 class ResolveConflict(Model):
+    """Chosen value for resolving an identified financial conflict."""
+
     conflict_id: str = Field(min_length=1, max_length=200)
     value: ConflictValueInput
 
 
 class MergeRecords(Model):
+    """Explicitly confirmed duplicate-record merge with supporting reason."""
+
     source_id: RecordId
     target_id: RecordId
     confirmed: bool = Field(strict=True)
@@ -314,6 +368,7 @@ class MergeRecords(Model):
 
     @model_validator(mode="after")
     def validate_confirmation(self) -> "MergeRecords":
+        """Require justified confirmation to merge two distinct record IDs."""
         if not self.confirmed or not self.reason.strip() or self.source_id == self.target_id:
             raise ValueError(
                 "Merge requires distinct IDs and explicit justified duplicate confirmation"
@@ -322,6 +377,8 @@ class MergeRecords(Model):
 
 
 class CoveragePatch(Model):
+    """Partial changes to financial discussion coverage."""
+
     income: CoverageStatus | None = None
     essential: CoverageStatus | None = None
     optional: CoverageStatus | None = None
@@ -329,6 +386,8 @@ class CoveragePatch(Model):
 
 
 class SchedulePatch(Model):
+    """Partial changes to payment timing, recurrence, and occurrence amounts."""
+
     end_date: date | None = None
     date: Annotated[date | None, Field(default=None)]
     recurrence: Recurrence | None = None
@@ -339,6 +398,7 @@ class SchedulePatch(Model):
 
     @model_validator(mode="after")
     def validate_pattern(self) -> "SchedulePatch":
+        """Reject monthly patterns combined with concrete dates or finite sequences."""
         if self.pattern is not None and (
             self.date is not None
             or self.recurrence not in {None, "monthly"}
@@ -353,6 +413,8 @@ class SchedulePatch(Model):
 
 
 class RecordPatch(Model):
+    """Financial record creation, correction, deletion, or conflict report."""
+
     id: RecordId | None = None
     delete: bool = False
     distinct: bool = False
@@ -370,6 +432,8 @@ class RecordPatch(Model):
 
 
 class DecisionPatch(Model):
+    """Partial changes to decision intent, record focus, and response preference."""
+
     intent: Literal["plan30Days", "specificDecision"] | None = None
     concern: str | None = Field(default=None, min_length=1, max_length=2000)
     focus_record_ids: list[RecordId] | None = Field(default=None, max_length=200)
@@ -378,6 +442,8 @@ class DecisionPatch(Model):
 
 
 class FactsPatch(Model):
+    """Revision-bound changes to financial facts, responses, and conflicts."""
+
     expected_revision: int = Field(ge=0, strict=True)
     opening: MoneyInput | None = None
     reserve: Rupees | None = None
@@ -392,6 +458,7 @@ class FactsPatch(Model):
 
     @model_validator(mode="after")
     def validate_changes(self) -> "FactsPatch":
+        """Reject duplicate or contradictory provider response changes."""
         ids = [item.event_id for item in self.provider_responses]
         removed = self.remove_provider_response_ids
         if (
@@ -406,12 +473,16 @@ class FactsPatch(Model):
 
 
 class ActionResponse(Model):
+    """Declined or unavailable action response bound to its financial dependencies."""
+
     action_id: str = Field(min_length=1, max_length=200)
     response: ActionResponseValue
     dependency_key: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class Decision(Model):
+    """Planning intent, focused records, response preference, and action responses."""
+
     intent: Literal["plan30Days", "specificDecision"] = "plan30Days"
     concern: str | None = Field(default=None, min_length=1, max_length=2000)
     focus_record_ids: list[RecordId] = Field(default_factory=list, max_length=200)
@@ -423,6 +494,7 @@ class Decision(Model):
 
     @model_validator(mode="after")
     def validate_responses(self) -> "Decision":
+        """Require distinct ambiguous records and unique action responses."""
         if self.ambiguous_record_ids and (
             len(self.ambiguous_record_ids) < 2
             or len(set(self.ambiguous_record_ids)) != len(self.ambiguous_record_ids)
@@ -434,6 +506,8 @@ class Decision(Model):
 
 
 class ProviderResponseBase(Model):
+    """Reported provider response status and payment timing for an event."""
+
     event_id: str
     status: Literal["awaiting", "declined", "reportedTerms"]
     reported_on: date
@@ -441,44 +515,59 @@ class ProviderResponseBase(Model):
 
 
 class ProviderResponseInput(ProviderResponseBase):
+    """Reported provider response with payment and cost amounts in INR."""
+
     payment: MoneyInput | None = None
     cost: MoneyInput | None = None
 
     @model_validator(mode="after")
     def validate_currency(self) -> "ProviderResponseInput":
+        """Require provider payments and costs to be reported in INR."""
         if any(item is not None and item.conversion for item in (self.payment, self.cost)):
             raise ValueError("Provider payments and costs must be INR")
         return self
 
 
 class ProviderResponse(ProviderResponseBase):
+    """Canonical provider response bound to its financial dependencies."""
+
     payment: Money | None = None
     cost: Money | None = None
     dependency_key: str = ""
 
 
 class ReplaceFacts(Model):
+    """Command operation replacing the full reported financial facts."""
+
     type: Literal["replaceFacts"]
     facts: FactsInput
 
 
 class UpdateFacts(Model):
+    """Command operation applying fact changes with optional human-edit provenance."""
+
     type: Literal["updateFacts"]
     changes: FactsPatch
     source: Literal["humanCardEdit"] | None = None
 
 
 class AdjustmentInput(Model):
+    """Proposed event payment amount reported in INR."""
+
     event_id: str
     amount: Rupees
 
 
 class PreviewAdjustments(Model):
+    """Command operation previewing proposed payment adjustments."""
+
     type: Literal["previewAdjustments"]
     adjustments: list[AdjustmentInput]
 
 
 class AcceptPreview(Model):
+    """Command operation accepting a preview with explicit unconditional consent."""
+
     type: Literal["acceptPreview"]
     preview_id: UUID
     confirmed: bool = Field(strict=True)
@@ -486,32 +575,43 @@ class AcceptPreview(Model):
 
     @model_validator(mode="after")
     def validate_confirmation(self) -> "AcceptPreview":
+        """Require explicit confirmation before accepting a preview."""
         if not self.confirmed:
             raise ValueError("Acceptance requires explicit unconditional confirmation")
         return self
 
 
 class DiscardPreview(Model):
+    """Command operation discarding a preview without rejecting its proposal."""
+
     type: Literal["discardPreview"]
     preview_id: UUID
 
 
 class RejectPreview(Model):
+    """Command operation recording rejection of a proposed preview."""
+
     type: Literal["rejectPreview"]
     preview_id: UUID
 
 
 class ClearAccepted(Model):
+    """Command operation clearing accepted payment adjustments."""
+
     type: Literal["clearAccepted"]
 
 
 class RespondToAction(Model):
+    """Command operation recording a declined or unavailable action response."""
+
     type: Literal["respondToAction"]
     action_id: str = Field(min_length=1, max_length=200)
     response: ActionResponseValue
 
 
 class Command(Model):
+    """Identified financial operation bound to an expected session revision."""
+
     command_id: UUID
     expected_revision: int = Field(ge=0, strict=True)
     operation: Annotated[
@@ -528,6 +628,8 @@ class Command(Model):
 
 
 class Issue(Model):
+    """Financial planning issue with optional record and date context."""
+
     code: str
     message: str
     record_id: str | None = None
@@ -535,6 +637,8 @@ class Issue(Model):
 
 
 class Event(Model):
+    """Projected income or payment occurrence with assumptions and cash balance."""
+
     id: str
     record_id: str
     label: str
@@ -556,17 +660,23 @@ class Event(Model):
 
 
 class Gap(Model):
+    """Dated cash shortfall expressed in paise."""
+
     date: date
     amount_paise: int
 
 
 class TimingRisk(Model):
+    """Dated pre-receipt cash exposure and remaining funding gap."""
+
     date: date
     exposure_paise: int
     remaining_gap_paise: int
 
 
 class ProjectionMetrics(Model):
+    """Cash-flow totals, balance extrema, shortfalls, and timing risks."""
+
     reliable_income_paise: int
     uncertain_income_paise: int
     outflow_paise: int
@@ -580,6 +690,8 @@ class ProjectionMetrics(Model):
 
 
 class UnresolvedAmount(Model):
+    """Financial amount lacking a date, amount, or debt target for projection."""
+
     record_id: str
     reason: Literal["missingDate", "missingAmount", "unknownTarget"]
     amount: Money
@@ -587,11 +699,15 @@ class UnresolvedAmount(Model):
 
 
 class BudgetBasis(Model):
+    """Completeness of the dated projection and its unresolved amounts."""
+
     dated_projection_complete: bool
     unresolved_amounts: list[UnresolvedAmount]
 
 
 class Uncertainty(Model):
+    """Prioritized financial uncertainty and the decisions it blocks or changes."""
+
     id: str
     kind: Literal["missing", "uncertain", "conflict", "coverage"]
     record_ids: list[str]
@@ -605,6 +721,8 @@ class Uncertainty(Model):
 
 
 class Constraint(Model):
+    """Protected payment or reserve requirement affecting financial choices."""
+
     id: str
     kind: Literal["essential", "minimumDue", "autoDebit", "committed", "reserve"]
     event_ids: list[str]
@@ -613,6 +731,8 @@ class Constraint(Model):
 
 
 class Consequence(Model):
+    """Cash exposure, reserve breach, or conditional-income risk linked to events."""
+
     id: str
     kind: Literal["cashExposure", "reserveBreach", "conditionalIncome"]
     event_ids: list[str]
@@ -622,11 +742,15 @@ class Consequence(Model):
 
 
 class AdjustmentAmount(Model):
+    """Event payment adjustment expressed in paise."""
+
     event_id: str
     amount_paise: int
 
 
 class Choice(Model):
+    """Financial choice with prerequisites, adjustments, and projected consequences."""
+
     id: str
     kind: Literal["reduceOptional", "cardMinimum", "enquire"]
     event_ids: list[str]
@@ -640,6 +764,8 @@ class Choice(Model):
 
 
 class Action(Model):
+    """Suggested financial next step with timing and consequence references."""
+
     id: str
     kind: Literal[
         "clarify",
@@ -662,6 +788,8 @@ class Action(Model):
 
 
 class Outcome(Model):
+    """Qualified financial conclusion with coverage, next step, and revisit guidance."""
+
     branch: Literal["fits", "uncertain", "gap", "conflict"]
     readiness: Literal["ready", "qualified"]
     summary: str
@@ -678,6 +806,8 @@ class Outcome(Model):
 
 
 class DecisionAssessment(Model):
+    """Financial decision evidence, available choices, next steps, and outcome."""
+
     uncertainties: list[Uncertainty] = Field(default_factory=list)
     constraints: list[Constraint] = Field(default_factory=list)
     consequences: list[Consequence] = Field(default_factory=list)
@@ -689,17 +819,23 @@ class DecisionAssessment(Model):
 
 
 class IncomeCondition(Model):
+    """Assumed income arrival timing for a conditional projection."""
+
     event_id: str
     arrival: Literal["reportedDate", "notByHorizon"]
 
 
 class IncomeComparison(Model):
+    """Projected cash metrics under specified income arrival conditions."""
+
     id: str
     conditions: list[IncomeCondition]
     metrics: ProjectionMetrics
 
 
 class UndatedItem(Model):
+    """Undated payment with reported amounts, recurrence, and a planning assumption."""
+
     record_id: str
     label: str
     amount_paise: int | None
@@ -712,6 +848,8 @@ class UndatedItem(Model):
 
 
 class UndatedImpact(Model):
+    """Qualified cash impact of undated payments outside the dated projection."""
+
     items: list[UndatedItem]
     outflow_paise: int
     closing_paise: int | None
@@ -721,6 +859,8 @@ class UndatedImpact(Model):
 
 
 class Plan(ProjectionMetrics):
+    """Evaluated cash-flow projection with events, qualifications, and decision guidance."""
+
     evaluated_on: date
     projection_partial: bool
     events: list[Event]
@@ -732,6 +872,8 @@ class Plan(ProjectionMetrics):
 
 
 class AdjustmentOption(Model):
+    """Eligible payment adjustment with amount limits and acceptance dependencies."""
+
     event_id: str
     record_id: str
     label: str
@@ -744,17 +886,23 @@ class AdjustmentOption(Model):
 
 
 class AdjustmentOptions(Model):
+    """Available payment adjustments for a session revision and evaluation date."""
+
     revision: int
     today: date
     options: list[AdjustmentOption]
 
 
 class Adjustment(AdjustmentOption):
+    """Selected payment adjustment with its optional acceptance revision."""
+
     amount_paise: int
     accepted_revision: int | None = None
 
 
 class Scenario(Model):
+    """Payment-adjustment scenario with its source revision and resulting plan."""
+
     id: UUID
     source_revision: int
     created_at: datetime
@@ -765,6 +913,8 @@ class Scenario(Model):
 
 
 class Snapshot(Model):
+    """Versioned financial session state with facts, plans, consent, and workspace."""
+
     session_id: UUID
     conversation_slug: str | None = None
     revision: int
@@ -804,6 +954,8 @@ WorkspaceState = Literal[
 
 
 class WorkspaceRow(Model):
+    """Labeled workspace field with value, certainty state, and evidence references."""
+
     field: str
     label: str
     value: JsonValue
@@ -812,6 +964,8 @@ class WorkspaceRow(Model):
 
 
 class WorkspaceCard(Model):
+    """Financial workspace card with rows, state, and supporting record references."""
+
     id: str
     template: Literal[
         "cash",
@@ -840,6 +994,8 @@ class WorkspaceCard(Model):
 
 
 class WorkspaceQuestion(Model):
+    """Prioritized financial clarification with affected fields and decision impact."""
+
     id: str
     action_id: str | None
     fields: list[str]
@@ -853,6 +1009,8 @@ class WorkspaceQuestion(Model):
 
 
 class Contribution(Model):
+    """Record or event contribution explaining a financial result."""
+
     id: str
     record_id: str | None
     event_id: str | None
@@ -865,6 +1023,8 @@ class Contribution(Model):
 
 
 class WorkspaceResult(Model):
+    """Traceable financial result with contributions, exclusions, and assumptions."""
+
     id: str
     from_date: date
     until_date_exclusive: date
@@ -886,12 +1046,16 @@ class WorkspaceResult(Model):
 
 
 class FieldChange(Model):
+    """Before-and-after values for a referenced workspace field."""
+
     reference: str
     before: JsonValue
     after: JsonValue
 
 
 class ChangeItem(Model):
+    """Workspace change state with affected fields, records, results, and cards."""
+
     id: str
     state: Literal[
         "created",
@@ -912,12 +1076,16 @@ class ChangeItem(Model):
 
 
 class ChangeSource(Model):
+    """Actor and timestamp provenance for a human card edit."""
+
     kind: Literal["humanCardEdit"]
     actor_id: str
     at: datetime
 
 
 class WorkspaceChange(Model):
+    """Revision-associated workspace changes with optional edit provenance."""
+
     id: UUID
     revision: int
     items: list[ChangeItem]
@@ -925,11 +1093,15 @@ class WorkspaceChange(Model):
 
 
 class RejectedProposal(Model):
+    """Identified payment-adjustment proposal rejected by the user."""
+
     id: UUID
     adjustments: list[Adjustment]
 
 
 class Workspace(Model):
+    """Financial cards, questions, evidence, choices, and changes for presentation."""
+
     cards: list[WorkspaceCard] = Field(default_factory=list)
     questions: list[WorkspaceQuestion] = Field(default_factory=list)
     issues: list[Uncertainty] = Field(default_factory=list)
@@ -941,17 +1113,23 @@ class Workspace(Model):
 
 
 class InvalidatedAssumption(Model):
+    """Event adjustment assumption invalidated for a stated reason."""
+
     event_id: str
     reason: str
 
 
 class Error(Model):
+    """API error details with optional current financial state."""
+
     code: str
     message: str
     snapshot: Snapshot | None = None
 
 
 class Settings(Model):
+    """Public planning limits, date context, and voice availability settings."""
+
     assistant_name: str
     currency: Literal["INR"]
     timezone: Literal["Asia/Kolkata"]
@@ -970,6 +1148,8 @@ class Settings(Model):
 
 
 class CallRequest(Model):
+    """Voice call request with optional saved-conversation selection."""
+
     call_id: UUID
     conversation_slug: str | None = Field(
         default=None, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$", max_length=119
@@ -977,6 +1157,8 @@ class CallRequest(Model):
 
 
 class CallJoin(Model):
+    """Voice call connection credentials and expiry for a selected conversation."""
+
     call_id: UUID
     conversation_slug: str
     url: str
@@ -985,6 +1167,8 @@ class CallJoin(Model):
 
 
 class CallState(Model):
+    """Voice call lifecycle status and media cleanup confirmation."""
+
     call_id: UUID | None = None
     conversation_slug: str | None = None
     status: Literal["idle", "connecting", "active", "ending", "ended", "error"] = "idle"
@@ -993,8 +1177,12 @@ class CallState(Model):
 
 
 class Health(Model):
+    """Service availability status for health checks."""
+
     status: Literal["ok", "unavailable"]
 
 
 class Deleted(Model):
+    """Successful resource deletion acknowledgement."""
+
     deleted: Literal[True] = True

@@ -10,6 +10,7 @@ from .test_finance import project
 
 
 def test_auto_debit_risk_does_not_depend_on_record_ids():
+    """Verify same-day auto-debit warnings do not depend on record identifier ordering."""
     records = [
         record("a", "debt", "400", "2026-09-15", autoDebit=True, label="Loan"),
         record("z", "essential", "300", "2026-09-15", label="Food"),
@@ -26,6 +27,7 @@ def test_auto_debit_risk_does_not_depend_on_record_ids():
 
 
 def test_first_day_gap_does_not_depend_on_record_ids():
+    """Verify first-day and peak gaps do not depend on same-day record identifier ordering."""
     records = [
         record("a", "essential", "100", "2026-09-15"),
         record("z", "debt", "200", "2026-09-15"),
@@ -40,6 +42,7 @@ def test_first_day_gap_does_not_depend_on_record_ids():
 
 
 def test_export_preserves_record_amounts_and_uncertainty(client):
+    """Verify exports retain estimates, undated amounts, and distinct card minimums and targets."""
     client.post("/api/session", json={})
     data = facts(
         "10000",
@@ -72,6 +75,7 @@ def test_export_preserves_record_amounts_and_uncertainty(client):
 
 
 async def test_unrelated_edit_does_not_refresh_financial_basis(store):
+    """Verify an unrelated edit advances revision without refreshing the cash basis or expiry."""
     owner = owner_hash("basis-test")
     initial = await store.create(owner)
     await store.command(owner, parsed_command(facts("5000")))

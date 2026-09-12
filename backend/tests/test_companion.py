@@ -9,6 +9,7 @@ from .test_workspace import operation, result, update
 
 
 async def test_progressive_cards_keep_first_gap_despite_positive_closing(store):
+    """Verify progressive cards retain an early gap despite positive closing cash."""
     empty = await store.create("owner")
     assert empty.plan.decision_assessment.outcome is not None
     assert empty.workspace.cards == []
@@ -43,6 +44,7 @@ async def test_progressive_cards_keep_first_gap_despite_positive_closing(store):
 
 
 async def test_four_patterns_one_hidden_uncertainty_and_all_records_for_expansion(store):
+    """Verify four card patterns expose one key uncertainty while retaining expandable records."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -90,6 +92,7 @@ async def test_four_patterns_one_hidden_uncertainty_and_all_records_for_expansio
 
 
 async def test_variable_foreign_receipt_and_monthly_budget_keep_occurrence_identity(store):
+    """Verify timeline cards retain foreign-income occurrence identity and budget estimates."""
     await store.create("owner")
     foreign = {
         "amount": "200",
@@ -150,6 +153,7 @@ async def test_variable_foreign_receipt_and_monthly_budget_keep_occurrence_ident
 
 
 async def test_undated_records_do_not_invent_cash_and_coverage_alone_has_no_card(store):
+    """Verify partial records do not invent cash and a reserve reveals an unknown-cash card."""
     await store.create("owner")
     coverage = await store.command("owner", update(0, coverage={"income": "unknown"}))
     assert coverage.workspace.cards == []
@@ -168,6 +172,7 @@ async def test_undated_records_do_not_invent_cash_and_coverage_alone_has_no_card
 
 
 async def test_proposal_merges_acceptance_preview_and_invalidated_timing(store):
+    """Verify one proposal card combines accepted, invalidated, and pending spending changes."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",

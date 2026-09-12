@@ -12,6 +12,7 @@ from .conftest import money, record
 
 
 async def test_approximate_outside_obligation_never_becomes_a_fit_claim(store):
+    """Verify approximate off-window obligations stay qualified until exact dates settle risk."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     outside = initial.end_date_exclusive.isoformat()
@@ -70,6 +71,7 @@ async def test_approximate_outside_obligation_never_becomes_a_fit_claim(store):
 
 
 async def test_estimated_required_payment_keeps_its_basis_after_target_correction(store):
+    """Verify card corrections retain the required-payment basis and matching evidence certainty."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     state = await tools.update_facts(
@@ -132,6 +134,7 @@ async def test_estimated_required_payment_keeps_its_basis_after_target_correctio
 
 @pytest.mark.parametrize("opening,ask", [("50000", False), ("1000", True)])
 async def test_unneeded_receipt_question_does_not_leak_into_voice(store, opening, ask):
+    """Verify undated receipts prompt voice questions only when needed for the purchase."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     state = await tools.update_facts(
@@ -176,10 +179,12 @@ async def test_unneeded_receipt_question_does_not_leak_into_voice(store, opening
 
 
 async def test_mixed_income_multiple_debts_and_corrections_share_one_dated_plan(store):
+    """Verify mixed finances and corrections stay consistent across plans, streams, and cards."""
     initial = await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
 
     def day(offset):
+        """Format an ISO date at the given offset from the session anchor."""
         return (initial.anchor_date + timedelta(days=offset)).isoformat()
 
     items = [

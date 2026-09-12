@@ -15,6 +15,7 @@ from .test_decision_priorities import next_action
 
 
 async def test_provider_retraction_preserves_dues_other_reports_and_replay(store):
+    """Verify provider retraction preserves dues, other reports, and idempotent replay."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -23,8 +24,12 @@ async def test_provider_retraction_preserves_dues_other_reports_and_replay(store
                 "1000",
                 [
                     record(
-                        "rent", "essential", "2000", "2026-09-14",
-                        label="Rent", controllability="committed",
+                        "rent",
+                        "essential",
+                        "2000",
+                        "2026-09-14",
+                        label="Rent",
+                        controllability="committed",
                     ),
                     record("other", "essential", "100", "2026-09-22", label="Rent"),
                 ],
@@ -71,6 +76,7 @@ async def test_provider_retraction_preserves_dues_other_reports_and_replay(store
     "identity", ["rent", "Rent", "rent:*", "rent:2026-09-15", "other:2026-09-14"]
 )
 async def test_provider_retraction_requires_exact_existing_occurrence(store, identity):
+    """Verify provider retractions reject inexact or nonexistent occurrence identifiers atomically."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("rent", "essential", "2000", "2026-09-14")]))
@@ -86,6 +92,7 @@ async def test_provider_retraction_requires_exact_existing_occurrence(store, ide
 
 
 async def test_provider_upsert_and_retraction_conflict_is_atomic(store):
+    """Verify simultaneous provider upsert and retraction reject the entire facts update."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("rent", "essential", "2000", "2026-09-14")]))
@@ -108,6 +115,7 @@ async def test_provider_upsert_and_retraction_conflict_is_atomic(store):
 
 
 def test_provider_retractions_are_optional_and_bounded():
+    """Verify provider retraction lists default to empty and reject more than one thousand entries."""
     assert FactsPatch(expected_revision=0).remove_provider_response_ids == []
     with pytest.raises(ValidationError):
         FactsPatch.model_validate(
@@ -117,6 +125,7 @@ def test_provider_retractions_are_optional_and_bounded():
 
 @pytest.mark.parametrize("terms", [{}, {"debtType": "loan"}])
 async def test_sparse_income_to_debt_and_cash_correction_commit_together(store, terms):
+    """Verify sparse income-to-debt corrections preserve terms and commit cash changes atomically."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("transfer", "income", "2000", "2026-09-12")]))
@@ -150,6 +159,7 @@ async def test_sparse_income_to_debt_and_cash_correction_commit_together(store, 
 
 @pytest.mark.parametrize("terms", [{}, {"reliability": "reliable"}])
 async def test_sparse_debt_to_income_clears_only_incompatible_carried_fields(store, terms):
+    """Verify debt-to-income corrections clear incompatible carried fields while retaining terms."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -213,6 +223,7 @@ async def test_sparse_debt_to_income_clears_only_incompatible_carried_fields(sto
 async def test_category_corrections_never_erase_explicit_contradictory_input(
     store, kind, contradiction
 ):
+    """Verify category corrections reject explicit contradictions without changing session facts."""
     await store.create("owner")
     baseline = await store.command(
         "owner",

@@ -14,6 +14,7 @@ from .test_finance import project
 
 
 async def test_linked_choice_reproduces_its_metrics_with_retained_assumptions(store):
+    """Verify a linked preview matches choice metrics while retaining accepted assumptions."""
     await store.create("owner")
     data = facts(
         "100",
@@ -75,6 +76,7 @@ async def test_linked_choice_reproduces_its_metrics_with_retained_assumptions(st
 
 @pytest.mark.parametrize("controllability", ["unknown", "controllable"])
 def test_future_estimated_purchase_gets_a_future_facing_decision(controllability):
+    """Verify future purchase estimates prompt clarification rather than retrospective choices."""
     item = record(
         "purchase",
         "optional",

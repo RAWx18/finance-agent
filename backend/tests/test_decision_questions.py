@@ -12,6 +12,7 @@ from .test_finance import project
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_dependency_uses_earlier_protected_deadline_not_labels_or_input_order(reverse):
+    """Verify protected deadlines determine question priority regardless of labels or input order."""
     items = [
         record("urgent", "essential", "1000", "2026-09-12", label="Z need"),
         record("later", "debt", "1000", "2026-09-20", label="A loan"),
@@ -28,6 +29,7 @@ def test_dependency_uses_earlier_protected_deadline_not_labels_or_input_order(re
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_receipt_dependency_uses_reconciled_relief_not_name_or_receipt_order(reverse):
+    """Verify receipt questions prioritize funding relief rather than labels or receipt order."""
     items = [
         record("small", "income", "100", "2026-09-12", label="A wages", reliability="unknown"),
         record("large", "income", "1000", "2026-09-13", label="Z wages", reliability="unknown"),
@@ -44,6 +46,7 @@ def test_receipt_dependency_uses_reconciled_relief_not_name_or_receipt_order(rev
 
 
 def test_blocking_conflict_precedes_receipt_and_usable_cash():
+    """Verify blocking debt conflicts precede receipt and opening-cash questions."""
     data = facts(
         "0",
         [
@@ -59,6 +62,7 @@ def test_blocking_conflict_precedes_receipt_and_usable_cash():
 
 
 def test_undated_requirement_has_no_invented_due_date():
+    """Verify undated requirements prompt for dates without inventing deadlines or gaps."""
     plan = project(
         facts(
             "100",
@@ -73,6 +77,7 @@ def test_undated_requirement_has_no_invented_due_date():
 
 
 def test_known_income_amount_missing_date_asks_availability_date_not_amount():
+    """Verify known income with no date prompts for availability rather than its amount."""
     plan = project(
         facts(
             "0",
@@ -89,6 +94,7 @@ def test_known_income_amount_missing_date_asks_availability_date_not_amount():
 
 @pytest.mark.parametrize("reliability", ["uncertain", "unknown"])
 def test_late_income_availability_cannot_displace_earlier_gap(reliability):
+    """Verify late income uncertainty does not displace an earlier essential shortfall."""
     plan = project(
         facts(
             "100",
@@ -103,6 +109,7 @@ def test_late_income_availability_cannot_displace_earlier_gap(reliability):
 
 @pytest.mark.parametrize("field", ["amount", "target"])
 def test_required_minimum_and_intended_payment_have_distinct_questions(field):
+    """Verify card questions distinguish the required minimum from the intended payment."""
     card = record("card", "debt", "500", "2026-09-12", debtType="card", target=money("1000"))
     card[field] = money(None, "unknown")
     action = next_action(project(facts("2000", [card])))
@@ -113,6 +120,7 @@ def test_required_minimum_and_intended_payment_have_distinct_questions(field):
 
 @pytest.mark.parametrize("status", ["unknown", "none"])
 def test_focused_purchase_stops_after_explicit_needs_answer_without_income_inventory(status):
+    """Verify explicit needs answers end focused purchase questioning without an income inventory."""
     data = facts(
         "50000",
         [record("phone", "optional", "5000", "2026-09-20")],
@@ -128,6 +136,7 @@ def test_focused_purchase_stops_after_explicit_needs_answer_without_income_inven
 
 
 def test_funded_focused_purchase_does_not_interview_unneeded_income():
+    """Verify a funded focused purchase can reach review despite an irrelevant income date."""
     data = facts(
         "50000",
         [
@@ -143,6 +152,7 @@ def test_funded_focused_purchase_does_not_interview_unneeded_income():
 
 
 def test_known_urgent_gap_gets_help_before_scope_check():
+    """Verify a known urgent shortfall receives actionable help before scope clarification."""
     plan = project(
         facts(
             "100",
@@ -156,6 +166,7 @@ def test_known_urgent_gap_gets_help_before_scope_check():
 
 
 def test_opening_and_scope_questions_do_not_expose_internal_category_states():
+    """Verify cash and scope questions use plain language rather than internal category states."""
     data = facts("0", [], coverage={})
     data["opening"] = money(None, "unknown")
     text = next_action(project(data)).question
@@ -169,6 +180,7 @@ def test_opening_and_scope_questions_do_not_expose_internal_category_states():
 
 @pytest.mark.parametrize("reverse", [False, True])
 def test_protection_depends_on_commitment_not_kind_or_label_inventory(reverse):
+    """Verify commitment protects an undated requirement regardless of category or label order."""
     items = [
         record("required", "optional", "1000", None, controllability="committed", label="Z item"),
         record("small", "essential", "100", None, label="A item"),
@@ -193,6 +205,7 @@ def test_protection_depends_on_commitment_not_kind_or_label_inventory(reverse):
 @pytest.mark.parametrize("reverse", [False, True])
 @pytest.mark.parametrize("basis", ["committed", "autoDebit", "essential", "debt"])
 def test_undated_protection_uses_required_amounts_not_targets(reverse, basis):
+    """Verify undated protected needs rank by required amounts rather than targets or input order."""
     items = [
         record(
             "required",
@@ -217,12 +230,16 @@ def test_undated_protection_uses_required_amounts_not_targets(reverse, basis):
     assert plan.first_gap is None and plan.outflow_paise == 2500
     assert plan.closing_paise == 7500 and plan.reliable_income_paise == 0
     assert not plan.budget_basis.dated_projection_complete
-    assert "what-if, not proof payments can be made on time" in plan.decision_assessment.outcome.summary
+    assert (
+        "what-if, not proof payments can be made on time"
+        in plan.decision_assessment.outcome.summary
+    )
     assert plan.undated_impact.closing_paise < 0
 
 
 @pytest.mark.parametrize("intent", ["plan30Days", "specificDecision"])
 def test_unknown_outflow_scope_never_gives_positive_assurance_with_dated_records(intent):
+    """Verify unknown outflow coverage prevents affordability assurance despite dated records."""
     plan = project(
         facts(
             "50000",
@@ -239,4 +256,7 @@ def test_unknown_outflow_scope_never_gives_positive_assurance_with_dated_records
     assert next_action(plan).kind == "reviewOutcome"
     assert plan.decision_assessment.outcome.readiness == "qualified"
     assert "fit" not in plan.decision_assessment.outcome.summary
-    assert "Check remaining living costs and required payments" in plan.decision_assessment.outcome.summary
+    assert (
+        "Check remaining living costs and required payments"
+        in plan.decision_assessment.outcome.summary
+    )

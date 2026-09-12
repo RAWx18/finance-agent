@@ -10,6 +10,7 @@ from .test_finance import project
 
 @pytest.mark.parametrize("amount", ["9000", None])
 def test_unknown_details_of_explicitly_uncertain_income_do_not_displace_urgent_rent(amount):
+    """Verify missing uncertain-income details do not displace urgent rent guidance."""
     plan = project(
         facts(
             "4000",
@@ -35,6 +36,7 @@ def test_unknown_details_of_explicitly_uncertain_income_do_not_displace_urgent_r
 
 @pytest.mark.parametrize("reliability", ["reliable", "unknown"])
 def test_income_not_explicitly_uncertain_still_needs_usable_date(reliability):
+    """Verify income not explicitly uncertain prompts for a usable date before rent guidance."""
     plan = project(
         facts(
             "4000",

@@ -20,6 +20,7 @@ from .test_scenarios import operation
 
 @pytest.fixture
 async def cached_session(store):
+    """Seed accepted and pending scenarios with invalid cached projections in state and receipts."""
     owner = owner_hash("synthetic-cache-test")
     await store.create(owner)
     await store.command(
@@ -62,6 +63,7 @@ async def cached_session(store):
 
 
 async def test_cached_projections_reload_without_writes_or_new_consent(store, cached_session):
+    """Verify cached projections rebuild on reads and replays without writes or altered consent."""
     owner, expected, request, text = cached_session
     store.clock = lambda: NOW + timedelta(hours=2)
     await store.close()
@@ -92,6 +94,7 @@ async def test_cached_projections_reload_without_writes_or_new_consent(store, ca
 
 
 async def test_cached_replay_uses_its_own_facts_without_restoring_state(store, cached_session):
+    """Verify replay uses its own facts without restoring, publishing, or rewriting state."""
     owner, expected, request, _ = cached_session
     current = await store.command(owner, parsed_command(facts("200"), 2))
     queue = await store.subscribe(owner)
@@ -106,6 +109,7 @@ async def test_cached_replay_uses_its_own_facts_without_restoring_state(store, c
 async def test_missing_cached_date_rebuilds_once_without_changing_financial_state(
     store, cached_session
 ):
+    """Verify missing cached dates trigger one persisted rebuild without financial changes."""
     owner, expected, request, text = cached_session
     payload = json.loads(text)
     for value in (payload, payload["preview"], payload["accepted"]):
@@ -144,6 +148,7 @@ async def test_missing_cached_date_rebuilds_once_without_changing_financial_stat
     "path", ["/api/session", "/api/session/export", "/api/session/options", "/api/session/call"]
 )
 def test_returning_browser_recovers_missing_cached_date_with_same_cookie(client, path):
+    """Verify returning browsers recover missing cached dates with the same session identity."""
     client.post("/api/session", json={})
     original = client.post(
         "/api/session/commands",
@@ -185,6 +190,7 @@ def test_returning_browser_recovers_missing_cached_date_with_same_cookie(client,
 async def test_invalid_authoritative_state_is_sanitized_and_retained(
     store, cached_session, field, value
 ):
+    """Verify invalid source state is retained with sanitized errors and no snapshot exposure."""
     owner, _, _, text = cached_session
     payload = json.loads(text)
     target = payload
@@ -213,6 +219,7 @@ async def test_invalid_authoritative_state_is_sanitized_and_retained(
 
 @pytest.mark.parametrize("text", ["[]", '{"facts":', "{}"])
 async def test_invalid_stored_json_is_sanitized(store, text):
+    """Verify malformed or incomplete stored JSON reports an invalid-state error."""
     owner = owner_hash("synthetic-invalid-json")
     await store.create(owner)
     await store.connection().execute(
@@ -225,6 +232,7 @@ async def test_invalid_stored_json_is_sanitized(store, text):
 
 
 async def test_inconsistent_saved_assumptions_fail_without_dropping_them(store, cached_session):
+    """Verify inconsistent accepted adjustments fail without discarding their stored data."""
     owner, _, _, text = cached_session
     payload = json.loads(text)
     payload["accepted"]["adjustments"][0]["amountPaise"] = 6000
@@ -243,6 +251,7 @@ async def test_inconsistent_saved_assumptions_fail_without_dropping_them(store, 
 
 
 async def test_invalid_replay_does_not_return_or_overwrite_current_state(store, cached_session):
+    """Verify invalid receipts produce sanitized errors without changing current state."""
     owner, _, request, text = cached_session
     current = await store.command(owner, parsed_command(facts("200"), 2))
     payload = json.loads(text)
@@ -262,6 +271,7 @@ async def test_invalid_replay_does_not_return_or_overwrite_current_state(store, 
 
 
 async def test_expiry_still_applies_with_obsolete_cached_projections(store, cached_session):
+    """Verify expired sessions are rejected and deleted despite obsolete cached projections."""
     owner, _, _, _ = cached_session
     store.clock = lambda: NOW + timedelta(hours=24)
     with pytest.raises(Problem) as error:

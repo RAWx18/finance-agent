@@ -24,6 +24,7 @@ from .models import (
 
 
 def money_input(value: Money) -> MoneyInput:
+    """Convert stored money to editable input while retaining its original currency terms."""
     if value.source is not None:
         return value.source.model_copy(deep=True)
     amount = value.amount_paise
@@ -34,6 +35,7 @@ def money_input(value: Money) -> MoneyInput:
 
 
 def facts_input(facts: Facts) -> FactsInput:
+    """Convert stored financial facts and provider responses to editable input."""
     return FactsInput(
         opening=money_input(facts.opening),
         reserve=f"{facts.reserve_paise // 100}.{facts.reserve_paise % 100:02}",
@@ -65,6 +67,7 @@ def facts_input(facts: Facts) -> FactsInput:
 
 
 def conflict_value(value: ConflictValueInput) -> ConflictValue:
+    """Normalize a disputed amount or date while retaining supplied conversion terms."""
     source = (
         MoneyInput(amount=value.amount, status=value.status, conversion=value.conversion)
         if value.amount is not None
@@ -80,6 +83,7 @@ def conflict_value(value: ConflictValueInput) -> ConflictValue:
 
 
 def merge_money(value: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any]:
+    """Preserve unspecified conversion terms in a partial money correction."""
     if "conversion" not in value and saved.get("conversion") is not None:
         value["conversion"] = saved["conversion"]
     elif (
@@ -92,6 +96,7 @@ def merge_money(value: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any]:
 
 
 def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput:
+    """Apply fact corrections, conflicts, resolutions, and validated record merges."""
     data = facts_input(facts).model_dump()
     supplied = patch.model_dump(
         exclude_unset=True,
@@ -462,6 +467,7 @@ def set_conflict_value(
     conflict: FactConflict,
     value: ConflictValue | None,
 ) -> None:
+    """Assign a resolved field value or mark an unresolved disputed field as unknown."""
     if conflict.field == "schedule.date":
         records[conflict.record_id or ""]["schedule"].update(
             date=value.date if value else None,

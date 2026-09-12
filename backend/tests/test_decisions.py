@@ -18,6 +18,7 @@ from .test_scenarios import initialize, operation, submit
 
 
 def september():
+    """Build a September scenario with early obligations, later salary, and optional reductions."""
     return facts(
         "4000",
         [
@@ -63,10 +64,12 @@ def september():
 
 
 def cuts():
+    """Build adjustments removing headphones and reducing the card payment to its minimum."""
     return [adjustment("headphones:2026-09-28"), adjustment("card:2026-09-24", "1000")]
 
 
 def test_september_conclusion_and_provider_actions_not_late_cuts():
+    """Verify early rent and EMI gaps take priority over later cuts that cannot resolve them."""
     plan = project(september())
     assert (plan.outflow_paise, plan.closing_paise) == (2300000, 1100000)
     assert (plan.first_gap.date, plan.first_gap.amount_paise) == (date(2026, 9, 14), 600000)
@@ -102,6 +105,7 @@ def test_september_conclusion_and_provider_actions_not_late_cuts():
 
 @pytest.mark.parametrize("with_cuts", [False, True])
 def test_uncertain_income_joint_branches_use_reported_dates_and_same_kernel(with_cuts):
+    """Verify uncertain-income branches preserve dated gap metrics with or without accepted cuts."""
     data = september()
     data["records"][3]["reliability"] = "uncertain"
     plan = adjusted(data, cuts()) if with_cuts else project(data)
@@ -124,6 +128,7 @@ def test_uncertain_income_joint_branches_use_reported_dates_and_same_kernel(with
 
 @pytest.mark.parametrize("reliability,status", [("unknown", "exact"), ("reliable", "estimate")])
 def test_amount_exactness_is_independent_from_assured_arrival(reliability, status):
+    """Verify income needs both exact amounts and reliable arrival to count as reliable cash."""
     data = facts("0", [record("salary", "income", "30000", "2026-09-21", reliability=reliability)])
     data["records"][0]["amount"]["status"] = status
     plan = project(data)
@@ -133,6 +138,7 @@ def test_amount_exactness_is_independent_from_assured_arrival(reliability, statu
 
 
 def test_undated_rent_is_next_question_not_coverage_and_never_spendable():
+    """Verify undated rent precedes coverage questions and prevents spendable-cash assurance."""
     data = facts(
         "4000",
         [record("rent", "essential", "8000", None), record("salary", "income", "30000", None)],
@@ -150,6 +156,7 @@ def test_undated_rent_is_next_question_not_coverage_and_never_spendable():
 
 
 def test_unknown_amount_and_target_stay_explicit_without_erasing_minimum():
+    """Verify unknown amounts and card targets remain explicit without erasing known minimums."""
     data = facts(
         "100",
         [
@@ -170,6 +177,7 @@ def test_unknown_amount_and_target_stay_explicit_without_erasing_minimum():
 
 
 def test_same_day_consequences_group_obligations_not_arbitrary_payment_allocation():
+    """Verify same-day consequences group obligations without arbitrary payment allocation."""
     items = [
         record("a", "essential", "300", "2026-09-12"),
         record("z", "debt", "400", "2026-09-12", autoDebit=True),
@@ -195,6 +203,7 @@ def test_same_day_consequences_group_obligations_not_arbitrary_payment_allocatio
 
 
 def test_zero_outstanding_blocks_only_dependent_choice_and_payment_stays_due():
+    """Verify zero debt balance conflicts block dependent choices without erasing due payments."""
     data = september()
     data["records"][4]["outstanding"] = money("0")
     plan = project(data)
@@ -217,6 +226,7 @@ def test_zero_outstanding_blocks_only_dependent_choice_and_payment_stays_due():
 
 @pytest.mark.parametrize("status", ["awaiting", "declined", "reportedTerms"])
 def test_provider_reports_preserve_original_obligations_and_scoped_invalidation(client, status):
+    """Verify provider reports preserve dues and invalidate only when dependent terms change."""
     baseline = initialize(client, september())
     data = september()
     data["providerResponses"] = [
@@ -259,6 +269,7 @@ def test_provider_reports_preserve_original_obligations_and_scoped_invalidation(
 
 @pytest.mark.parametrize("change", ["salary", "minimum", "autoDebit", "controllability", "date"])
 def test_corrections_preserve_independent_acceptance_and_emit_invalidations(client, change):
+    """Verify corrections retain independent accepted adjustments and expose invalidated ones."""
     initialize(client, september())
     proposed = submit(client, "previewAdjustments", adjustments=cuts())
     accepted = submit(client, "acceptPreview", previewId=proposed["preview"]["id"])
@@ -295,6 +306,7 @@ def test_corrections_preserve_independent_acceptance_and_emit_invalidations(clie
 
 
 def test_unknown_controllability_is_only_a_hypothesis_and_conditional_consent_rejected(client):
+    """Verify unknown control blocks acceptance and nonexplicit or conditional consent is rejected."""
     data = september()
     data["records"][5]["controllability"] = "unknown"
     initialize(client, data)
@@ -319,6 +331,7 @@ def test_unknown_controllability_is_only_a_hypothesis_and_conditional_consent_re
 
 
 def test_irrelevant_details_do_not_drive_questions_and_brief_never_overrides_risk():
+    """Verify irrelevant details and brief-response preferences do not override funding risks."""
     data = september()
     data["records"].extend(
         [
@@ -349,6 +362,7 @@ def test_irrelevant_details_do_not_drive_questions_and_brief_never_overrides_ris
 
 
 async def test_voice_full_proposal_path_corrections_and_canonical_schema(store):
+    """Verify voice previews, acceptance, corrections, review, and clearing share canonical state."""
     await store.create("owner")
     await store.command("owner", parsed_command(september()))
     refreshed = []
@@ -408,6 +422,7 @@ async def test_voice_full_proposal_path_corrections_and_canonical_schema(store):
 
 
 async def test_voice_provider_and_decision_deep_merge_and_membership_coverage(store):
+    """Verify voice edits merge decision context, retain provider reports, and track income coverage."""
     await store.create("owner")
     await store.command("owner", parsed_command(september()))
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
@@ -458,6 +473,7 @@ async def test_voice_provider_and_decision_deep_merge_and_membership_coverage(st
 
 
 async def test_historical_accepted_occurrence_retains_consent_not_fresh_retroactive_edit(store):
+    """Verify historical adjustments retain original consent but reject fresh retroactive edits."""
     await store.create("owner")
     data = facts("1000", [record("optional", "optional", "100", "2026-09-11")])
     await store.command("owner", parsed_command(data))
@@ -502,6 +518,7 @@ async def test_historical_accepted_occurrence_retains_consent_not_fresh_retroact
 
 
 def test_decision_focus_references_are_validated_atomically(client):
+    """Verify invalid decision focus references are rejected without changing session state."""
     baseline = initialize(client, september())
     data = deepcopy(september())
     data["decision"] = {"focusRecordIds": ["missing"]}
@@ -510,6 +527,7 @@ def test_decision_focus_references_are_validated_atomically(client):
 
 
 def test_proposal_explicitly_exposes_removal_of_retained_assumptions(client):
+    """Verify replacement previews expose removed assumptions before acceptance changes the plan."""
     initialize(client, september())
     preview = submit(client, "previewAdjustments", adjustments=cuts())
     accepted = submit(client, "acceptPreview", previewId=preview["preview"]["id"])
@@ -521,6 +539,7 @@ def test_proposal_explicitly_exposes_removal_of_retained_assumptions(client):
 
 
 def test_supported_reductions_expose_first_gap_vs_peak_vs_later_impacts():
+    """Verify reduction choices distinguish first-gap relief from peak-gap and later-only effects."""
     data = facts(
         "100",
         [
@@ -550,6 +569,7 @@ def test_supported_reductions_expose_first_gap_vs_peak_vs_later_impacts():
     ],
 )
 def test_invalid_provider_evidence_is_atomic(client, responses):
+    """Verify invalid provider evidence is rejected atomically without changing the snapshot."""
     baseline = initialize(client, september())
     data = september()
     data["providerResponses"] = responses

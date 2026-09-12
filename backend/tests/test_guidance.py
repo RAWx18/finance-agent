@@ -16,6 +16,7 @@ from .test_scenarios import initialize, operation, submit
 
 
 def test_unknown_target_keeps_known_minimum_after_correcting_accepted_plan(client):
+    """Verify unknown-target corrections invalidate acceptance but retain known minimum obligations."""
     data = facts(
         "100",
         [record("card", "debt", "500", "2026-09-12", debtType="card", target=money("1000"))],
@@ -44,6 +45,7 @@ def test_unknown_target_keeps_known_minimum_after_correcting_accepted_plan(clien
 
 @pytest.mark.parametrize("status", ["exact", "estimate"])
 def test_required_amount_is_retained_without_inventing_unknown_target(status):
+    """Verify known or estimated required amounts remain due without inventing unknown targets."""
     item = record("loan", "debt", "500", "2026-09-12", target=money(None, "unknown"))
     item["amount"] = money("500", status)
     plan = project(facts("100", [item]))
@@ -55,6 +57,7 @@ def test_required_amount_is_retained_without_inventing_unknown_target(status):
 
 
 def test_reserve_guidance_amount_belongs_to_first_breach_date():
+    """Verify reserve guidance reports the first breach amount rather than the peak shortfall."""
     plan = project(
         facts(
             "1000",
@@ -73,6 +76,7 @@ def test_reserve_guidance_amount_belongs_to_first_breach_date():
 
 
 def test_opening_reserve_guidance_uses_original_cash_basis_date():
+    """Verify opening reserve breaches use the original cash-basis date."""
     plan = project(facts("100", reserve="500"))
     step = next(
         item for item in plan.decision_assessment.consequences if item.kind == "reserveBreach"
@@ -81,6 +85,7 @@ def test_opening_reserve_guidance_uses_original_cash_basis_date():
 
 
 def test_zeroed_occurrence_is_not_a_remaining_commitment():
+    """Verify zeroed optional occurrences are excluded from remaining commitment constraints."""
     data = facts(
         "1000",
         [
@@ -98,6 +103,7 @@ def test_zeroed_occurrence_is_not_a_remaining_commitment():
 
 @pytest.mark.parametrize("opening", ["0", "1000"])
 def test_overdue_guidance_preserves_original_deadline(opening):
+    """Verify overdue guidance preserves the original deadline while cash events use the anchor."""
     plan = project(facts(opening, [record("rent", "essential", "100", "2026-09-10")]))
     event = plan.events[0]
     assert event.date == date(2026, 9, 11)
@@ -111,6 +117,7 @@ def test_overdue_guidance_preserves_original_deadline(opening):
 
 
 def test_zero_outstanding_requires_reconciliation_before_card_reduction():
+    """Verify zero outstanding debt requires reconciliation before card reductions become eligible."""
     data = facts(
         "3000",
         [
@@ -135,6 +142,7 @@ def test_zero_outstanding_requires_reconciliation_before_card_reduction():
 
 
 async def test_retained_baseline_recalculates_known_obligations_before_comparing(store):
+    """Verify retained baseline reads recalculate known dues before comparing proposed reductions."""
     owner = owner_hash("retained-minimum")
     await store.create(owner)
     optional = record("optional", "optional", "50", "2026-09-13")
@@ -173,6 +181,7 @@ async def test_retained_baseline_recalculates_known_obligations_before_comparing
 
 @pytest.mark.parametrize("scenario_field", ["preview", "accepted"])
 async def test_retained_scenarios_use_the_same_corrected_calculation(store, scenario_field):
+    """Verify retained previews and accepted scenarios recalculate required dues consistently."""
     owner = owner_hash("retained-scenario")
     await store.create(owner)
     data = facts(

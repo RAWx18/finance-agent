@@ -49,22 +49,30 @@ from .workspace import change_set, project
 
 
 class Problem(Exception):
+    """A public application failure with an HTTP status and optional session snapshot."""
+
     def __init__(self, status: int, code: str, message: str, snapshot: Snapshot | None = None):
+        """Package a public error and optional recovery snapshot."""
         self.status = status
         self.body = Error(code=code, message=message, snapshot=snapshot)
         super().__init__(message)
 
 
 def utc_now() -> datetime:
+    """Return the current timezone-aware UTC time."""
     return datetime.now(UTC)
 
 
 def owner_hash(token: str) -> str:
+    """Return a stable owner identifier derived from a token."""
     return hashlib.sha256(token.encode()).hexdigest()
 
 
 class Store:
+    """Persistent financial sessions with authorized commands and snapshot subscriptions."""
+
     def __init__(self, path: Path, config: Config, clock: Callable[[], datetime] = utc_now):
+        """Initialize session storage settings and live subscription state."""
         self.path = path
         self.config = config
         self.clock = clock
@@ -76,6 +84,7 @@ class Store:
         self.db: aiosqlite.Connection | None = None
 
     async def open(self) -> None:
+        """Open persistent storage and prepare session, command, and conversation tables."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.path)
         await self.db.executescript(
@@ -137,6 +146,7 @@ class Store:
         await self.db.commit()
 
     async def close(self) -> None:
+        """Notify subscribers of shutdown and close persistent storage."""
         async with self.lock:
             for owner in list(self.listeners):
                 self.publish(owner, Error(code="unavailable", message="Server is shutting down."))
@@ -145,17 +155,20 @@ class Store:
                 self.db = None
 
     def connection(self) -> aiosqlite.Connection:
+        """Return the open storage connection or report unavailability."""
         if self.db is None:
             raise Problem(503, "unavailable", "Storage is unavailable.")
         return self.db
 
     async def check(self, owner: Owner) -> None:
+        """Authorize owners carrying authenticated session credentials."""
         if isinstance(owner, Access):
             if self.authorize is None:
                 raise Problem(401, "unauthenticated", "Sign in to continue.")
             await self.authorize(owner)
 
     async def owner_key(self, owner: Owner) -> str:
+        """Resolve an owner key after rechecking credentials under the caller's lock."""
         # Network and voice callers retain Access through every lock and transaction boundary.
         if isinstance(owner, Access):
             if self.authorize_locked is None:
@@ -165,6 +178,7 @@ class Store:
         return owner
 
     def revoke(self, user_id: str, session_hash: str | None = None) -> None:
+        """End live subscriptions for a user or a particular authenticated session."""
         for queue in tuple(self.listeners.get(user_id, ())):
             access = self.listener_access.get(queue)
             if session_hash is None or (access and access.session_hash == session_hash):
@@ -175,6 +189,7 @@ class Store:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
+        """Commit a storage transaction on success or roll it back on any failure."""
         db = self.connection()
         try:
             await db.execute("BEGIN IMMEDIATE")
@@ -185,6 +200,7 @@ class Store:
             raise
 
     def publish(self, owner: str, value: Snapshot | Error) -> None:
+        """Deliver the latest snapshot or terminate subscriptions with a session error."""
         for queue in self.listeners.get(owner, set()):
             if queue.full():
                 queue.get_nowait()
@@ -195,6 +211,7 @@ class Store:
             self.listeners.pop(owner, None)
 
     async def remove(self, owner: str, code: str, access: Owner | None = None) -> None:
+        """Delete a stored session and notify its subscribers of the terminal reason."""
         db = self.connection()
         async with self.transaction():
             if access is not None:
@@ -203,6 +220,7 @@ class Store:
         self.publish(owner, Error(code=code, message=f"Session {code}."))
 
     def load_snapshot(self, text: str, *, today: date | None = None) -> tuple[Snapshot, bool]:
+        """Restore a stored snapshot and recompute its financial and workspace projections."""
         try:
             payload = json.loads(text)
             if not isinstance(payload, dict):
@@ -244,6 +262,7 @@ class Store:
             ) from None
 
     async def current(self, owner: Owner) -> Snapshot:
+        """Load a live session and refresh date-sensitive projections under the store lock."""
         access = owner
         owner = await self.owner_key(owner)
         async with self.connection().execute(
@@ -268,6 +287,7 @@ class Store:
         return snapshot
 
     async def save_snapshot(self, owner: str, snapshot: Snapshot) -> None:
+        """Persist a session and its selected conversation memory in the caller's transaction."""
         # The caller holds the shared lock and transaction for workspace and memory writes.
         result = snapshot.model_dump_json(by_alias=True)
         db = self.connection()
@@ -286,11 +306,13 @@ class Store:
                     raise Problem(409, "conversationChanged", "Conversation memory is unavailable.")
 
     async def get(self, owner: Owner) -> Snapshot:
+        """Authorize the owner and return the current financial snapshot."""
         await self.check(owner)
         async with self.lock:
             return await self.current(owner)
 
     async def options(self, owner: Owner) -> AdjustmentOptions:
+        """Return currently available adjustment options and their source revision."""
         await self.check(owner)
         async with self.lock:
             snapshot = await self.current(owner)
@@ -308,6 +330,7 @@ class Store:
             )
 
     async def create(self, owner: Owner) -> Snapshot:
+        """Return an existing session or create an empty one within storage limits."""
         await self.check(owner)
         access = owner
         async with self.lock:
@@ -357,6 +380,7 @@ class Store:
             return snapshot
 
     async def command(self, owner: Owner, command: Command) -> Snapshot:
+        """Apply a revision-checked financial command with idempotent result storage."""
         await self.check(owner)
         access = owner
         changes: FactsPatch | None = None
@@ -925,6 +949,7 @@ class Store:
     def resolve_proposal(
         self, snapshot: Snapshot, inputs: list[AdjustmentInput], today: date
     ) -> list[Adjustment]:
+        """Validate proposal amounts while preserving consent and excluding rejected plans."""
         retained = (
             {item.event_id: item for item in snapshot.accepted.adjustments}
             if (snapshot.accepted is not None)
@@ -964,6 +989,7 @@ class Store:
         return resolved
 
     async def delete(self, owner: Owner) -> None:
+        """Delete the owner's financial session if it is still present and unexpired."""
         await self.check(owner)
         async with self.lock:
             try:
@@ -975,6 +1001,7 @@ class Store:
             await self.remove(await self.owner_key(owner), "deleted", owner)
 
     async def cleanup_locked(self) -> None:
+        """Delete expired sessions and notify subscribers while the store lock is held."""
         async with self.connection().execute(
             "SELECT owner FROM sessions WHERE expires <= ?", (self.clock().isoformat(),)
         ) as cursor:
@@ -983,10 +1010,12 @@ class Store:
             await self.remove(row[0], "expired")
 
     async def cleanup(self) -> None:
+        """Remove expired sessions under the shared store lock."""
         async with self.lock:
             await self.cleanup_locked()
 
     async def subscribe(self, owner: Owner) -> asyncio.Queue[Snapshot | Error]:
+        """Register an authorized subscription seeded with the current financial snapshot."""
         await self.check(owner)
         async with self.lock:
             snapshot = await self.current(owner)
@@ -1005,6 +1034,7 @@ class Store:
             return queue
 
     def unsubscribe(self, owner: Owner, queue: asyncio.Queue[Snapshot | Error]) -> None:
+        """Detach a snapshot subscription and discard its retained access credentials."""
         owner = owner.user_id if isinstance(owner, Access) else owner
         self.listener_access.pop(queue, None)
         listeners = self.listeners.get(owner)
@@ -1014,6 +1044,7 @@ class Store:
                 del self.listeners[owner]
 
     async def ready(self) -> None:
+        """Verify that persistent storage can answer a query."""
         async with self.lock:
             async with self.connection().execute("SELECT 1") as cursor:
                 await cursor.fetchone()

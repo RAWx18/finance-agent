@@ -31,6 +31,7 @@ from .test_scenarios import operation
     ],
 )
 def test_conflict_gates_only_dependent_funding(field, day, values, immediate):
+    """Verify conflicts block immediate funding only when the decision depends on them."""
     loan = record("loan", "debt", "2000", day)
     if field != "schedule.date":
         loan[field] = money(None, "unknown")
@@ -70,6 +71,7 @@ def test_conflict_gates_only_dependent_funding(field, day, values, immediate):
 
 
 def test_conflicted_opening_cannot_establish_affordability():
+    """Verify conflicting opening balances block affordability conclusions."""
     data = facts(
         "0",
         [record("need", "essential", "1000", "2026-09-12")],
@@ -94,6 +96,7 @@ def test_conflicted_opening_cannot_establish_affordability():
 @pytest.mark.parametrize("label", ["Groceries for week", "Rent", "Essential item"])
 @pytest.mark.parametrize("control", ["unknown", "controllable"])
 def test_future_essential_need_does_not_invent_a_creditor(label, control):
+    """Verify unfunded future essentials seek support without inventing creditor obligations."""
     plan = project(
         facts(
             "100",
@@ -124,6 +127,7 @@ def test_future_essential_need_does_not_invent_a_creditor(label, control):
 
 @pytest.mark.parametrize("basis", ["committed", "autoDebit", "overdue", "provider"])
 def test_essential_obligation_keeps_payee_guidance(basis):
+    """Verify essential obligations retain agreement-based payee guidance."""
     need = record("need", "essential", "1000", "2026-09-12", label="Groceries for week")
     data = facts("100", [need])
     if basis == "committed":
@@ -146,6 +150,7 @@ def test_essential_obligation_keeps_payee_guidance(basis):
 
 
 async def test_essential_support_deferral_survives_cash_but_reopens_on_commitment(store):
+    """Verify support deferrals survive cash edits but reopen when a need becomes committed."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -176,6 +181,7 @@ async def test_essential_support_deferral_survives_cash_but_reopens_on_commitmen
 
 
 async def test_loan_target_review_is_not_an_adjustment_or_required_shortfall(store):
+    """Verify loan target reviews distinguish intended extras from required payments."""
     await store.create("owner")
     current = await store.command(
         "owner",
@@ -219,6 +225,7 @@ async def test_loan_target_review_is_not_an_adjustment_or_required_shortfall(sto
 
 @pytest.mark.parametrize("timing", ["earlier", "sameDay", "later", "minimumGap"])
 def test_loan_comparison_preserves_other_gaps(config, timing):
+    """Verify required-payment comparisons retain other funding gaps and deadline priorities."""
     items = [record("loan", "debt", "2000", "2026-09-14", target=money("5000"))]
     cash = "3000"
     if timing == "earlier":
@@ -255,6 +262,7 @@ def test_loan_comparison_preserves_other_gaps(config, timing):
 
 
 async def test_loan_same_day_deferral_keeps_target_gap_until_explicit_correction(store):
+    """Verify deferring a loan action preserves its target gap until the target is corrected."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -318,6 +326,7 @@ async def test_loan_same_day_deferral_keeps_target_gap_until_explicit_correction
     ],
 )
 def test_loan_minimum_fit_requires_confirmed_control_and_amounts(fields):
+    """Verify loan minimum-fit guidance requires confirmed control and exact amounts."""
     loan = record("loan", "debt", "2000", "2026-09-12", target=money("5000"))
     loan.update(fields)
     plan = project(facts("3000", [loan]))
@@ -328,6 +337,7 @@ def test_loan_minimum_fit_requires_confirmed_control_and_amounts(fields):
 
 @pytest.mark.parametrize("target", [money("2000"), money(None, "unknown")])
 def test_required_only_gap_is_not_mislabeled_as_an_intended_extra(target):
+    """Verify required-payment gaps are described as unfunded obligations, not optional extras."""
     plan = project(facts("1000", [record("loan", "debt", "2000", "2026-09-12", target=target)]))
     action = next_action(plan)
     assert action.kind == "contactPayee"

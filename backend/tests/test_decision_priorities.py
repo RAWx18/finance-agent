@@ -18,12 +18,14 @@ from .test_scenarios import initialize
 
 
 def next_action(plan):
+    """Find the assessment action selected as the plan's next step."""
     assessment = plan.decision_assessment
     return next(item for item in assessment.actions if item.id == assessment.next_action_id)
 
 
 @pytest.mark.parametrize("kind", ["optional", "card"])
 def test_effective_change_is_the_next_consent_based_action(kind):
+    """Verify an effective purchase or card adjustment becomes the next consent-based preview."""
     item = (
         record("purchase", "optional", "200", "2026-09-12")
         if kind == "optional"
@@ -43,6 +45,7 @@ def test_effective_change_is_the_next_consent_based_action(kind):
 
 
 def test_effective_unknown_control_precedes_provider_and_coverage():
+    """Verify useful controllability clarification precedes provider and coverage questions."""
     data = facts(
         "100",
         [
@@ -57,6 +60,7 @@ def test_effective_unknown_control_precedes_provider_and_coverage():
 
 
 def test_partial_early_change_names_residual_not_full_solution():
+    """Verify partial early relief names the residual shortfall without claiming resolution."""
     plan = project(
         facts(
             "100",
@@ -73,6 +77,7 @@ def test_partial_early_change_names_residual_not_full_solution():
 
 
 def test_later_uncertain_salary_does_not_displace_unfunded_rent():
+    """Verify later uncertain income does not displace an earlier unfunded rent decision."""
     data = september()
     data["records"][3]["reliability"] = "uncertain"
     plan = project(data)
@@ -86,6 +91,7 @@ def test_later_uncertain_salary_does_not_displace_unfunded_rent():
 
 
 def test_minimum_shortfall_precedes_unknown_intended_extra():
+    """Verify a required card minimum shortfall takes priority over an unknown intended extra."""
     plan = project(
         facts(
             "100",
@@ -111,6 +117,7 @@ def test_minimum_shortfall_precedes_unknown_intended_extra():
 
 @pytest.mark.parametrize("status,kind", [("declined", "seekSupport"), ("awaiting", "followUp")])
 def test_terminal_provider_state_has_a_bounded_action(status, kind):
+    """Verify provider responses yield bounded follow-up or support actions with the real gap."""
     data = facts("0", [record("rent", "essential", "1000", "2026-09-14", label="Rent")])
     data["providerResponses"] = [
         {"eventId": "rent:2026-09-14", "status": status, "reportedOn": "2026-09-11"}
@@ -128,6 +135,7 @@ def test_terminal_provider_state_has_a_bounded_action(status, kind):
 
 
 def test_same_day_action_is_semantically_invariant_to_identifiers():
+    """Verify swapping record identifiers leaves same-day group guidance unchanged."""
     items = [
         record("a", "essential", "300", "2026-09-12", label="Food"),
         record("z", "debt", "400", "2026-09-12", label="EMI", autoDebit=True),
@@ -142,6 +150,7 @@ def test_same_day_action_is_semantically_invariant_to_identifiers():
 
 
 def test_separate_same_name_obligations_do_not_repeat_duplicate_question():
+    """Verify same-name obligations on separate dates do not trigger duplicate questions."""
     plan = project(
         facts(
             "10000",
@@ -159,6 +168,7 @@ def test_separate_same_name_obligations_do_not_repeat_duplicate_question():
 
 
 def test_estimate_with_headroom_qualifies_without_exactness_gate():
+    """Verify affordable estimates qualify the outcome without blocking on exact amounts."""
     data = facts("10000", [record("food", "essential", "100", "2026-09-12")])
     data["records"][0]["amount"]["status"] = "estimate"
     plan = project(data)
@@ -169,6 +179,7 @@ def test_estimate_with_headroom_qualifies_without_exactness_gate():
 
 
 def test_unknown_income_receipt_changes_relevant_deadline_but_uncertain_is_not_reasked():
+    """Verify unknown receipts prompt clarification while uncertain receipts get confirmation actions."""
     data = facts(
         "0",
         [
@@ -187,6 +198,7 @@ def test_unknown_income_receipt_changes_relevant_deadline_but_uncertain_is_not_r
 
 
 async def test_clock_rollover_removes_fresh_choices_without_rebasing_cash(store, config):
+    """Verify day rollover retires fresh choices without rebasing cash or the original gap."""
     await store.create("owner")
     data = facts("100", [record("purchase", "optional", "200", "2026-09-11")])
     saved = await store.command("owner", parsed_command(data))
@@ -213,6 +225,7 @@ async def test_clock_rollover_removes_fresh_choices_without_rebasing_cash(store,
 
 
 async def test_voice_correction_and_explicit_provider_report_are_one_fresh_fact(store):
+    """Verify a voice correction retains its explicitly supplied fresh provider response."""
     await store.create("owner")
     data = september()
     data["providerResponses"] = [
@@ -238,6 +251,7 @@ async def test_voice_correction_and_explicit_provider_report_are_one_fresh_fact(
 
 @pytest.mark.parametrize("fresh", [False, True])
 def test_manual_report_freshness_and_visible_stale_invalidation(client, fresh):
+    """Verify manual corrections retain fresh provider reports and visibly invalidate stale ones."""
     data = september()
     data["providerResponses"] = [
         {"eventId": "rent:2026-09-14", "status": "awaiting", "reportedOn": "2026-09-11"}
@@ -260,6 +274,7 @@ def test_manual_report_freshness_and_visible_stale_invalidation(client, fresh):
 
 
 async def test_compact_outcome_export_and_spoken_preference_share_one_next_step(store):
+    """Verify compact outcomes, exports, and brief speech share the same next step."""
     await store.create("owner")
     data = september()
     data["records"].extend(
@@ -293,6 +308,7 @@ async def test_compact_outcome_export_and_spoken_preference_share_one_next_step(
 
 
 def test_ready_first_gap_solution_precedes_smaller_cut_or_unknown_control():
+    """Verify a ready first-gap solution outranks smaller cuts and unknown controllability."""
     data = facts(
         "100",
         [
@@ -307,6 +323,7 @@ def test_ready_first_gap_solution_precedes_smaller_cut_or_unknown_control():
 
 
 async def test_voice_explicit_same_status_on_corrected_terms_is_fresh_but_omission_is_not(store):
+    """Verify explicit provider reconfirmation survives voice corrections but omitted reports expire."""
     await store.create("owner")
     data = september()
     data["providerResponses"] = [
@@ -337,6 +354,7 @@ async def test_voice_explicit_same_status_on_corrected_terms_is_fresh_but_omissi
 
 
 def test_no_past_controllability_question_after_midnight(config):
+    """Verify elapsed purchases prompt status reconciliation rather than controllability questions."""
     data = facts(
         "100", [record("purchase", "optional", "200", "2026-09-11", controllability="unknown")]
     )
@@ -348,6 +366,7 @@ def test_no_past_controllability_question_after_midnight(config):
 
 
 async def test_linked_card_action_executes_real_preview_and_requires_explicit_acceptance(store):
+    """Verify linked card previews require explicit acceptance and preserve the recorded target."""
     await store.create("owner")
     data = facts(
         "1000", [record("card", "debt", "500", "2026-09-12", debtType="card", target=money("2000"))]

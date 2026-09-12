@@ -19,6 +19,7 @@ from .test_finance import project
 
 
 def foreign(amount="1000", currency="USD", rate="80", fee="2000", **terms):
+    """Build foreign-income input with explicit conversion terms and certainty defaults."""
     return {
         "amount": amount,
         "status": "exact" if amount is not None else "unknown",
@@ -35,10 +36,12 @@ def foreign(amount="1000", currency="USD", rate="80", fee="2000", **terms):
 
 
 def income(value):
+    """Wrap a money input in a dated income record for conversion tests."""
     return record("work", "income", None, "2026-09-12") | {"amount": value}
 
 
 def test_exact_conversion_and_multiple_currencies_round_trip(config):
+    """Verify exact foreign receipts aggregate in INR and preserve source inputs on round-trip."""
     source = FactsInput.model_validate(
         facts(
             "500",
@@ -65,6 +68,7 @@ def test_exact_conversion_and_multiple_currencies_round_trip(config):
 
 @pytest.mark.parametrize("field", ["rateStatus", "feeStatus", "amount"])
 def test_estimated_conversion_is_only_conditional(field):
+    """Verify estimated conversion terms count only as conditional rather than reliable income."""
     value = foreign()
     if field == "amount":
         value["status"] = "estimate"
@@ -80,6 +84,7 @@ def test_estimated_conversion_is_only_conditional(field):
 
 @pytest.mark.parametrize("term", ["rate", "fee"])
 def test_unknown_conversion_names_the_missing_term(term):
+    """Verify unknown rates or fees leave income unquantified and prompt term-specific questions."""
     value = foreign(**{term: None})
     plan = project(facts("0", [income(value)]))
     assert plan.events[0].amount_paise is None
@@ -95,6 +100,7 @@ def test_unknown_conversion_names_the_missing_term(term):
 
 
 def test_omitted_fee_is_not_zero():
+    """Verify omitting a conversion fee leaves the net receipt unknown rather than assuming zero."""
     value = foreign()
     del value["conversion"]["fee"]
     del value["conversion"]["feeStatus"]
@@ -111,6 +117,7 @@ def test_omitted_fee_is_not_zero():
     ],
 )
 def test_decimal_precision_rounds_net_once(amount, rate, fee, expected):
+    """Verify decimal conversion rounds the net INR receipt once to the expected paise amount."""
     plan = project(facts("0", [income(foreign(amount, rate=rate, fee=fee))]))
     assert plan.events[0].amount_paise == expected
 
@@ -135,6 +142,7 @@ def test_decimal_precision_rounds_net_once(amount, rate, fee, expected):
     ],
 )
 def test_invalid_conversion_schema(terms):
+    """Verify conversion input rejects malformed currencies, rates, dates, fees, and certainty."""
     value = foreign()
     value["conversion"].update(terms)
     with pytest.raises(ValidationError):
@@ -151,6 +159,7 @@ def test_invalid_conversion_schema(terms):
     ],
 )
 def test_conversion_limits_and_negative_net(value):
+    """Verify conversion rejects negative net receipts and amounts above configured limits."""
     with pytest.raises(ValueError):
         project(facts("0", [income(value)]))
 
@@ -159,6 +168,7 @@ def test_conversion_limits_and_negative_net(value):
     "location", ["opening", "essential", "debt", "target", "outstanding", "payment", "cost"]
 )
 def test_foreign_money_is_income_only(location):
+    """Verify foreign money is rejected in cash, expenses, debts, and provider terms."""
     data = facts("0", [record("bill", "debt", "100", "2026-09-12")])
     if location == "opening":
         data["opening"] = foreign()
@@ -180,6 +190,7 @@ def test_foreign_money_is_income_only(location):
 
 
 async def test_voice_store_sse_source_correction_and_cache_rebuild(store):
+    """Verify source corrections propagate to voice, events, exports, and rebuilt INR caches."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     stream = await store.subscribe("owner")
@@ -247,6 +258,7 @@ async def test_voice_store_sse_source_correction_and_cache_rebuild(store):
 
 
 async def test_foreign_conflicts_keep_original_units_and_resolution(store):
+    """Verify foreign conflicts retain source currencies without inventing INR totals."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     state = await tools.update_facts(
@@ -296,6 +308,7 @@ async def test_foreign_conflicts_keep_original_units_and_resolution(store):
 @pytest.mark.parametrize("status,confirmed", [("estimate", "exact"), ("exact", "estimate")])
 @pytest.mark.parametrize("rate_status", ["exact", "estimate"])
 def test_foreign_resolution_changes_only_source_certainty(config, status, confirmed, rate_status):
+    """Verify foreign conflict resolution changes source certainty but not rate certainty."""
     saved = normalize(FactsInput.model_validate(facts("0", [income(foreign())])), config)
     alternative = {
         "id": "euro",
@@ -364,6 +377,7 @@ def test_foreign_resolution_changes_only_source_certainty(config, status, confir
     ],
 )
 def test_foreign_resolution_reused_id_rejects_changed_source_terms(config, replacement):
+    """Verify resolving a reused conflict value ID rejects altered source terms without mutation."""
     saved = normalize(FactsInput.model_validate(facts("0", [income(foreign())])), config)
     disputed = normalize(
         merge_facts(
@@ -411,6 +425,7 @@ def test_foreign_resolution_reused_id_rejects_changed_source_terms(config, repla
 
 
 async def test_conversion_correction_reopens_answer_without_reasking_source(store):
+    """Verify source-amount correction reopens fee clarification and retains conversion terms."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     state = await tools.update_facts(
@@ -444,6 +459,7 @@ async def test_conversion_correction_reopens_answer_without_reasking_source(stor
 
 
 def test_currency_change_does_not_reuse_another_currency_rate(config):
+    """Verify changing receipt currency clears the prior currency's rate, fee, and rate date."""
     saved = normalize(FactsInput.model_validate(facts("0", [income(foreign())])), config)
     patch = FactsPatch.model_validate(
         {
@@ -469,6 +485,7 @@ def test_currency_change_does_not_reuse_another_currency_rate(config):
 
 
 def test_converted_limit_boundary_and_tiny_rates(config):
+    """Verify conversion accepts the exact money limit and rounds tiny positive rates to zero."""
     value = MoneyInput.model_validate(
         foreign("1", rate=str(config.max_money_paise // 100), fee="0")
     )

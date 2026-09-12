@@ -14,6 +14,7 @@ from .conftest import NOW, facts, parsed_command
 
 
 async def test_serialized_concurrent_edits_and_replay(store):
+    """Verify concurrent edits have one winner and winning command replays are idempotent."""
     owner = owner_hash("a")
     await store.create(owner)
     commands = [parsed_command(facts("10")), parsed_command(facts("20"))]
@@ -33,6 +34,7 @@ async def test_serialized_concurrent_edits_and_replay(store):
 
 
 async def test_transaction_failure_rolls_back_state_and_record(store):
+    """Verify command-record failures roll back session state and permit a successful retry."""
     owner = owner_hash("a")
     initial = await store.create(owner)
     await store.connection().execute(
@@ -50,6 +52,7 @@ async def test_transaction_failure_rolls_back_state_and_record(store):
 
 
 async def test_queues_are_latest_only_reconnect_current_and_delete_terminal(store):
+    """Verify streams retain current state and deletion ends listeners and removes commands."""
     owner = owner_hash("a")
     await store.create(owner)
     queue = await store.subscribe(owner)
@@ -71,6 +74,7 @@ async def test_queues_are_latest_only_reconnect_current_and_delete_terminal(stor
 
 
 async def test_expiry_cleanup_removes_commands_and_closes_streams(store):
+    """Verify expiry cleanup removes commands and ends streams with an expired-session error."""
     owner = owner_hash("a")
     await store.create(owner)
     await store.command(owner, parsed_command(facts("0")))
@@ -87,6 +91,7 @@ async def test_expiry_cleanup_removes_commands_and_closes_streams(store):
 
 
 async def test_caps_and_owner_hash_persistence(store):
+    """Verify session, command, and stream limits and persistence of hashed owner identifiers."""
     store.config = store.config.model_copy(
         update={
             "max_sessions": 1,
@@ -116,6 +121,7 @@ async def test_caps_and_owner_hash_persistence(store):
 
 
 async def test_failed_create_and_delete_release_transaction(store):
+    """Verify failed creates and deletes release transactions and preserve surviving state."""
     owner = owner_hash("a")
     db = store.connection()
     await db.execute(
@@ -144,6 +150,7 @@ async def test_failed_create_and_delete_release_transaction(store):
 
 
 async def test_cancelled_command_rolls_back_and_does_not_publish(store, monkeypatch):
+    """Verify command cancellation rolls back without publishing and permits identical retry."""
     owner = owner_hash("a")
     snapshot = await store.create(owner)
     queue = await store.subscribe(owner)
@@ -152,10 +159,12 @@ async def test_cancelled_command_rolls_back_and_does_not_publish(store, monkeypa
     execute = db.execute
 
     def interrupted_execute(sql, parameters=None):
+        """Inject cancellation after a session update while passing other SQL calls through."""
         result = execute(sql, parameters)
         if sql.startswith("UPDATE sessions"):
 
             async def interrupt():
+                """Await the database update and cancel before the transaction commits."""
                 await result
                 raise asyncio.CancelledError
 

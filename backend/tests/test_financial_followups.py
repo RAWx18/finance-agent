@@ -18,6 +18,7 @@ from .test_scenarios import operation
 
 
 def external_facts(kind):
+    """Build an exposed rent scenario with the requested external-action prerequisites."""
     data = facts(
         "1000",
         [record("rent", "essential", "2000", "2026-09-14", controllability="committed")],
@@ -38,6 +39,7 @@ def external_facts(kind):
 @pytest.mark.parametrize("kind", ["contactPayee", "followUp", "seekSupport", "resolveGroup"])
 @pytest.mark.parametrize("through_voice", [False, True])
 async def test_external_step_can_be_deferred_without_a_payee_response(store, kind, through_voice):
+    """Verify external-step deferrals preserve obligations without inventing payee responses."""
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(external_facts(kind)))
     action = next_action(baseline.plan)
@@ -85,6 +87,7 @@ async def test_external_step_can_be_deferred_without_a_payee_response(store, kin
 
 @pytest.mark.parametrize("kind", ["contactPayee", "followUp", "seekSupport", "resolveGroup"])
 async def test_external_deferral_reopens_only_after_its_source_changes(store, kind):
+    """Verify external deferrals survive cash edits and reopen only after dependent source changes."""
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(external_facts(kind)))
     current = await store.command("owner", response_command(baseline, "unavailable"))
@@ -110,6 +113,7 @@ async def test_external_deferral_reopens_only_after_its_source_changes(store, ki
 
 
 async def test_deferring_one_payee_moves_to_another_exposed_commitment(store):
+    """Verify deferring one exposed obligation advances to another without changing the gap."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -132,6 +136,7 @@ async def test_deferring_one_payee_moves_to_another_exposed_commitment(store):
 
 @pytest.mark.parametrize("cash", ["1000", "400"])
 async def test_declined_card_targets_explain_combined_minimums_without_applying_them(store, cash):
+    """Verify declined card reductions explain funded combined minimums without applying them."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -178,6 +183,7 @@ async def test_declined_card_targets_explain_combined_minimums_without_applying_
 
 
 async def test_combined_minimums_do_not_hide_an_unfunded_required_payment(store):
+    """Verify combined-minimum guidance does not claim fit when required payments remain unfunded."""
     await store.create("owner")
     current = await store.command(
         "owner",
@@ -210,6 +216,7 @@ async def test_combined_minimums_do_not_hide_an_unfunded_required_payment(store)
     ],
 )
 async def test_reported_terms_distinguish_known_zero_estimated_and_unknown_costs(store, cost, text):
+    """Verify reported-term guidance distinguishes exact zero, estimated, and unknown costs."""
     await store.create("owner")
     current = await store.command(
         "owner",
@@ -245,6 +252,7 @@ async def test_reported_terms_distinguish_known_zero_estimated_and_unknown_costs
 
 @pytest.mark.parametrize("through_voice", [False, True])
 async def test_renaming_an_accepted_item_updates_all_labels_but_not_consent(store, through_voice):
+    """Verify renaming an accepted item refreshes all labels while preserving consent and metrics."""
     await store.create("owner")
     await store.command(
         "owner",
@@ -301,6 +309,7 @@ async def test_renaming_an_accepted_item_updates_all_labels_but_not_consent(stor
 
 
 async def test_combined_minimum_review_does_not_hide_later_required_shortfall(store):
+    """Verify funded combined-minimum reviews do not displace later required-payment shortfalls."""
     await store.create("owner")
     current = await store.command(
         "owner",
@@ -335,6 +344,7 @@ async def test_combined_minimum_review_does_not_hide_later_required_shortfall(st
 
 @pytest.mark.parametrize("correction", ["estimate", "undated", "autoDebit", "earlierDue"])
 async def test_joint_minimum_claim_requires_complete_dated_basis(store, correction):
+    """Verify incomplete or constrained funding bases suppress combined-minimum fit claims."""
     await store.create("owner")
     current = await store.command(
         "owner",

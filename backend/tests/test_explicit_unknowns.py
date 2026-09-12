@@ -18,6 +18,7 @@ from .test_scenarios import operation
 
 
 def update(revision=0, **changes):
+    """Build a validated facts-update command with a fresh command identifier."""
     return Command.model_validate(
         {
             "commandId": str(uuid4()),
@@ -32,6 +33,7 @@ def update(revision=0, **changes):
 
 @pytest.mark.parametrize("schedule", [None, {}, {"recurrence": "once"}, {"certainty": "unknown"}])
 async def test_omitted_unknowns_remain_questions(store, schedule):
+    """Verify omitted values remain clarification questions rather than unavailable answers."""
     await store.create("owner")
     change = {"kind": "essential", "label": "Bill"}
     if schedule is not None:
@@ -48,6 +50,7 @@ async def test_omitted_unknowns_remain_questions(store, schedule):
 
 
 async def test_clarification_then_correction_keeps_current_thirty_day_outcome(store):
+    """Verify date clarification and cash correction retain record identity and a current outcome."""
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     result = await tools.invoke(
@@ -96,6 +99,7 @@ async def test_clarification_then_correction_keeps_current_thirty_day_outcome(st
 
 
 async def test_explicit_unknowns_save_all_matching_answers_in_one_revision(store):
+    """Verify explicit unknowns save matching unavailable answers atomically in one revision."""
     await store.create("owner")
     queue = await store.subscribe("owner")
     queue.get_nowait()
@@ -144,6 +148,7 @@ async def test_explicit_unknowns_save_all_matching_answers_in_one_revision(store
 
 @pytest.mark.parametrize("known_cash", [False, True])
 async def test_long_turn_remembers_bill_date_even_behind_opening(store, known_cash):
+    """Verify a long turn retains an unavailable bill date even when opening cash takes priority."""
     await store.create("owner")
     if known_cash:
         await store.command("owner", update(opening=money("5000")))
@@ -198,6 +203,7 @@ async def test_long_turn_remembers_bill_date_even_behind_opening(store, known_ca
 
 
 async def test_exact_id_unknown_amount_allows_qualified_next_step(store):
+    """Verify an explicit unknown amount records its answer and advances to qualified review."""
     await store.create("owner")
     baseline = await store.command(
         "owner", parsed_command(facts("1000", [record("bill", "essential", "100", "2026-09-15")]))
@@ -221,6 +227,7 @@ async def test_exact_id_unknown_amount_allows_qualified_next_step(store):
 
 
 async def test_date_dependency_correction_reopens_only_affected_question(store):
+    """Verify recurrence edits reopen date questions while unrelated label edits retain answers."""
     await store.create("owner")
     submitted = update(records=[{"kind": "essential", "label": "Bill", "schedule": {"date": None}}])
     snapshot = await store.command("owner", submitted)
@@ -238,6 +245,7 @@ async def test_date_dependency_correction_reopens_only_affected_question(store):
 
 @pytest.mark.parametrize("field", ["schedule.date", "amount"])
 async def test_competing_values_are_not_unavailable_answers(store, field):
+    """Verify competing values keep conflict questions open rather than marking them unavailable."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -277,6 +285,7 @@ async def test_competing_values_are_not_unavailable_answers(store, field):
 
 
 async def test_ambiguous_record_candidates_are_not_unavailable_answers(store):
+    """Verify ambiguous record identities require clarification without saving unavailable answers."""
     await store.create("owner")
     await store.command(
         "owner",
@@ -300,6 +309,7 @@ async def test_ambiguous_record_candidates_are_not_unavailable_answers(store):
 
 
 async def test_explicit_unknown_transaction_failure_rolls_back_facts_and_answers(store):
+    """Verify failed unknown-value transactions roll back facts, answers, and notifications."""
     baseline = await store.create("owner")
     queue = await store.subscribe("owner")
     queue.get_nowait()
@@ -324,6 +334,7 @@ async def test_explicit_unknown_transaction_failure_rolls_back_facts_and_answers
 
 
 async def test_estimates_never_become_unavailable_answers(store):
+    """Verify estimated cash, amounts, and dates remain estimates rather than unavailable answers."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -347,6 +358,7 @@ async def test_estimates_never_become_unavailable_answers(store):
 
 
 async def test_reanswered_unknown_replaces_dependency_without_duplicate_or_stale_plan(store):
+    """Verify reanswered unknowns replace dependency keys without duplicate answers or stale plans."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -376,6 +388,7 @@ async def test_reanswered_unknown_replaces_dependency_without_duplicate_or_stale
 
 
 async def test_explicit_unknown_recalculates_retained_accepted_plan(store):
+    """Verify unknown opening cash recalculates baseline and accepted plans while retaining consent."""
     await store.create("owner")
     await store.command(
         "owner",

@@ -15,6 +15,7 @@ from .test_finance import project
 
 
 async def test_cash_to_constraints_to_one_scope_sweep_and_stop(store):
+    """Verify planning progresses from cash to constraints and one coverage sweep before review."""
     initial = await store.create("owner")
     assert initial.plan.decision_assessment.next_question_id == "opening"
     data = facts("4000", [], coverage={})
@@ -51,6 +52,7 @@ async def test_cash_to_constraints_to_one_scope_sweep_and_stop(store):
 
 
 def test_explicit_unknown_scope_is_qualified_without_repeated_category_interview():
+    """Verify explicit unknown coverage qualifies the outcome without repeated category questions."""
     plan = project(
         facts(
             "4000",
@@ -72,6 +74,7 @@ def test_explicit_unknown_scope_is_qualified_without_repeated_category_interview
 def test_focused_purchase_checks_other_needs_once_without_cut_or_control_gate(
     config, control, coverage
 ):
+    """Verify funded focused purchases need only a coverage check, not cuts or control questions."""
     data = facts(
         "50000",
         [record("phone", "optional", "5000", "2026-09-20", controllability=control)],
@@ -108,6 +111,7 @@ def test_focused_purchase_checks_other_needs_once_without_cut_or_control_gate(
 @pytest.mark.parametrize("missing", ["date", "amount"])
 @pytest.mark.parametrize("terms", [{}, {"controllability": "committed"}, {"autoDebit": True}])
 def test_unresolved_purchase_is_named_before_any_fit_claim(missing, terms):
+    """Verify missing purchase amounts or dates are named before any affordability claim."""
     item = record("purchase", "optional", "8000", "2026-09-20", label="Purchase", **terms)
     if missing == "date":
         item["schedule"]["date"] = None
@@ -131,6 +135,7 @@ def test_unresolved_purchase_is_named_before_any_fit_claim(missing, terms):
 
 
 def test_later_same_day_receipt_does_not_displace_earlier_rent():
+    """Verify later same-day receipt risks do not displace an earlier rent shortfall."""
     plan = project(
         facts(
             "100",
@@ -153,6 +158,7 @@ def test_later_same_day_receipt_does_not_displace_earlier_rent():
 
 @pytest.mark.parametrize("kind", ["essential", "optional", "income"])
 def test_missing_month_occurrence_qualifies_basis_without_inventing_rollover(kind):
+    """Verify missing monthly occurrence dates qualify the projection without invented rollover."""
     plan = project(
         facts(
             "1000",
@@ -182,6 +188,7 @@ def test_missing_month_occurrence_qualifies_basis_without_inventing_rollover(kin
 
 
 def test_past_income_requires_cash_basis_reconciliation_not_ready_assurance():
+    """Verify past income prompts opening-cash reconciliation without inflating projected cash."""
     plan = project(facts("100", [record("salary", "income", "1000", "2026-09-10", label="Salary")]))
     assert plan.closing_paise == 10000 and plan.reliable_income_paise == 0
     assert plan.decision_assessment.outcome.readiness == "qualified"
@@ -191,6 +198,7 @@ def test_past_income_requires_cash_basis_reconciliation_not_ready_assurance():
 
 
 def test_fit_reports_minimum_cushion_and_reserve_headroom_conditionally():
+    """Verify fit guidance reports conditional minimum cash cushion and reserve headroom."""
     plan = project(
         facts(
             "6000",
@@ -211,6 +219,7 @@ def test_fit_reports_minimum_cushion_and_reserve_headroom_conditionally():
 
 
 def test_declined_payee_does_not_deny_existing_effective_cut():
+    """Verify a declined payee response does not suppress an effective optional cut."""
     data = facts(
         "1000",
         [
@@ -236,6 +245,7 @@ def test_declined_payee_does_not_deny_existing_effective_cut():
 
 
 def test_funded_card_minimum_does_not_generate_invalid_lender_contact():
+    """Verify a funded card minimum prompts a preview rather than unnecessary lender contact."""
     plan = project(
         facts(
             "1000",
@@ -269,6 +279,7 @@ def test_funded_card_minimum_does_not_generate_invalid_lender_contact():
     ],
 )
 def test_card_control_and_unknown_terms_keep_the_engine_dependency(opening, fields, identity):
+    """Verify unresolved card terms retain their dependency action instead of offering a preview."""
     data = facts(
         "1000",
         [record("card", "debt", "500", "2026-09-12", debtType="card", target=money("2000"))],

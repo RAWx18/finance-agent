@@ -26,6 +26,7 @@ from .test_scenarios import operation
 
 
 def test_plan_evaluation_date_is_required_and_does_not_rebase(config, tmp_path):
+    """Verify evaluation dates are required and refresh decisions without rebasing plan events."""
     data = normalize(
         FactsInput.model_validate(
             facts("100", [record("purchase", "optional", "200", "2026-09-11")])
@@ -48,6 +49,7 @@ def test_plan_evaluation_date_is_required_and_does_not_rebase(config, tmp_path):
 
 
 async def test_clock_refresh_is_once_per_local_date_under_concurrent_reads(store):
+    """Verify concurrent reads persist and publish one refresh per local day, including restart."""
     store.config = store.config.model_copy(update={"retention_hours": 72})
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(facts("100")))
@@ -83,6 +85,7 @@ async def test_clock_refresh_is_once_per_local_date_under_concurrent_reads(store
 
 
 async def test_clock_refresh_retains_consent_but_rejects_fresh_past_preview(store):
+    """Verify day refresh preserves accepted consent but rejects accepting elapsed-date previews."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -141,6 +144,7 @@ async def test_clock_refresh_retains_consent_but_rejects_fresh_past_preview(stor
 
 
 async def test_clock_refresh_failed_write_does_not_publish_and_can_retry(store, monkeypatch):
+    """Verify a failed day-refresh write leaves stored state unchanged and can be retried."""
     await store.create("owner")
     baseline = await store.command("owner", parsed_command(facts("100")))
     queue = await store.subscribe("owner")
@@ -149,6 +153,7 @@ async def test_clock_refresh_failed_write_does_not_publish_and_can_retry(store, 
     execute = store.connection().execute
 
     def fail(sql, parameters=None):
+        """Reject session updates while allowing other database statements to execute."""
         if sql.startswith("UPDATE sessions"):
             raise sqlite3.OperationalError("Synthetic write failure")
         return execute(sql, parameters)
@@ -169,6 +174,7 @@ async def test_clock_refresh_failed_write_does_not_publish_and_can_retry(store, 
 
 
 async def test_expiry_takes_precedence_over_clock_refresh(store):
+    """Verify expired sessions are deleted and emit an error instead of a refreshed snapshot."""
     await store.create("owner")
     queue = await store.subscribe("owner")
     queue.get_nowait()
@@ -183,6 +189,7 @@ async def test_expiry_takes_precedence_over_clock_refresh(store):
 
 
 async def test_voice_only_watch_refreshes_from_store_queue_and_interrupts(store, tmp_path):
+    """Verify voice-only day refresh interrupts speech and replaces canonical conversation state."""
     store.config = store.config.model_copy(update={"heartbeat_seconds": 1})
     await store.create("owner")
     baseline = await store.command(

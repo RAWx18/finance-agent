@@ -18,6 +18,7 @@ from .test_events import frame, live_server  # noqa: F401
 
 
 def update(revision, **changes):
+    """Build a sparse fact-update command at the supplied revision."""
     return Command.model_validate(
         {
             "commandId": str(uuid4()),
@@ -31,6 +32,7 @@ def update(revision, **changes):
 
 
 def operation(snapshot, kind, **fields):
+    """Build an operation command using the snapshot's revision."""
     return Command.model_validate(
         {
             "commandId": str(uuid4()),
@@ -41,10 +43,12 @@ def operation(snapshot, kind, **fields):
 
 
 def result(snapshot, identity):
+    """Find the workspace result with the supplied identity."""
     return next(item for item in snapshot.workspace.results if item.id == identity)
 
 
 async def salary_state(store):
+    """Create a saved salary, rent, debt, and optional spending scenario."""
     await store.create("owner")
     return await store.command(
         "owner",
@@ -64,6 +68,7 @@ async def salary_state(store):
 
 
 async def test_sparse_corrections_update_one_ledger_cards_math_and_changes(store):
+    """Verify sparse corrections update facts, cards, calculations, and replayable changes."""
     baseline = await salary_state(store)
     command = update(
         1,
@@ -96,6 +101,7 @@ async def test_sparse_corrections_update_one_ledger_cards_math_and_changes(store
 
 
 async def test_conflict_keeps_saved_value_no_duplicate_or_winner_and_explicit_resolution(store):
+    """Verify conflicts retain reported alternatives until explicit resolution selects one."""
     baseline = await salary_state(store)
     disputed = await store.command(
         "owner",
@@ -184,6 +190,7 @@ async def test_conflict_keeps_saved_value_no_duplicate_or_winner_and_explicit_re
     ],
 )
 async def test_conflict_invalid_edits_are_atomic(store, changes):
+    """Verify invalid edits to disputed facts leave the saved snapshot unchanged."""
     await salary_state(store)
     snapshot = await store.command(
         "owner",
@@ -204,6 +211,7 @@ async def test_conflict_invalid_edits_are_atomic(store, changes):
 
 
 async def test_full_replacement_cannot_create_clear_or_overwrite_conflicts(store):
+    """Verify full fact replacement cannot bypass conflicts while record deletion clears them."""
     baseline = await salary_state(store)
     disputed = await store.command(
         "owner",
@@ -233,6 +241,7 @@ async def test_full_replacement_cannot_create_clear_or_overwrite_conflicts(store
 async def test_identical_reports_do_not_create_conflict_and_opening_dispute_has_null_balances(
     store,
 ):
+    """Verify identical reports avoid conflicts and opening disputes leave balances unknown."""
     await salary_state(store)
     repeated = await store.command(
         "owner",
@@ -271,6 +280,7 @@ async def test_identical_reports_do_not_create_conflict_and_opening_dispute_has_
 
 
 async def test_date_conflict_and_money_conflict_resolve_independently(store):
+    """Verify resolving a date conflict leaves the amount conflict unresolved."""
     await salary_state(store)
     disputed = await store.command(
         "owner",
@@ -310,6 +320,7 @@ async def test_date_conflict_and_money_conflict_resolve_independently(store):
 
 @pytest.mark.parametrize("kind", ["income", "essential"])
 async def test_approximate_dates_qualify_outflows_and_never_assure_receipts(store, kind):
+    """Verify estimated dates qualify projections and exclude receipts from reliable income."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -345,6 +356,7 @@ async def test_approximate_dates_qualify_outflows_and_never_assure_receipts(stor
 
 
 async def test_merge_needs_compatible_duplicate_confirmation_and_preserves_debt_fields(store):
+    """Verify a confirmed compatible debt merge preserves fields and removes duplicate outflow."""
     await store.create("owner")
     initial = await store.command(
         "owner",
@@ -402,6 +414,7 @@ async def test_merge_needs_compatible_duplicate_confirmation_and_preserves_debt_
     ],
 )
 async def test_incompatible_merge_is_rejected_without_summing_or_guessing(store, difference):
+    """Verify incompatible duplicate merges fail without changing saved facts."""
     await store.create("owner")
     initial = await store.command(
         "owner",
@@ -431,6 +444,7 @@ async def test_incompatible_merge_is_rejected_without_summing_or_guessing(store,
 async def test_empty_intake_no_placeholder_cards_cash_only_is_qualified_and_coverage_not_assumed(
     store,
 ):
+    """Verify empty intake has no cards and cash-only intake has bounded, qualified guidance."""
     empty = await store.create("owner")
     assert empty.workspace.cards == []
     snapshot = await store.command("owner", update(0, opening=money("5000")))
@@ -441,6 +455,7 @@ async def test_empty_intake_no_placeholder_cards_cash_only_is_qualified_and_cove
 
 
 async def test_evidence_uses_same_day_max_earliest_and_peak_not_sum(store):
+    """Verify gap evidence traces same-day outflows rather than summing gaps."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -475,6 +490,7 @@ async def test_evidence_uses_same_day_max_earliest_and_peak_not_sum(store):
 async def test_later_cut_preserves_early_gap_and_correction_invalidates_assumptions(
     store,
 ):
+    """Verify later cuts leave early gaps unchanged and dependent corrections invalidate consent."""
     baseline = await salary_state(store)
     proposal = await store.command(
         "owner",
@@ -518,6 +534,7 @@ async def test_later_cut_preserves_early_gap_and_correction_invalidates_assumpti
 
 
 async def test_rejection_is_not_discard_and_matching_proposal_is_not_resuggested(store):
+    """Verify rejection persists separately from discard and blocks matching proposals."""
     baseline = await salary_state(store)
     inputs = [{"eventId": "gym:2026-09-25", "amount": "0"}]
     preview = await store.command(
@@ -543,6 +560,7 @@ async def test_rejection_is_not_discard_and_matching_proposal_is_not_resuggested
 
 
 async def test_workspace_and_latest_change_rehydrate_without_trusting_cached_cards(store):
+    """Verify rehydration rebuilds workspace cards and preserves change evidence across restart."""
     await salary_state(store)
     corrected = await store.command(
         "owner", update(1, records=[{"id": "salary", "amount": money("60000")}])
@@ -564,6 +582,7 @@ async def test_workspace_and_latest_change_rehydrate_without_trusting_cached_car
 
 
 async def test_http_and_sse_receive_identical_workspace_for_shared_update(live_server):  # noqa: F811
+    """Verify command responses, session reads, and SSE deliver the same workspace update."""
     client, _, _ = live_server
     await client.post("/api/session", json={})
     async with client.stream("GET", "/api/session/events") as response:
@@ -624,11 +643,13 @@ async def test_http_and_sse_receive_identical_workspace_for_shared_update(live_s
     ],
 )
 def test_lifecycle_schema_rejects_unconfirmed_or_invalid_values(changes):
+    """Verify lifecycle commands reject unconfirmed merges and malformed conflict values."""
     with pytest.raises(ValidationError):
         update(0, **changes)
 
 
 async def test_duplicate_record_updates_or_oversized_conflicts_do_not_commit(store):
+    """Verify duplicate updates, oversized reports, and missing merge records cannot commit."""
     baseline = await salary_state(store)
     for changes in (
         {
@@ -669,6 +690,7 @@ async def test_duplicate_record_updates_or_oversized_conflicts_do_not_commit(sto
 
 
 async def test_rehydration_rejects_orphan_conflict_metadata(store):
+    """Verify stored conflict metadata referencing a missing record is rejected."""
     await salary_state(store)
     disputed = await store.command(
         "owner",
@@ -693,6 +715,7 @@ async def test_rehydration_rejects_orphan_conflict_metadata(store):
 
 
 async def test_merge_fills_only_unknown_fields_and_never_moves_consent(store):
+    """Verify merges fill unknown values without transferring adjustment consent."""
     await store.create("owner")
     baseline = await store.command(
         "owner",
@@ -747,6 +770,7 @@ async def test_merge_fills_only_unknown_fields_and_never_moves_consent(store):
 
 
 async def test_unrelated_cash_correction_retains_consent_and_clear_keeps_facts(store):
+    """Verify unrelated cash corrections retain consent and clearing consent preserves facts."""
     baseline = await salary_state(store)
     preview = await store.command(
         "owner",
@@ -776,6 +800,7 @@ async def test_unrelated_cash_correction_retains_consent_and_clear_keeps_facts(s
 
 
 async def test_sparse_date_and_conflict_bounds_and_proposal_evidence(store):
+    """Verify proposal evidence matches contributions and sparse dates infer their certainty."""
     baseline = await salary_state(store)
     preview = await store.command(
         "owner",
@@ -808,6 +833,7 @@ async def test_sparse_date_and_conflict_bounds_and_proposal_evidence(store):
 
 
 async def test_replayed_sparse_command_rebuilds_workspace_after_restart(store):
+    """Verify sparse commands replay after restart and reject altered payloads under the same ID."""
     await store.create("owner")
     request = update(0, opening=money("1000"))
     saved = await store.command("owner", request)
@@ -825,6 +851,7 @@ async def test_replayed_sparse_command_rebuilds_workspace_after_restart(store):
 
 
 async def test_approximate_outflow_outside_horizon_cannot_assert_no_earlier_obligation(store):
+    """Verify an estimated outflow beyond the horizon keeps the dated projection incomplete."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -851,6 +878,7 @@ async def test_approximate_outflow_outside_horizon_cannot_assert_no_earlier_obli
 
 
 async def test_first_gap_witness_precedes_same_day_income_and_opening_can_be_trough(store):
+    """Verify gap witnesses precede same-day income and an opening trough has no event witness."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -872,6 +900,7 @@ async def test_first_gap_witness_precedes_same_day_income_and_opening_can_be_tro
 
 
 async def test_questions_are_live_bounded_and_unavailable_conflicts_remain_visible(store):
+    """Verify bounded questions retain unavailable issues and reject stale responses."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -948,6 +977,7 @@ async def test_questions_are_live_bounded_and_unavailable_conflicts_remain_visib
 
 
 async def test_response_rejects_action_outside_current_workspace_bound(store):
+    """Verify responses cannot target actions excluded by the current workspace limit."""
     store.config = store.config.model_copy(update={"workspace_max_actions": 1})
     await store.create("owner")
     snapshot = await store.command(
@@ -979,6 +1009,7 @@ async def test_response_rejects_action_outside_current_workspace_bound(store):
 
 
 async def test_exact_same_day_witness_contributions_and_exclusion_reasons(store):
+    """Verify same-day witnesses identify contributing outflows and explain exclusions."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -1029,6 +1060,7 @@ async def test_exact_same_day_witness_contributions_and_exclusion_reasons(store)
 
 
 async def test_opening_trough_trace_and_estimated_result_certainty(store):
+    """Verify an estimated opening trough traces opening cash and retains result uncertainty."""
     await store.create("owner")
     snapshot = await store.command(
         "owner",
@@ -1056,6 +1088,7 @@ async def test_opening_trough_trace_and_estimated_result_certainty(store):
 
 
 async def test_nested_new_partial_conflict_is_atomic_and_preserves_certainty(store):
+    """Verify nested conflicts save atomically and resolution preserves the selected estimate."""
     await store.create("owner")
     request = update(
         0,
@@ -1123,6 +1156,7 @@ async def test_nested_new_partial_conflict_is_atomic_and_preserves_certainty(sto
 
 @pytest.mark.parametrize("field", ["amount", "schedule.date"])
 async def test_saved_estimates_survive_report_and_resolution_with_unrelated_edits(store, field):
+    """Verify conflict reporting and resolution preserve saved estimates despite unrelated edits."""
     await store.create("owner")
     await store.command(
         "owner",
@@ -1210,6 +1244,7 @@ async def test_saved_estimates_survive_report_and_resolution_with_unrelated_edit
     ],
 )
 def test_conflict_inputs_require_concrete_rupees_or_date_with_certainty(field, value):
+    """Verify conflict inputs require concrete rupee amounts or dates with valid certainty."""
     with pytest.raises(ValidationError):
         update(
             0,
@@ -1226,6 +1261,7 @@ def test_conflict_inputs_require_concrete_rupees_or_date_with_certainty(field, v
 
 
 async def test_same_field_overlap_rejected_but_other_field_report_is_atomic(store):
+    """Verify overlapping conflict edits fail while independent field edits commit atomically."""
     baseline = await salary_state(store)
     report = {
         "recordId": "salary",
@@ -1258,6 +1294,7 @@ async def test_same_field_overlap_rejected_but_other_field_report_is_atomic(stor
 
 
 async def test_rejected_choice_uses_terms_dependencies_not_amount_only(store):
+    """Verify rejected choices survive label edits but expire when adjustment terms change."""
     baseline = await salary_state(store)
     preview = await store.command(
         "owner",

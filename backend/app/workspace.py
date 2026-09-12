@@ -30,6 +30,7 @@ from .models import (
 
 
 def money_state(money: Money) -> WorkspaceState:
+    """Classify a money value as missing, estimated, or known for workspace display."""
     return (
         "missing"
         if money.amount_paise is None
@@ -268,6 +269,7 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
 
 
 def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list[WorkspaceCard]:
+    """Build commitment and uncertainty cards prioritized by exposure, focus, and corrections."""
     facts = snapshot.facts
     records = {record.id: record for record in facts.records}
     cards: list[WorkspaceCard] = []
@@ -436,6 +438,7 @@ def evidence(
     prefix: str = "",
     projection_ref: str | None = None,
 ) -> tuple[list[WorkspaceResult], list[Contribution]]:
+    """Trace workspace results to contributions, exclusions, assumptions, and source facts."""
     facts = snapshot.facts
     projection_ref = projection_ref or (
         "preview.plan" if prefix else "accepted.plan" if snapshot.accepted else "plan"
@@ -917,6 +920,7 @@ def evidence(
 def change_set(
     before: Snapshot, after: Snapshot, identity: UUID, operation: str, patch: FactsPatch | None
 ) -> WorkspaceChange | None:
+    """Describe financial changes and refresh the cards affected by the command."""
     items: list[ChangeItem] = []
     previous = {
         record.id: record.model_dump(mode="json", by_alias=True) for record in before.facts.records
@@ -1116,6 +1120,7 @@ def change_set(
 
 
 def field_changes(reference: str, before: JsonValue, after: JsonValue) -> list[FieldChange]:
+    """Report changed values, expanding nested objects into field-level references."""
     if before == after:
         return []
     if isinstance(before, dict) and isinstance(after, dict):
