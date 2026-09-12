@@ -28,6 +28,7 @@ def september():
                 "8000",
                 None,
                 label="Rent",
+                controllability="committed",
                 schedule={"date": "2026-09-14", "recurrence": "monthly"},
             ),
             record(

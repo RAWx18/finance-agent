@@ -503,15 +503,37 @@ def calculate(
         if plan.peak_gap_paise or plan.reserve_shortfall_paise
         else []
     )
+    amounts = {option.event_id: option.minimum_paise for option in options}
+    for event in events:
+        record = records_by_id[event.record_id]
+        if (
+            plan.peak_gap_paise
+            and record.debt_type == "loan"
+            and record.target is not None
+            and record.target.status == record.amount.status == "exact"
+            and record.amount.amount_paise is not None
+            and event.amount_paise is not None
+            and event.amount_paise > record.amount.amount_paise
+            and event.included
+            and event.date >= max(anchor, today or anchor)
+            and not event.overdue
+            and not event.auto_debit
+            and record.controllability == "controllable"
+            and record.schedule.certainty == "exact"
+            and not debt_balance_conflict(record)
+            and not any(item.record_id == record.id for item in facts.conflicts)
+        ):
+            # A required-only loan comparison is not an eligible adjustment.
+            amounts[event.id] = record.amount.amount_paise
     impacts = {}
-    for option in options:
+    for identity, amount in amounts.items():
         branch = [
-            event.model_copy(update={"amount_paise": option.minimum_paise})
-            if event.id == option.event_id
+            event.model_copy(update={"amount_paise": amount})
+            if event.id == identity
             else event.model_copy()
             for event in events
         ]
-        impacts[option.event_id], _ = reconcile(branch, facts, anchor, config)
+        impacts[identity], _ = reconcile(branch, facts, anchor, config)
     minimums: dict[date, dict[str, int]] = {}
     for option in options:
         if option.kind == "card" and option.acceptance_ready:

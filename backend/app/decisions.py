@@ -80,8 +80,15 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
         )
         values["record"] = record.model_dump(
             mode="json",
-            include={"id", "kind", "amount", "target", "debt_type", "auto_debit"}
-            | ({"controllability"} if prefix == "preview" else set()),
+            include={
+                "id",
+                "kind",
+                "amount",
+                "target",
+                "debt_type",
+                "auto_debit",
+                "controllability",
+            },
         )
         values["debtConflict"] = any(
             issue.code == "debtBalanceConflict" and issue.record_id == record.id
@@ -293,7 +300,18 @@ def assess(
         return action
 
     for conflict in facts.conflicts:
-        question(
+        record = records.get(conflict.record_id or "")
+        day = min(
+            (event.date for event in plan.events if event.record_id == conflict.record_id),
+            default=record.schedule.date if record else None,
+        )
+        if conflict.field == "schedule.date":
+            day = min(value.date for value in conflict.values if value.date is not None)
+        immediate = (day is None or day <= deadline) and (
+            conflict.field != "outstanding"
+            or any(value.amount_paise == 0 for value in conflict.values)
+        )
+        action = question(
             conflict.id,
             conflict.field,
             "Which reported value applies to this fact? Resolve the competing values explicitly.",
@@ -301,8 +319,11 @@ def assess(
             "Competing reports refer to one fact; the disputed field is excluded "
             "until explicitly resolved.",
             kind="conflict",
-            immediate=True,
+            day=day,
+            immediate=immediate,
         )
+        if not immediate:
+            deferred.append(action)
     if facts.opening.status != "exact" and not any(
         item.field == "opening" for item in facts.conflicts
     ):
@@ -677,6 +698,76 @@ def assess(
         for event in mandatory:
             record = records[event.record_id]
             response = responses.get(event.id)
+            if (
+                record.kind == "essential"
+                and record.controllability != "committed"
+                and not event.auto_debit
+                and not event.overdue
+                and event.original_due_date >= today
+                and response is None
+            ):
+                action = Action(
+                    id=f"contact:{event.id}",
+                    kind="seekSupport",
+                    record_ids=[record.id],
+                    before_date=event.original_due_date,
+                    question=f"Protect {record.label} as an essential need on "
+                    f"{event.original_due_date}; the planned cashflow has "
+                    f"{rupees(exposure)} unfunded at this deadline. Confirm funds actually "
+                    "available before then or seek essential-needs support. The essential "
+                    "amount stays unchanged. If this is an existing payment obligation, "
+                    "confirm that before discussing payment flexibility; no creditor or "
+                    "overdue bill is assumed.",
+                    consequence_ids=[consequence_id],
+                    if_declined_consequence_ids=[consequence_id],
+                )
+                assessment.actions.append(action)
+                enquiries.append(action)
+                continue
+            comparison_text = ""
+            if record.target is not None and event.amount_paise != record.amount.amount_paise:
+                comparison_text = (
+                    f"The {rupees(exposure)} cash exposure is against the intended payment of "
+                    f"{rupees(event.amount_paise)} for {record.label} on {day}, not an "
+                    f"established shortfall in its required payment of "
+                    f"{rupees(record.amount.amount_paise)}. "
+                )
+            minimum = impacts.get(event.id) if record.debt_type == "loan" else None
+            if minimum is not None:
+                comparison_text += (
+                    "Comparing only this occurrence at its required payment, with other "
+                    "reported outflows unchanged: "
+                    + (
+                        f"first shortfall {rupees(minimum.first_gap.amount_paise)} on "
+                        f"{minimum.first_gap.date}; peak cumulative shortfall "
+                        f"{rupees(minimum.peak_gap_paise)} on {minimum.peak_gap_date}. "
+                        "These are not amounts to add together. "
+                        if minimum.first_gap
+                        else "no cash gap in this comparison. "
+                    )
+                )
+                if (
+                    not plan.projection_partial
+                    and plan.budget_basis.dated_projection_complete
+                    and not assessment.uncertainties
+                    and (minimum.first_gap is None or minimum.first_gap.date > day)
+                ):
+                    action = Action(
+                        id=f"review:{event.id}",
+                        kind="reviewOutcome",
+                        record_ids=[record.id],
+                        before_date=day,
+                        question=comparison_text
+                        + "The required payment fits at that deadline in the modeled comparison. "
+                        "The intended payment and required payment stay unchanged until you "
+                        "report a change; this comparison does not apply a reduction. "
+                        "No payment or payee agreement is assumed.",
+                        consequence_ids=[consequence_id],
+                        if_declined_consequence_ids=[],
+                    )
+                    assessment.actions.append(action)
+                    deferred.append(action)
+                    continue
             if response is not None and response.status in {"awaiting", "declined"}:
                 text = (
                     f"Follow up with {record.label} before {event.original_due_date}; the response "
@@ -692,7 +783,7 @@ def assess(
                     kind="followUp" if response.status == "awaiting" else "seekSupport",
                     record_ids=[record.id],
                     before_date=event.original_due_date,
-                    question=text,
+                    question=comparison_text + text,
                     consequence_ids=[consequence_id],
                     if_declined_consequence_ids=[consequence_id],
                 )
@@ -729,7 +820,7 @@ def assess(
             action = question(
                 f"provider:{event.id}",
                 "providerResponses",
-                text,
+                comparison_text + text,
                 [record.id],
                 "Changing the required payment needs confirmed terms; a separate spending "
                 "reduction is not a payee agreement.",

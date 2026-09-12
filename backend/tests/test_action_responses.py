@@ -44,7 +44,7 @@ async def reduction(store):
                 "1000",
                 [
                     record("purchase", "optional", "800", "2026-09-12"),
-                    record("rent", "essential", "500", "2026-09-14"),
+                    record("rent", "essential", "500", "2026-09-14", controllability="committed"),
                     record("trip", "optional", "100", "2026-09-20"),
                 ],
             )
@@ -511,7 +511,7 @@ async def test_unavailable_record_response_survives_unrelated_cash_then_corrects
                 "1000",
                 [
                     record("salary", "income", "1000", "2026-09-12", reliability="unknown"),
-                    record("rent", "essential", "2000", "2026-09-14"),
+                    record("rent", "essential", "2000", "2026-09-14", controllability="committed"),
                 ],
             )
         ),
@@ -842,7 +842,10 @@ def test_response_schema_is_additive_strict_and_server_key_is_not_a_tool_argumen
 )
 async def test_selected_action_still_requires_compatible_response_semantics(store, kind, response):
     await store.create("owner")
-    data = facts("1000", [record("rent", "essential", "2000", "2026-09-14")])
+    data = facts(
+        "1000",
+        [record("rent", "essential", "2000", "2026-09-14", controllability="committed")],
+    )
     if kind == "clarify":
         data["opening"] = money(None, "unknown")
     elif kind == "reviewOutcome":
@@ -942,7 +945,7 @@ async def test_unavailable_controllability_never_becomes_committed_spending(stor
                 "1000",
                 [
                     record("purchase", "optional", "800", "2026-09-12", controllability="unknown"),
-                    record("rent", "essential", "500", "2026-09-14"),
+                    record("rent", "essential", "500", "2026-09-14", controllability="committed"),
                 ],
             )
         ),
@@ -965,7 +968,7 @@ async def test_provider_retraction_reactivates_contact_after_unavailable_terms(s
         parsed_command(
             facts(
                 "1000",
-                [record("rent", "essential", "2000", "2026-09-14")],
+                [record("rent", "essential", "2000", "2026-09-14", controllability="committed")],
                 providerResponses=[
                     {
                         "eventId": "rent:2026-09-14",

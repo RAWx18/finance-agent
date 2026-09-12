@@ -18,7 +18,10 @@ from .test_scenarios import operation
 
 
 def external_facts(kind):
-    data = facts("1000", [record("rent", "essential", "2000", "2026-09-14")])
+    data = facts(
+        "1000",
+        [record("rent", "essential", "2000", "2026-09-14", controllability="committed")],
+    )
     if kind == "resolveGroup":
         data["records"].append(record("food", "essential", "100", "2026-09-14"))
     elif kind in {"followUp", "seekSupport"}:
