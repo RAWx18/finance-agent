@@ -7,39 +7,50 @@ import { Account } from './Account';
 import { Login, returnPath } from './Login';
 import { MoneyPage } from './MoneyPage';
 import { isMoneyRoute, moneyRoutes } from './moneyRoutes';
-import { Download } from './Download';
 import { dismiss, notify, ToastViewport } from './Toast';
-import { dateLabel, lastDate, timestamp } from './money';
 import { useSession } from './session';
 import { Conversation } from './Conversation';
 import type { VoicePhase } from './Conversation';
 import { FinancialContext } from './FinancialContext';
 import { History } from './History';
 import { isConversationRoute, isHistoryRoute } from './historyRoutes';
+import { authEpoch, conversationError } from './api';
 import { Details } from './Dialog';
 import { Recovery } from './Recovery';
 import { ProfileMenu } from './ProfileMenu';
 import brandIcon from './brand.svg?no-inline';
 
-type Journey = 'landing' | 'ready' | 'session' | 'review' | 'finished';
+type Journey = 'landing' | 'ready' | 'session';
 
 function Workspace() {
   const location = useLocation();
   const route = useNavigate();
+  const routeSlug = isConversationRoute(location.pathname) && location.pathname !== '/app' ? location.pathname.slice(5) : null;
   const session = useSession();
-  const { state, dispatch, perform, retryConnection } = session;
+  const { state, dispatch, perform, retryConnection, selectConversation } = session;
   const { snapshot, settings } = state;
   const heading = useRef<HTMLHeadingElement>(null);
-  const [journey, setJourney] = useState<Journey>('landing');
+  const [view, setView] = useState<Journey>(routeSlug ? 'ready' : 'landing');
+  const [activeChat, setActiveChat] = useState<{ slug: string; sessionId: string }>();
+  const [startRequest, setStartRequest] = useState<{ id: string; slug: string }>();
+  const [observedPath, setObservedPath] = useState(location.pathname);
+  if (observedPath !== location.pathname) {
+    setObservedPath(location.pathname);
+    if (startRequest && location.pathname !== `/app/${startRequest.slug}`) setStartRequest(undefined);
+  }
+  const [selection, setSelection] = useState<{ path: string; error?: string }>();
+  const routeSelection = useRef<{ path: string; controller: AbortController } | null>(null);
+  const path = useRef(location.pathname);
   const [voicePhase, setVoicePhase] = useState<VoicePhase>('idle');
   const [voiceBusy, setVoiceBusy] = useState(false);
   const [historyRevision, setHistoryRevision] = useState(0);
-  const [reviewedSequence, setReviewedSequence] = useState<number | null>(null);
   const moneyOpen = isMoneyRoute(location.pathname);
   const [moneyEditing, setMoneyEditing] = useState(false);
   const accountOpen = location.pathname === '/account';
   const historyOpen = isHistoryRoute(location.pathname);
-  const conversationVisible = location.pathname === '/app';
+  const conversationVisible = isConversationRoute(location.pathname);
+  const conversationSlug = snapshot?.conversationSlug ?? (activeChat?.sessionId === snapshot?.sessionId ? activeChat?.slug : undefined);
+  const selectingRoute = !!routeSlug && (conversationSlug !== routeSlug || selection?.path === location.pathname);
   const stale = state.connection !== 'live' || state.phase !== 'ready';
   const expired = state.phase === 'expired' || state.phase === 'deleted';
   const terminal = expired || state.phase === 'unavailable' || state.phase === 'unreadable';
@@ -49,14 +60,61 @@ function Workspace() {
   const hasPicture = !!snapshot && (snapshot.facts.opening.amountPaise !== null || snapshot.facts.records.length > 0
     || Object.values(snapshot.facts.coverage).some(value => value !== 'notDiscussed')
     || !!snapshot.preview || !!snapshot.accepted || !!snapshot.facts.decision?.responses?.length);
-  const changedAfterReview = journey === 'finished' && snapshot?.sequence !== reviewedSequence;
-  const view = changedAfterReview ? 'review' : journey;
   const running = ['connecting', 'active', 'ending'].includes(voicePhase);
-  const reviewing = view === 'review' || view === 'finished';
   const stage = view === 'session' ? voicePhase === 'active' && hasPicture ? 'taking-shape' : voicePhase : view;
   const blocker = useBlocker(({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname && (moneyEditing || (running || voiceBusy)
-    && (currentLocation.pathname === '/app' || isHistoryRoute(currentLocation.pathname))
-    && nextLocation.pathname !== '/app' && !isHistoryRoute(nextLocation.pathname)));
+    && (isConversationRoute(currentLocation.pathname) || isHistoryRoute(currentLocation.pathname))
+    && (!isConversationRoute(nextLocation.pathname) && !isHistoryRoute(nextLocation.pathname)
+      || isConversationRoute(nextLocation.pathname) && nextLocation.pathname !== '/app' && nextLocation.pathname !== `/app/${conversationSlug}`)));
+  const continueBlocked = running || voiceBusy ? 'End the current call and confirm it has closed before continuing a conversation.'
+    : moneyEditing || state.pending || state.busy ? 'Finish the current correction or save before continuing a conversation.'
+      : state.phase === 'loading' || !settings || stale && !(selection && (selection.error || selection.path !== location.pathname) || state.phase === 'empty') ? 'Reconnect your saved plan before continuing a conversation.' : undefined;
+
+  useLayoutEffect(() => {
+    path.current = location.pathname;
+    if (routeSelection.current && routeSelection.current.path !== location.pathname) {
+      routeSelection.current.controller.abort(); routeSelection.current = null;
+    }
+  }, [location.pathname]);
+  useEffect(() => () => routeSelection.current?.controller.abort(), []);
+
+  async function continueChat(slug: string, signal: AbortSignal) {
+    if (continueBlocked) return;
+    const from = location.pathname;
+    const epoch = authEpoch();
+    setSelection({ path: from });
+    try {
+      const selected = await session.selectConversation(slug, signal);
+      if (!selected || signal.aborted || epoch !== authEpoch() || path.current !== from) return;
+      setSelection(undefined); setView('ready');
+      setStartRequest({ id: crypto.randomUUID(), slug });
+      void route(`/app/${slug}`);
+    } catch (error) {
+      if (!signal.aborted && epoch === authEpoch() && path.current === from) setSelection({ path: from, error: conversationError(error) });
+      throw error;
+    }
+  }
+
+  useEffect(() => {
+    if (!routeSlug || !selectingRoute || selection?.path === location.pathname || !settings || state.phase === 'loading'
+      || running || voiceBusy || moneyEditing || state.pending || state.busy || routeSelection.current?.path === location.pathname) return;
+    const controller = new AbortController();
+    const from = location.pathname;
+    const epoch = authEpoch();
+    routeSelection.current = { path: from, controller };
+    void selectConversation(routeSlug, controller.signal).then(selected => {
+      if (selected && !controller.signal.aborted && epoch === authEpoch() && path.current === from) {
+        setSelection(undefined); setView('ready');
+      }
+    }).catch(error => {
+      if (!controller.signal.aborted && epoch === authEpoch() && path.current === from)
+        setSelection({ path: from, error: conversationError(error) });
+    });
+  }, [routeSlug, selectingRoute, selection?.path, location.pathname, settings, state.phase, state.busy, state.pending, voiceBusy, running, moneyEditing, selectConversation]);
+
+  useEffect(() => {
+    if (location.pathname === '/app' && conversationSlug) void route(`/app/${conversationSlug}`, { replace: true });
+  }, [location.pathname, conversationSlug, route]);
   function openMoney() {
     if (running || voiceBusy) return;
     void route('/money');
@@ -109,23 +167,22 @@ function Workspace() {
   }, [location.pathname, moneyOpen, accountOpen, historyOpen]);
 
   function navigate(next: Journey) {
-    setJourney(next);
-    if (!conversationVisible) void route('/app');
+    setView(next);
+    if (!conversationVisible) void route(conversationSlug ? `/app/${conversationSlug}` : '/app');
     requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
   }
 
   function voiceChanged(phase: VoicePhase) {
     setVoicePhase(phase);
     if (phase === 'idle') return;
-    setJourney(phase === 'ended' ? 'review' : 'session');
-    if (phase === 'ended' && conversationVisible) requestAnimationFrame(() => heading.current?.focus({ preventScroll: true }));
+    setView('session');
   }
 
   return <>
     <Header voiceBusy={running || voiceBusy} hasDraft={moneyEditing} />
     <main id="main" className={`product-main${fullRecovery ? ' recovery-page' : ''}`} data-view={view} data-stage={stage} data-route={location.pathname}>
       <p className="sr-only" role="status">{state.messageKind === 'status' && !moneyOpen && !recovering ? state.message : ''}</p>
-      <div className="page-feedback" hidden={accountOpen || historyOpen}>
+      <div className="page-feedback" hidden={accountOpen || historyOpen || selectingRoute || !recovering && state.phase !== 'loading'}>
       {recovering && <Recovery inline={!fullRecovery} busy={state.busy}
         title={state.phase === 'unreadable' ? 'Your figures need another look.' : state.phase === 'expired' ? 'Time for a fresh plan.'
           : state.phase === 'deleted' ? 'This plan is no longer available.' : 'Your saved plan is safe.'}
@@ -140,48 +197,41 @@ function Workspace() {
         }}>{state.busy && fullRecovery ? expired ? 'Starting…' : 'Trying again…'
             : expired ? conversationVisible ? 'Start again' : 'Return to conversation' : 'Retry connection'}</button>
       </Recovery>}
-      {!recovering && conversationVisible && view !== 'landing' && <nav className="journey-progress" aria-label="Your progress"><ol>
-        <li aria-current={view === 'ready' || view === 'session' ? 'step' : undefined}>Talk</li>
-        <li aria-current={view === 'review' ? 'step' : undefined}>Review</li>
-        <li aria-current={view === 'finished' ? 'step' : undefined}>Take your plan</li>
-      </ol></nav>}
       {state.phase === 'loading' && <p className="sr-only" role="status">Loading…</p>}
       </div>
 
-      <div hidden={!conversationVisible || fullRecovery} className={`journey-layout ${view === 'landing' ? 'welcome-layout' : reviewing ? 'review-layout' : 'live-layout'} no-print`}>
+      {selectingRoute && <Recovery inline busy={selection?.path === location.pathname && !selection.error}
+        title={selection?.error ? 'Couldn’t open this conversation.' : 'Opening your conversation…'}
+        message={selection?.error ?? continueBlocked ?? 'Your microphone stays off until you choose to talk.'}>
+        {selection?.error && <button onClick={() => { setSelection({ path: '', error: selection.error }); routeSelection.current = null; }}>Retry opening conversation</button>}
+        <Link to="/history">Choose another conversation</Link>
+        {(voiceBusy || running) && <Link to="/app">Return to current conversation</Link>}
+      </Recovery>}
+      <div hidden={!conversationVisible || fullRecovery || selectingRoute} className={`journey-layout ${view === 'landing' ? 'welcome-layout' : 'live-layout'} no-print`}>
         <div className="conversation-pane">
           <div className={`journey-intro${view === 'ready' || view === 'session' ? ' sr-only' : ''}`}>
             {view === 'landing' && <p className="eyebrow">Your next 30 days</p>}
-            <h1 id="page-heading" tabIndex={-1} ref={heading}>{view === 'landing' ? <>Talk it through.<br /><span>See your next 30 days clearly.</span></> : view === 'ready' || view === 'session' ? 'Let’s talk it through.' : view === 'finished' ? 'Your next step is clearer.' : changedAfterReview ? 'Your figures have changed.' : hasPicture ? 'Your 30-day plan.' : 'Ready to talk again?'}</h1>
-            {reviewing && <p className="intro-copy">{changedAfterReview ? 'Review the latest figures before finishing.' : !hasPicture ? 'No figures saved yet.' : view === 'finished' ? 'Keep a copy and check any open questions.' : 'Check the next steps and anything still uncertain.'}</p>}
+            <h1 id="page-heading" tabIndex={-1} ref={heading}>{view === 'landing' ? <>Talk it through.<br /><span>See your next 30 days clearly.</span></> : 'Let’s talk it through.'}</h1>
           </div>
-          <div className="voice-container" hidden={reviewing}>
+          <div className="voice-container">
             <Conversation settings={settings} sessionId={snapshot?.sessionId}
+              conversationSlug={conversationSlug}
+              startRequest={startRequest && startRequest.slug === conversationSlug && routeSlug === startRequest.slug ? startRequest.id : undefined}
+              onStartConsumed={() => setStartRequest(undefined)}
+              onConversationChange={(slug, sessionId) => setActiveChat({ slug, sessionId })}
               presentation={view === 'landing' ? 'landing' : view === 'ready' ? 'ready' : 'session'}
-              disabled={state.busy || !!state.pending || moneyEditing || !['empty', 'ready'].includes(state.phase) || !!snapshot && stale}
+              disabled={selectingRoute || state.busy || !!state.pending || moneyEditing || !['empty', 'ready'].includes(state.phase) || !!snapshot && stale}
               onStarted={value => dispatch({ type: 'started', snapshot: value })} onBusyChange={setVoiceBusy}
               onTranscriptChange={value => { if (!value.interim && !value.captions.at(-1)?.pending) setHistoryRevision(version => version + 1); }}
               onPrepare={() => navigate('ready')} onPhaseChange={voiceChanged}
-              visible={conversationVisible && !reviewing && !fullRecovery}
+              visible={conversationVisible && !fullRecovery && !selectingRoute}
               updatesReady={state.connection === 'live' && state.phase === 'ready'}
               updatesLost={!!snapshot && (state.connection === 'reconnecting' || state.phase !== 'ready')}
               sessionIssue={state.phase === 'expired' || state.phase === 'deleted' || state.phase === 'unreadable' ? state.phase : undefined}
               onSettings={value => dispatch({ type: 'settings', settings: value })} />
           </div>
-          {view === 'landing' && <>
-            {hasPicture && snapshot && <div className="return-note">
-              <p className="hint">{dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</p>
-              <button className="quiet" onClick={() => navigate('review')}>Review saved picture <span aria-hidden="true">→</span></button></div>}
-          </>}
-          {(view === 'ready' || view === 'session') && <div className="conversation-navigation">
-            {view === 'ready' && <button className="quiet back-link" disabled={voiceBusy} onClick={() => navigate('landing')}>Back to welcome</button>}
-            {view === 'session' && !running && !voiceBusy && hasPicture && <button className="quiet" onClick={() => navigate('review')}>Review saved picture <span aria-hidden="true">→</span></button>}
-          </div>}
-          {reviewing && <div className="review-controls">
-            {hasPicture && view === 'review' && <button className="primary" disabled={stale || voiceBusy || !!state.pending || state.busy} onClick={() => { setReviewedSequence(snapshot!.sequence); navigate('finished'); }}>Finish review</button>}
-            {hasPicture && state.phase === 'ready' && <Download label="Download plan" primary={view === 'finished'} />}
-            <button className="quiet" disabled={state.busy || !!state.pending} onClick={() => navigate('ready')}>Return to conversation</button>
-            {snapshot && settings && <p className="hint retention-note">Available until {timestamp(snapshot.expiresAt, settings.timezone)}</p>}
+          {view === 'ready' && <div className="conversation-navigation">
+            <button className="quiet back-link" disabled={voiceBusy} onClick={() => navigate('landing')}>Back to welcome</button>
           </div>}
         </div>
         {view === 'landing' && <aside className="welcome-aside" aria-labelledby="welcome-aside-heading">
@@ -201,6 +251,7 @@ function Workspace() {
       <MoneyPage session={session} active={moneyOpen && !fullRecovery} voiceBusy={voiceBusy || running} onEditing={setMoneyEditing} />
       {accountOpen && <Account />}
       {historyOpen && <History timezone={settings?.timezone} assistantName={settings?.assistantName} ongoing={running}
+        continueBlocked={continueBlocked} onContinue={continueChat}
         revision={`${historyRevision}:${voicePhase}:${state.phase}:${snapshot?.sessionId ?? ''}`} />}
     </main>
     <footer className="site-footer no-print"><span>No payments are made.</span><Details label="Privacy">
@@ -261,7 +312,7 @@ function AccessRoutes() {
 
   if (auth.phase === 'ready' && location.pathname === '/login' && !new URLSearchParams(location.search).has('error'))
     return <Navigate to={returnPath(new URLSearchParams(location.search).get('returnTo'))} replace />;
-  if (auth.phase === 'ready' && (['/', '/app', '/account'].includes(location.pathname) || isHistoryRoute(location.pathname) || isMoneyRoute(location.pathname))) {
+  if (auth.phase === 'ready' && (['/', '/account'].includes(location.pathname) || isConversationRoute(location.pathname) || isHistoryRoute(location.pathname) || isMoneyRoute(location.pathname))) {
     if (location.pathname === '/') return <Navigate to="/app" replace />;
     return <Workspace key={auth.session!.user.id} />;
   }

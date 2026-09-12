@@ -48,6 +48,7 @@ export function exactNumbers(_key: string, value: unknown): unknown {
 export function readSnapshot(value: unknown): Snapshot {
   const snapshot = value as Snapshot | null;
   if (!snapshot || typeof snapshot.sessionId !== 'string' || !snapshot.sessionId
+    || snapshot.conversationSlug !== null && (typeof snapshot.conversationSlug !== 'string' || !isHistoryRoute(`/history/${snapshot.conversationSlug}`))
     || !Number.isSafeInteger(snapshot.sequence) || snapshot.sequence < 0
     || !Number.isSafeInteger(snapshot.revision) || snapshot.revision < 0
     || typeof snapshot.anchorDate !== 'string' || typeof snapshot.endDateExclusive !== 'string'
@@ -150,7 +151,8 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
     throw new ApiError(response.status, body);
   }
   const value = response.status === 204 ? undefined : text ? content : JSON.parse(content, exactNumbers);
-  if (!text && (path === 'history' || path.startsWith('history?') || path.startsWith('history/')))
+  const selecting = path.startsWith('history/') && path.endsWith('/continue');
+  if (!text && !selecting && (path === 'history' || path.startsWith('history?') || path.startsWith('history/')))
     readHistory(value, path.startsWith('history/'));
   if (path === 'session/call') {
     const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -160,6 +162,10 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
     if (init?.method && value.callId !== JSON.parse(String(init.body)).callId)
       throw new Error('Call ownership could not be confirmed.');
     if (init?.method === 'POST') {
+      const requested = JSON.parse(String(init.body)).conversationSlug;
+      if (typeof value.conversationSlug !== 'string' || !isHistoryRoute(`/history/${value.conversationSlug}`)
+        || requested !== undefined && value.conversationSlug !== requested)
+        throw new Error('Conversation ownership could not be confirmed.');
       if (typeof value.url !== 'string' || typeof value.token !== 'string' || !value.token.trim()
         || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt)))
         throw new Error('Call credentials could not be confirmed.');
@@ -169,7 +175,8 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
         throw new Error('Call destination could not be confirmed.');
       if (Date.parse(value.expiresAt) <= Date.now())
         throw new ApiError(410, { code: 'callExpired', message: 'This call expired. Reconnect to continue with your saved figures.' });
-    } else if (!['idle', 'connecting', 'active', 'ending', 'ended', 'error'].includes(value.status)
+    } else if (value.conversationSlug != null && (typeof value.conversationSlug !== 'string' || !isHistoryRoute(`/history/${value.conversationSlug}`))
+      || !['idle', 'connecting', 'active', 'ending', 'ended', 'error'].includes(value.status)
       || typeof value.cleanupConfirmed !== 'boolean' || value.message !== null && typeof value.message !== 'string'
       || ['connecting', 'active', 'ending'].includes(value.status) && !value.callId)
       throw new Error('Call state could not be confirmed.');
@@ -189,7 +196,7 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
       if (value?.deleted !== true) throw new Error('Account deletion could not be confirmed.');
     } else readUser(value);
   }
-  return (response.status !== 204 && (path === 'session' && init?.method !== 'DELETE' || path === 'session/commands')
+  return (response.status !== 204 && (path === 'session' && init?.method !== 'DELETE' || path === 'session/commands' || selecting)
     ? readSnapshot(value) : value) as T;
 }
 
@@ -198,6 +205,12 @@ export const api = {
     list: (search = '', signal?: AbortSignal) => request<components['schemas']['ConversationList']>(
       `history${search ? `?${new URLSearchParams({ search })}` : ''}`, { signal }),
     get: (slug: string, signal?: AbortSignal) => request<SavedConversation>(`history/${encodeURIComponent(slug)}`, { signal }),
+    continue: async (slug: string, signal?: AbortSignal) => {
+      if (!isHistoryRoute(`/history/${slug}`)) throw new Error('Invalid conversation.');
+      return request<Snapshot>(`history/${slug}/continue`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal,
+      });
+    },
     transcript: (slug: string, signal?: AbortSignal) => request<string>(`history/${encodeURIComponent(slug)}/transcript`, { signal }, true),
   },
   auth: {
@@ -222,9 +235,12 @@ export const api = {
     }),
   },
   call: (signal?: AbortSignal) => request<CallState>('session/call', { signal }),
-  startCall: (callId: string) => request<CallJoin>('session/call', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callId }),
-  }),
+  startCall: async (callId: string, conversationSlug?: string) => {
+    if (conversationSlug !== undefined && !isHistoryRoute(`/history/${conversationSlug}`)) throw new Error('Invalid conversation.');
+    return request<CallJoin>('session/call', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callId, conversationSlug }),
+    });
+  },
   endCall: (callId: string, signal?: AbortSignal) => request<CallState>('session/call', {
     method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ callId }), keepalive: true, signal,
   }),
@@ -240,6 +256,17 @@ export const api = {
   export: () => request<string>('session/export', undefined, true),
   delete: () => request<components['schemas']['Deleted']>('session', { method: 'DELETE' }),
 };
+
+export function conversationError(error: unknown): string {
+  if (error instanceof ApiError) {
+    if ([403, 404, 410].includes(error.status)) return 'This conversation is unavailable. It may have expired or been deleted. Choose another conversation.';
+    if (error.body.code === 'conversationMemoryUnavailable') return 'You can still read this conversation, but its saved figures are unavailable. Choose another conversation to continue.';
+    if (error.body.code === 'conversationChanged') return 'The selected conversation has changed. Open it again from History before continuing.';
+    if (error.status === 409) return 'A call may still be open. Return to Conversation and confirm it has ended, then try again.';
+    if (error.status === 401) return 'Sign in again to open this conversation.';
+  }
+  return 'Couldn’t open this conversation. Check your connection, then try Continue talking again.';
+}
 
 export function errorMessage(error: unknown, operation?: Command['operation']['type']): string {
   if (!(error instanceof ApiError)) return 'We could not reach your projection. Check your connection and retry.';

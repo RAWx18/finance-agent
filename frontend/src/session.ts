@@ -23,6 +23,7 @@ export const initialState: State = {
 type Action =
   | { type: 'loaded'; settings: Settings; snapshot: Snapshot | null }
   | { type: 'settings'; settings: Settings }
+  | { type: 'selecting' }
   | { type: 'started'; snapshot: Snapshot }
   | { type: 'snapshot'; snapshot: Snapshot }
   | { type: 'connection'; connection: State['connection'] }
@@ -46,6 +47,7 @@ export function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'loaded': return { ...state, settings: action.settings, snapshot: action.snapshot, phase: action.snapshot ? 'ready' : 'empty', busy: false, message: '', messageKind: 'status' };
     case 'settings': return { ...state, settings: action.settings };
+    case 'selecting': return { ...initialState, settings: state.settings, busy: true };
     case 'started': return state.snapshot?.sessionId === action.snapshot.sessionId
       ? receive(state, action.snapshot)
       : { ...initialState, settings: state.settings, phase: 'ready', snapshot: action.snapshot, message: 'Your session is saved. Figures will appear as you share them.' };
@@ -89,30 +91,36 @@ export function useSession() {
   const generation = useRef(0);
   const stream = useRef<EventSource | null>(null);
   const deleting = useRef(false);
+  const selection = useRef<Promise<Snapshot | undefined> | null>(null);
   const latest = useRef(state.snapshot);
-  useEffect(() => { latest.current = state.snapshot; }, [state.snapshot]);
+  useEffect(() => {
+    if (state.snapshot || state.phase === 'empty' || state.phase === 'deleted') latest.current = state.snapshot;
+  }, [state.snapshot, state.phase]);
 
   useEffect(() => {
     const controller = new AbortController();
+    const version = generation.current;
+    const epoch = authEpoch();
+    const current = () => !controller.signal.aborted && version === generation.current && epoch === authEpoch();
     const load = async () => {
       try {
         const settings = await api.settings(controller.signal);
-        if (!controller.signal.aborted) dispatch({ type: 'settings', settings });
+        if (current()) dispatch({ type: 'settings', settings });
         let snapshot: Snapshot | null = null;
         try { snapshot = await api.current(controller.signal); }
         catch (error) {
           if (!(error instanceof ApiError) || (error.status !== 404 && error.status !== 410)) throw error;
           if (error.status === 410) {
-            if (!controller.signal.aborted) {
+            if (current()) {
               dispatch({ type: 'loaded', settings, snapshot: null });
               dispatch({ type: 'terminal', phase: 'expired', message: errorMessage(error) });
             }
             return;
           }
         }
-        if (!controller.signal.aborted) dispatch({ type: 'loaded', settings, snapshot });
+        if (current()) dispatch({ type: 'loaded', settings, snapshot });
       } catch (error) {
-        if (!controller.signal.aborted) dispatch({ type: 'terminal',
+        if (current()) dispatch({ type: 'terminal',
           phase: error instanceof ApiError && error.body.code === 'invalidStoredState' ? 'unreadable' : 'unavailable',
           message: errorMessage(error) });
       }
@@ -127,9 +135,10 @@ export function useSession() {
     const controller = new AbortController();
     const source = new EventSource('/api/session/events');
     const epoch = authEpoch();
+    const version = generation.current;
     stream.current = source;
     let recovery = 0;
-    const current = () => !controller.signal.aborted && epoch === authEpoch() && stream.current === source;
+    const current = () => !controller.signal.aborted && epoch === authEpoch() && version === generation.current && stream.current === source;
     dispatch({ type: 'connection', connection: streamKey ? 'reconnecting' : 'connecting' });
     // An open socket is not evidence that its financial picture is current.
     source.onopen = () => { if (current()) recovery++; };
@@ -188,6 +197,48 @@ export function useSession() {
 
   useEffect(() => () => { generation.current += 1; }, []);
 
+  const selectConversation = useCallback(async (slug: string, signal: AbortSignal) => {
+    if (signal.aborted || lock.current && !selection.current || state.pending) return;
+    const prior = selection.current;
+    const version = ++generation.current;
+    const epoch = authEpoch();
+    const current = () => version === generation.current && epoch === authEpoch();
+    lock.current = true;
+    stream.current?.close(); stream.current = null;
+    dispatch({ type: 'selecting' });
+    const request = (async () => {
+      await prior?.catch(() => undefined);
+      if (!current() || signal.aborted) return;
+      // Serialize selection mutations; aborting HTTP cannot undo a server-side chat switch.
+      const snapshot = await api.history.continue(slug);
+      if (!current() || signal.aborted) return;
+      if (snapshot.conversationSlug !== slug || snapshot.sequence < (latest.current?.sequence ?? 0))
+        throw new Error('Conversation selection could not be confirmed.');
+      latest.current = snapshot;
+      dispatch({ type: 'started', snapshot });
+      return snapshot;
+    })();
+    selection.current = request;
+    try {
+      const snapshot = await request;
+      if (!snapshot && current()) dispatch({ type: 'terminal', phase: 'unavailable', message: 'Choose a conversation again to confirm its saved figures.' });
+      return snapshot;
+    } catch (error) {
+      if (current()) {
+        try {
+          const snapshot = await api.current();
+          if (current()) { latest.current = snapshot; dispatch({ type: 'started', snapshot }); }
+        } catch {
+          if (current()) dispatch({ type: 'terminal', phase: 'unavailable', message: 'Could not open this conversation. Please try again.' });
+        }
+      }
+      throw error;
+    } finally {
+      if (selection.current === request) { selection.current = null; lock.current = false; }
+      if (current()) dispatch({ type: 'busy', busy: false });
+    }
+  }, [state.pending]);
+
   const perform = useCallback(async (action: 'start' | 'delete' | 'save', operation?: Command['operation']) => {
     if (lock.current) return;
     if (state.pending && action !== 'save') return;
@@ -243,7 +294,7 @@ export function useSession() {
   }, [state]);
 
   function retryConnection() {
-    if (state.busy) return;
+    if (state.busy || lock.current) return;
     if (state.snapshot) {
       dispatch({ type: 'terminal', phase: 'ready', message: '' });
       dispatch({ type: 'connection', connection: 'reconnecting' });
@@ -254,5 +305,5 @@ export function useSession() {
     }
   }
 
-  return { state, dispatch, perform, retryConnection };
+  return { state, dispatch, perform, retryConnection, selectConversation };
 }

@@ -7,6 +7,8 @@ import type { DailyEventObjectParticipant } from '@daily-co/daily-js';
 export const RTVIEvent = { TrackStarted: 'trackStarted', TrackStopped: 'trackStopped' } as const;
 
 export class DeviceError extends Error {
+  readonly status = undefined;
+  readonly details = undefined;
   constructor(public devices: DeviceArray, public type: DeviceErrorType, message?: string) { super(message); }
 }
 
@@ -44,6 +46,7 @@ export class PipecatClient {
   readonly messages: { type: string; data: unknown }[] = [];
   disconnects = 0;
   isMicEnabled = true;
+  micReady: Promise<void> = Promise.resolve();
   readonly transport: DailyTransport;
   private stream?: MediaStream;
   private listeners = new Map<string, (track: MediaStreamTrack, participant?: Participant) => void>();
@@ -51,6 +54,7 @@ export class PipecatClient {
   constructor(options: PipecatClientOptions) {
     this.callbacks = options.callbacks ?? {};
     this.transport = options.transport as unknown as DailyTransport;
+    this.isMicEnabled = options.enableMic ?? true;
     window.voiceFixture.clients.push(this);
   }
 
@@ -64,6 +68,10 @@ export class PipecatClient {
   }
 
   async initDevices() {
+    if (this.isMicEnabled) await this.captureMic();
+  }
+
+  private async captureMic() {
     // Chromium's fake-device launch flag supplies this capture; no human audio is recorded or sent.
     this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     for (const track of this.stream.getTracks()) {
@@ -96,9 +104,18 @@ export class PipecatClient {
   tracks(): Tracks { return { local: { audio: this.stream?.getAudioTracks()[0] } }; }
 
   enableMic(enabled: boolean) {
+    if (enabled && !this.stream) {
+      this.micReady = this.captureMic().then(() => this.enableMic(true), () => {
+        this.callbacks.onDeviceError?.(new DeviceError(['mic'], 'permissions'));
+      });
+      return;
+    }
+    for (const track of this.stream?.getAudioTracks() ?? []) {
+      track.enabled = enabled;
+      if (!enabled) this.listeners.get(RTVIEvent.TrackStopped)?.(track, { id: 'fixture-user', name: 'Test microphone', local: true });
+    }
     queueMicrotask(() => {
       this.isMicEnabled = enabled;
-      for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = enabled;
       const event = { action: 'participant-updated', participant: { local: true, session_id: 'fixture-user', audio: enabled } } as DailyEventObjectParticipant;
       for (const listener of this.transport.participants) listener(event);
     });

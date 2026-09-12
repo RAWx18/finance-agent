@@ -9,6 +9,7 @@ import type { CallJoin, Settings, Snapshot } from './api';
 import { LiveCaption } from './Captions';
 import type { Caption, Transcript } from './Captions';
 import { CallIcon } from './CallIcon';
+import { startRingback } from './ringback';
 import { dismiss, notify } from './Toast';
 import type { Notice } from './Toast';
 import { VoiceOrb } from './components/assistant-ui/elements/voice';
@@ -18,7 +19,7 @@ export type VoicePhase = 'idle' | 'connecting' | 'active' | 'ended' | 'disconnec
 type VoiceState = 'idle' | 'connecting' | 'listening' | 'userSpeaking' | 'assistantSpeaking'
   | 'processing' | 'interrupted' | 'reconnecting' | 'muted' | 'paused' | 'unavailable' | 'disconnected' | 'ended';
 type Release = 'ended' | 'error' | 'unconfirmed';
-type CallOwner = { callId?: string; authEpoch: number };
+type CallOwner = { callId?: string; authEpoch: number; conversationSlug?: string };
 type Problem = Omit<Notice, 'action'> & { type: 'retry' | 'reconnect' | 'availability' | 'end' | 'session' };
 const notices = ['voice:problem', 'voice:audio', 'voice:availability', 'voice:previous'];
 const unavailable: Problem = { id: 'voice:availability', type: 'availability', title: 'Conversations unavailable', severity: 'error', duration: null,
@@ -32,7 +33,7 @@ type Attempt = {
   startupTimer?: ReturnType<typeof setTimeout>; expiryTimer?: ReturnType<typeof setTimeout>;
   devicesPending?: boolean; connectionPending?: boolean; connection?: Promise<unknown>;
   sequence: number; resumeSequence?: number; resumeTimer?: ReturnType<typeof setTimeout>;
-  sessionId?: string; parentSession?: string;
+  sessionId?: string; parentSession?: string; conversationSlug?: string;
   devices?: Promise<void>; join?: Promise<CallJoin>; cleanup?: Promise<Release>;
   financialReady?: () => void;
   tracks: Set<MediaStreamTrack>;
@@ -41,6 +42,7 @@ type Attempt = {
   level: number; levelAt?: number; meter?: ReturnType<typeof setTimeout>;
   onPageHide: () => void;
   removeParticipantListener?: () => void;
+  stopRinging?: () => void;
 };
 
 function mark(stage: string) {
@@ -63,7 +65,9 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
         mark('end-request');
         // The deadline limits confirmation, not delivery of the keepalive termination request.
         const call = await api.endCall(owner.callId);
-        if (owner.authEpoch !== authEpoch() || call.callId !== owner.callId || call.cleanupConfirmed !== true) return 'unconfirmed';
+        if (owner.authEpoch !== authEpoch() || call.callId !== owner.callId) return 'unconfirmed';
+        if (call.conversationSlug) owner.conversationSlug = call.conversationSlug;
+        if (call.cleanupConfirmed !== true) return 'unconfirmed';
         if (call.status !== 'idle' && call.status !== 'ended' && call.status !== 'error') return 'unconfirmed';
         mark('end-confirmed');
         return call.status === 'error' ? 'error' : 'ended';
@@ -90,6 +94,7 @@ async function disconnect(attempt: Attempt) {
 function dispose(attempt: Attempt): Promise<Release> {
   if (attempt.cleanup) return attempt.cleanup;
   attempt.cancelled = true;
+  attempt.stopRinging?.();
   attempt.removeParticipantListener?.();
   attempt.financialReady?.();
   clearTimeout(attempt.meter);
@@ -133,6 +138,9 @@ function callError(error: unknown): Problem {
     return { id: 'voice:problem', type: 'session', title: error.status === 410 ? 'Conversation expired' : 'Conversation unavailable',
       severity: 'error', duration: null, dismissible: false,
       message: 'This conversation is no longer available. Reload the page to check your session before starting again.' };
+  if (error instanceof ApiError && ['conversationChanged', 'sessionChanged'].includes(error.body.code))
+    return { id: 'voice:problem', type: 'session', title: 'Conversation changed', severity: 'warning', duration: null,
+      message: 'Your microphone is off. Open this conversation again from History before continuing.' };
   if (error instanceof ApiError && error.status === 409)
     return { id: 'voice:previous', type: 'end', title: 'A conversation is still open', severity: 'critical', duration: null,
       message: 'Another conversation is still open. End it before connecting here.' };
@@ -153,8 +161,10 @@ function audioSource(current: Attempt): 'local' | 'remote' | undefined {
     && remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false) return 'remote';
 }
 
-export function Conversation({ settings, sessionId, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, onTranscriptChange, visible = true, sessionIssue, updatesLost = false, updatesReady = true }: {
+export function Conversation({ settings, sessionId, conversationSlug, startRequest, onStartConsumed, onConversationChange, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, onTranscriptChange, visible = true, sessionIssue, updatesLost = false, updatesReady = true }: {
   settings: Settings | null; sessionId?: string; disabled: boolean;
+  conversationSlug?: string | null; startRequest?: string; onStartConsumed?: () => void;
+  onConversationChange?: (slug: string, sessionId: string) => void;
   onStarted: (snapshot: Snapshot) => void; onBusyChange: (busy: boolean) => void;
   presentation: 'landing' | 'ready' | 'session'; onPrepare: () => void;
   onPhaseChange: (phase: VoicePhase) => void; onSettings: (settings: Settings) => void;
@@ -194,6 +204,8 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const generation = useRef(0);
   const ending = useRef(false);
   const previousCall = useRef<CallOwner | null>(null);
+  const logicalChat = useRef({ sessionId, slug: conversationSlug });
+  const consumedStart = useRef<string | undefined>(undefined);
   const availability = useRef<AbortController | null>(null);
   const sessionBlocked = !!sessionIssue || problem?.type === 'session';
   const needsEnd = endIssue !== null && !sessionBlocked;
@@ -205,6 +217,19 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const notifyPhase = useEffectEvent(onPhaseChange);
   const notifyBusy = useEffectEvent(onBusyChange);
   const notifyTranscript = useEffectEvent((transcript: Transcript) => onTranscriptChange?.(transcript));
+  const consumeStart = useEffectEvent(() => onStartConsumed?.());
+
+  useLayoutEffect(() => {
+    if (conversationSlug || !attempt.current && logicalChat.current.sessionId !== sessionId)
+      logicalChat.current = { sessionId, slug: conversationSlug };
+  }, [sessionId, conversationSlug]);
+
+  useEffect(() => {
+    if (!startRequest || consumedStart.current === startRequest || !visible || presentation === 'landing' || startBlocked || !updatesReady) return;
+    consumedStart.current = startRequest;
+    consumeStart();
+    void actions.current.start();
+  }, [startRequest, visible, presentation, startBlocked, updatesReady]);
 
   useLayoutEffect(() => {
     actions.current = { start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId, updatesReady };
@@ -344,6 +369,9 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     if (issue && issue.type !== 'end' && !actions.current.sessionBlocked) setProblem(issue);
     const released = await cleanup;
     if (!mounted.current || attempt.current !== current) return;
+    if (current && owner.authEpoch === authEpoch() && owner.conversationSlug
+      && (actions.current.sessionId === current.sessionId || actions.current.sessionId === current.parentSession))
+      logicalChat.current = { sessionId: actions.current.sessionId, slug: owner.conversationSlug };
     attempt.current = null;
     ending.current = false;
     setCleanupPending(false);
@@ -392,7 +420,8 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     let current: Attempt | null = null;
     try {
       // Daily's script loader must respect the application's no-eval content security policy.
-      const transport = new DailyTransport({ bufferLocalAudioUntilBotReady: false, dailyConfig: { avoidEval: true } });
+      const transport = new DailyTransport({ bufferLocalAudioUntilBotReady: false,
+        dailyConfig: { avoidEval: true, alwaysIncludeMicInPermissionPrompt: false } });
       const live = () => mounted.current && current !== null && attempt.current === current && !current.cancelled
         && current.authEpoch === authEpoch() && !actions.current.sessionBlocked;
       const update = (patch: Partial<typeof quiet>) => {
@@ -419,12 +448,20 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       const microphoneLost = () => fail({ id: 'voice:problem', type: 'retry', title: 'Microphone disconnected', severity: 'error', duration: null,
         message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
       const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
-      const client = new PipecatClient({ transport, enableMic: true, enableCam: false, callbacks: {
+      const client = new PipecatClient({ transport, enableMic: false, enableCam: false, callbacks: {
         onConnected: () => {
           if (live() && current?.ready) clearTimeout(current.startupTimer);
           update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false });
         },
-        onBotReady: () => { if (live() && current) { mark('bot-ready'); clearTimeout(current.startupTimer); current.ready = true; setPhase('active'); update({ reconnecting: false }); updateTracks(); } },
+        onBotReady: () => {
+          if (!live() || !current || current.ready) return;
+          current.stopRinging?.();
+          mark('bot-ready'); clearTimeout(current.startupTimer);
+          current.ready = true; setPhase('active'); update({ reconnecting: false });
+          try { client.enableMic(true); updateTracks(); }
+          catch { fail({ ...callError(undefined), title: 'Microphone unavailable',
+            message: 'The microphone could not start. Check microphone access, then try again.' }); }
+        },
         onBotConnected: (participant) => {
           if (!live() || !current || participant.local) return;
           current.botId = participant.id;
@@ -562,6 +599,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         if (live()) void actions.current.finish('disconnected', callError(new TypeError()));
       } };
       attempt.current = current;
+      current.stopRinging = startRingback();
       previousCall.current = null;
       const deadline = (seconds = settings.voiceStartupSeconds) => {
         if (!current) return;
@@ -604,7 +642,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         if (current && suspended) current.suspendedTrack = undefined;
         if (participant?.local && current?.localTrack === track) {
           if (!suspended && !current.activity.waiting && client.isMicEnabled) { microphoneLost(); return; }
-          if (current.activity.waiting || !client.isMicEnabled || track.readyState === 'ended') current.localTrack = undefined;
+          if (track.readyState === 'ended') current.localTrack = undefined;
         }
         if (current?.remoteTrack === track) { current.remoteTrack = undefined; current.remoteId = undefined; }
         updateTracks();
@@ -613,7 +651,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
           audio.current.pause(); audio.current.srcObject = null; update({ playing: false, blocked: false });
         }
       });
-      // Device permission starts directly in the click handler, before any room request.
+      // Prepare devices without opening capture; BotReady owns the first microphone enable.
       mark('mic-request');
       current.devicesPending = true;
       try { current.devices = current.client.initDevices(); await current.devices; }
@@ -625,16 +663,22 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       if (current.localTrack) { current.tracks.add(current.localTrack); observe(current.localTrack); }
       updateTracks();
       mark('setup-request');
-      const saved = await api.start();
+      let saved = await api.start();
       if (!live()) return;
+      const slug = logicalChat.current.slug ?? saved.conversationSlug ?? undefined;
+      if (slug && saved.conversationSlug !== slug)
+        throw new ApiError(409, { code: 'conversationChanged', message: 'The selected conversation changed. Open it again from History.' });
+      logicalChat.current = { sessionId: saved.sessionId, slug };
       current.sessionId = saved.sessionId;
       actions.current.onStarted(saved);
-      if (!actions.current.updatesReady) await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
+      if (actions.current.sessionId && actions.current.sessionId !== saved.sessionId || !actions.current.updatesReady)
+        await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
       if (!live()) return;
       mark('setup-ready');
       deadline(settings.voiceStartupSeconds + settings.voiceShutdownSeconds);
       mark('join-request');
-      current.join = api.startCall(current.callId);
+      current.conversationSlug = slug;
+      current.join = api.startCall(current.callId, slug);
       let join: CallJoin;
       try { join = await current.join; }
       catch (error) {
@@ -643,6 +687,20 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       }
       if (!live()) return;
       if (join.callId !== current.callId) throw new Error('Call ownership could not be confirmed.');
+      current.conversationSlug = join.conversationSlug;
+      if (!slug) {
+        saved = await api.current();
+        if (!live()) return;
+        if (saved.conversationSlug !== join.conversationSlug)
+          throw new ApiError(409, { code: 'conversationChanged', message: 'The selected conversation changed. Open it again from History.' });
+        current.sessionId = saved.sessionId;
+        actions.current.onStarted(saved);
+      }
+      logicalChat.current = { sessionId: saved.sessionId, slug: join.conversationSlug };
+      onConversationChange?.(join.conversationSlug, saved.sessionId);
+      if (actions.current.sessionId && actions.current.sessionId !== saved.sessionId || !actions.current.updatesReady)
+        await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
+      if (!live()) return;
       const remaining = Date.parse(join.expiresAt) - Date.now();
       if (!Number.isFinite(remaining)) throw new Error('Call credentials could not be confirmed.');
       const expired = new ApiError(410, { code: 'callExpired', message: 'Call expired.' });
@@ -668,6 +726,8 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     const current = attempt.current;
     if (!current || current.cancelled || phase !== 'active' || current.activity.waiting || sessionBlocked) return;
     try {
+      // Daily can report mute's TrackStopped before its local-audio acknowledgement.
+      if (current.client.isMicEnabled) current.suspendedTrack = current.localTrack;
       current.client.enableMic(!current.client.isMicEnabled);
       updateActivity(current, { muted: !current.client.isMicEnabled, user: false, interrupted: false });
     } catch {
@@ -789,7 +849,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
               <CallIcon kind={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'retry' : 'call'} />
             </button>}
           {activity.blocked && <button type="button" className="call-control" disabled={disabled} aria-label="Resume audio" title="Resume audio" onClick={() => void playAudio()}><CallIcon kind="audio" /></button>}
-          {!running && !sessionBlocked && (settings?.voiceAvailable === false || phase === 'error') &&
+          {!running && !sessionBlocked && settings?.voiceAvailable === false &&
             <button type="button" className="call-control" disabled={checkingAvailability || disabled} aria-busy={checkingAvailability} aria-label={checkingAvailability ? 'Checking availability…' : 'Check availability'} title="Check availability" onClick={() => void checkAvailability()}><CallIcon kind="retry" /></button>}
         </div>
       </header>

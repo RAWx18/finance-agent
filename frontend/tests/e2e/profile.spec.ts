@@ -131,7 +131,7 @@ test('profile menu and minimal settings', async ({ page, context, baseURL }, inf
         const privacy = page.getByRole('contentinfo').getByRole('button', { name: 'Privacy', exact: true });
         await privacy.click();
         const privacyDialog = page.getByRole('dialog', { name: 'Privacy', exact: true });
-        await expect(privacyDialog).toContainText('Avoid account numbers, passwords and card details.');
+        await expect(privacyDialog).toContainText('Do not provide passwords, bank account numbers or full payment-card details.');
         await privacyDialog.getByRole('button', { name: 'Close privacy', exact: true }).click();
         await expect(privacy).toBeFocused();
         const remove = settings.getByRole('button', { name: 'Delete app account', exact: true });

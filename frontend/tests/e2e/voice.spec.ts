@@ -14,6 +14,7 @@ import { signIn } from './authSupport';
 // Rendered App + real financial HTTP/SSE, with provider-double transport and fabricated captions.
 // This suite never creates a paid room and does not replace real-provider speech acceptance.
 let bundle: string;
+let styles: string;
 type Voice = { calls: string[]; blocked: string[]; errors: string[] };
 const test = base.extend<{ voice: Voice }>({
   voice: [async ({ page, context, baseURL }, use) => {
@@ -47,7 +48,8 @@ const test = base.extend<{ voice: Voice }>({
         voice.calls.push(request.method());
         if (request.method() === 'POST' || request.method() === 'DELETE') {
           expect(request.headers()['content-type']).toBe('application/json');
-          expect(request.postDataJSON()).toEqual({ callId: expect.stringMatching(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i) });
+          expect(request.postDataJSON()).toEqual({ callId: expect.stringMatching(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i),
+            ...(request.method() === 'POST' && call.conversationSlug ? { conversationSlug: call.conversationSlug } : {}) });
           const { callId } = request.postDataJSON() as { callId: string };
           if (request.method() === 'DELETE') {
             ended.add(callId);
@@ -58,13 +60,19 @@ const test = base.extend<{ voice: Voice }>({
           } else if (!call.cleanupConfirmed && call.callId !== callId) {
             await route.fulfill({ status: 409, json: { code: 'callBusy', message: 'A voice call is already running or ending.' } });
           } else {
-            call = { callId, status: 'connecting', cleanupConfirmed: false, message: null };
-            const join: CallJoin = { callId, url: 'https://voice-fixture.daily.co/room',
+            call = { callId, conversationSlug: 'conversation-2026-09-12-000000', status: 'connecting', cleanupConfirmed: false, message: null };
+            const join: CallJoin = { callId, conversationSlug: call.conversationSlug!, url: 'https://voice-fixture.daily.co/room',
               token: 'synthetic-provider-double', expiresAt: new Date(Date.now() + 1800000).toISOString() };
             await route.fulfill({ json: join });
           }
         } else if (request.method() === 'GET') await route.fulfill({ json: call });
         else await route.fulfill({ status: 405, json: { code: 'testMethod', message: 'Unsupported test method' } });
+      } else if (url.pathname === '/api/session' && ['GET', 'POST'].includes(request.method()) && call.conversationSlug) {
+        const response = await route.fetch({ maxRedirects: 0 });
+        if (response.status() !== 200) { await route.fulfill({ response }); return; }
+        // The provider double owns only call identity; financial facts and commands remain real HTTP/SSE.
+        const snapshot = await response.json() as Snapshot;
+        await route.fulfill({ response, json: { ...snapshot, conversationSlug: call.conversationSlug } satisfies Snapshot });
       } else if (url.pathname === '/api/settings' && request.method() === 'GET') {
         const response = await route.fetch({ maxRedirects: 0 });
         expect(response.status()).toBe(200);
@@ -73,7 +81,11 @@ const test = base.extend<{ voice: Voice }>({
       } else if (url.href === entry.href && request.method() === 'GET') {
         delivered += 1;
         await route.fulfill({ contentType: 'application/javascript', body: bundle });
-      } else if ((request.method() === 'GET' && (['/', '/login', '/app', '/history', '/money', '/account', '/auth/callback'].includes(url.pathname) || /^\/assets\/[^/]+\.css$/.test(url.pathname)))
+      } else if (/^\/assets\/[^/]+\.css$/.test(url.pathname) && request.method() === 'GET') {
+        await route.fulfill({ contentType: 'text/css', body: styles });
+      } else if (/^\/assets\/brand-[\w-]+\.svg$/.test(url.pathname) && request.method() === 'GET') {
+        await route.continue();
+      } else if ((request.method() === 'GET' && ['/', '/login', '/app', '/history', '/money', '/account', '/auth/callback'].includes(url.pathname))
         || (/^\/(?:api\/)?history(?:\/[^/]+)?$/.test(url.pathname) && request.method() === 'GET')
         || (url.pathname.startsWith('/api/auth/') && ['GET', 'POST'].includes(request.method()))
         || (url.pathname === '/api/session' && ['GET', 'POST', 'DELETE'].includes(request.method()))
@@ -132,12 +144,177 @@ test.beforeAll(async () => {
   if ('on' in result) throw new Error('Provider-double build must not start a watcher.');
   const chunks = (Array.isArray(result) ? result : [result]).flatMap(output => output.output)
     .filter(chunk => chunk.type === 'chunk');
+  styles = (Array.isArray(result) ? result : [result]).flatMap(output => output.output)
+    .flatMap(item => item.type === 'asset' && item.fileName.endsWith('.css') ? [item.source] : []).join('\n');
   expect(chunks).toHaveLength(1);
   expect(chunks[0].isEntry).toBe(true);
   expect(Object.keys(chunks[0].modules)).toContain(sdk);
   expect(Object.keys(chunks[0].modules)).toContain(fileURLToPath(new URL('../../src/components/assistant-ui/elements/voice.tsx', import.meta.url)));
   expect(Object.keys(chunks[0].modules).filter(id => /node_modules\/(?:@pipecat-ai|@daily-co)\//.test(id))).toEqual([]);
   bundle = chunks[0].code;
+});
+
+test('provider double: focused Conversation stays in session through End and reconnect', async ({ page, voice }, info) => {
+  const created = await page.request.post('/api/session', { data: {} });
+  expect(created.status()).toBe(200);
+  const initial = await created.json() as Snapshot;
+  const saved = await submit(page, initial, { type: 'replaceFacts', facts: {
+    ...draftFacts(initial),
+    opening: { amount: '5000', status: 'exact' },
+    coverage: { income: 'none', essential: 'reviewed', optional: 'none', debt: 'none' },
+    records: [{ id: 'rent', kind: 'essential', label: 'Rent', autoDebit: false, amount: { amount: '1200', status: 'exact' },
+      schedule: { date: dateAt(initial.anchorDate, 2), certainty: 'exact', recurrence: 'once' } }],
+  } });
+  const transitions: { method: string; callId: string; conversationSlug?: string }[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/session/call' && ['POST', 'DELETE'].includes(request.method()))
+      transitions.push({ method: request.method(), ...request.postDataJSON() });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
+  const main = page.locator('main');
+  const journey = page.locator('.journey-layout');
+  const controls = journey.locator('.conversation-controls');
+  const picture = journey.getByRole('region', { name: 'Your financial picture', exact: true });
+  const cards = picture.getByRole('article');
+  const navigation = page.getByRole('navigation', { name: 'Main navigation', exact: true });
+  const figures = navigation.getByRole('link', { name: 'Money', exact: true });
+  await expect(main).toHaveAttribute('data-view', 'ready');
+  await expect(picture.getByRole('button', { name: 'Edit Cash at plan start', exact: true }).locator('.card-number')).toHaveText('₹5,000');
+  await expect(picture.getByRole('listitem', { name: 'Rent', exact: true }).locator('.card-number')).toHaveText('−₹1,200');
+  const content = await cards.allTextContents();
+  expect(content.length).toBeGreaterThan(0);
+  const clean = async () => {
+    await expect(page.locator('.journey-progress, .review-controls, .review-layout, .post-call')).toHaveCount(0);
+    await expect(page.getByRole('navigation', { name: /progress/i })).toHaveCount(0);
+    await expect(journey.getByText(/^(Review|Take your plan)$/)).toHaveCount(0);
+    await expect(journey.getByRole('button', { name: /^(Review saved picture|Finish review|Return to conversation|Continue talking|Download.*)$/ })).toHaveCount(0);
+    await expect(journey.getByRole('link', { name: /^(View full plan|Download.*)$/ })).toHaveCount(0);
+    await expect(picture.locator('.plan-summary')).toHaveCount(1);
+    await expect(journey.locator('.conversation-pane')).toBeVisible();
+    await expect(journey.locator('.financial-pane')).toBeVisible();
+    await expect(controls).toBeVisible();
+    await expect(picture).toBeVisible();
+    await expect.poll(() => cards.allTextContents()).toEqual(content);
+    await expect(page.locator('.page-feedback')).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
+    if (info.project.name !== 'mobile') {
+      const top = (await main.boundingBox())!.y;
+      for (const pane of ['.conversation-pane', '.financial-pane']) {
+        const bounds = (await journey.locator(pane).boundingBox())!;
+        expect(bounds.y - top, `${pane} starts near main, without an empty feedback row`).toBeGreaterThanOrEqual(0);
+        expect(bounds.y - top).toBeLessThanOrEqual(16);
+      }
+    }
+  };
+  await clean();
+  expect(transitions).toEqual([]);
+  expect(await page.evaluate(() => window.voiceFixture.clients.length)).toBe(0);
+  const joining = page.waitForResponse(response => new URL(response.url()).pathname === '/api/session/call' && response.request().method() === 'POST');
+  await controls.getByRole('button', { name: 'Start talking', exact: true }).click();
+  const join = await (await joining).json() as CallJoin;
+  await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
+  await page.evaluate(async () => {
+    const client = window.voiceFixture.clients[0];
+    client.callbacks.onConnected!(); client.callbacks.onBotReady!({ version: '2.1.0' });
+    await client.micReady;
+    client.emitTrack(client.tracks().local.audio!.clone(), { id: 'assistant', local: false, name: 'Assistant' });
+    client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
+  });
+  await expect(main).toHaveAttribute('data-view', 'session');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'active');
+  await expect(page.locator('.voice-status')).toHaveText('Listening');
+  await expect(figures).toBeDisabled();
+  await clean();
+  const microphone = await page.evaluateHandle(() => window.voiceFixture.clients[0].tracks().local.audio!);
+  await navigation.getByRole('link', { name: 'History', exact: true }).click();
+  await expect(page).toHaveURL(/\/history$/);
+  await expect(page.getByRole('heading', { level: 1, name: 'History', exact: true })).toBeVisible();
+  expect(await page.evaluate(track => track.readyState === 'live' && track.enabled
+    && window.voiceFixture.clients[0].tracks().local.audio === track
+    && window.voiceFixture.clients[0].disconnects === 0, microphone)).toBe(true);
+  await expect(figures).toBeDisabled();
+  await page.getByRole('region', { name: 'History', exact: true }).getByRole('link', { name: 'Return to call', exact: true }).last().click();
+  await expect(page).toHaveURL(new RegExp(`/app/${join.conversationSlug}$`));
+  await expect(page.locator('.voice-status')).toHaveText('Listening');
+  expect(await page.evaluate(track => window.voiceFixture.clients[0].tracks().local.audio === track
+    && track.readyState === 'live' && track.enabled && window.voiceFixture.clients[0].disconnects === 0, microphone)).toBe(true);
+  expect(transitions).toEqual([{ method: 'POST', callId: join.callId }]);
+  await clean();
+  const layout = await journey.boundingBox();
+  const callControls = await controls.boundingBox();
+  await controls.getByRole('button', { name: 'End conversation', exact: true }).press('Enter');
+  await expect(main).toHaveAttribute('data-view', 'session');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'false');
+  await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+  await expect.poll(() => page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+  await expect(page.locator('audio')).toHaveJSProperty('srcObject', null);
+  await expect(controls.getByRole('button', { name: 'Reconnect', exact: true })).toBeEnabled();
+  await expect(figures).toBeEnabled();
+  await clean();
+  expect(await journey.boundingBox()).toEqual(layout);
+  const endedControls = await controls.boundingBox();
+  for (const coordinate of ['x', 'y', 'width', 'height'] as const)
+    expect(Math.abs(endedControls![coordinate] - callControls![coordinate])).toBeLessThanOrEqual(1);
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.screenshot({ path: info.outputPath('focusedConversation.png'), fullPage: true });
+  expect(await current(page)).toEqual(saved);
+  await figures.click();
+  await expect(page).toHaveURL(/\/money$/);
+  await page.getByRole('button', { name: 'Plan tools', exact: true }).click();
+  const tools = page.getByRole('dialog', { name: 'Plan tools', exact: true });
+  await expect(tools.getByRole('button', { name: 'Print saved plan', exact: true })).toBeEnabled();
+  const exported = await page.request.get('/api/session/export');
+  expect(exported.status()).toBe(200);
+  const text = await exported.text();
+  expect(text).toContain('Rent');
+  const downloading = page.waitForEvent('download');
+  await tools.getByRole('link', { name: 'Download saved plan', exact: true }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toBe('cashflow.txt');
+  expect(await download.failure()).toBeNull();
+  expect(await readFile((await download.path())!, 'utf8')).toBe(text);
+  await page.keyboard.press('Escape');
+  await navigation.getByRole('link', { name: 'Conversation', exact: true }).click();
+  await expect(main).toHaveAttribute('data-view', 'session');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+  await clean();
+  expect(transitions).toEqual([{ method: 'POST', callId: join.callId }, { method: 'DELETE', callId: join.callId }]);
+  await controls.getByRole('button', { name: 'Reconnect', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[1]?.connections.length ?? 0)).toBe(1);
+  await page.evaluate(async () => {
+    const client = window.voiceFixture.clients[1];
+    client.callbacks.onConnected!(); client.callbacks.onBotReady!({ version: '2.1.0' });
+    await client.micReady;
+    client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
+  });
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'active');
+  await expect(page.locator('.voice-status')).toHaveText('Listening');
+  await expect(figures).toBeDisabled();
+  await clean();
+  expect(transitions[2]).toEqual({ method: 'POST', callId: expect.any(String), conversationSlug: join.conversationSlug });
+  expect(transitions[2].callId).not.toBe(join.callId);
+  await controls.getByRole('button', { name: 'End conversation', exact: true }).click();
+  await expect(main).toHaveAttribute('data-view', 'session');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'false');
+  await clean();
+  expect(transitions).toEqual([{ method: 'POST', callId: join.callId }, { method: 'DELETE', callId: join.callId },
+    { method: 'POST', callId: transitions[2].callId, conversationSlug: join.conversationSlug }, { method: 'DELETE', callId: transitions[2].callId }]);
+  expect(voice.calls.filter(method => method !== 'GET')).toEqual(['POST', 'DELETE', 'POST', 'DELETE']);
+  expect(await page.evaluate(() => window.voiceFixture.clients.map(client => client.disconnects))).toEqual([1, 1]);
+  expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
+  expect(await current(page)).toEqual(saved);
+  if (info.project.name === 'mobile') {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await page.evaluate(() => { document.documentElement.style.fontSize = '200%'; });
+    await clean();
+    await controls.getByRole('button', { name: 'Reconnect', exact: true }).focus();
+    await expect(controls.getByRole('button', { name: 'Reconnect', exact: true })).toBeFocused();
+    await page.screenshot({ path: info.outputPath('focusedConversationLargeText.png'), fullPage: true });
+  }
+  await microphone.dispose();
 });
 
 test('header geometry stays stable through call states and live financial updates', async ({ page }, info) => {
@@ -165,9 +342,10 @@ test('header geometry stays stable through call states and live financial update
   await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
   await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true })).toBeDisabled();
   await unchanged();
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const client = window.voiceFixture.clients[0];
     client.callbacks.onConnected!(); client.callbacks.onBotReady!({ version: '2.1.0' });
+    await client.micReady;
     client.emitTrack(client.tracks().local.audio!.clone(), { id: 'assistant', local: false, name: 'Assistant' });
     client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
   });
@@ -183,7 +361,7 @@ test('header geometry stays stable through call states and live financial update
   await expect(page.locator('.voice-status')).toHaveText('Speaking'); await unchanged();
   await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onBotStoppedSpeaking!());
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+  await ended(page);
   await expect(page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true })).toBeEnabled();
   await unchanged();
   await page.screenshot({ path: info.outputPath('header-call-ended.png'), fullPage: true });
@@ -197,6 +375,7 @@ function dateAt(anchor: string, offset: number) {
 declare global {
   interface Window {
     recoveryStreams: EventSource[];
+    ringbackAudio?: { context: AudioContext; analyser: AnalyserNode };
     releaseCapture?: () => void;
     cardAnimations: { element: Element; animation: Animation }[];
     orbProbe: WeakMap<HTMLCanvasElement, { frames: number; state: string | null; volume: number;
@@ -222,9 +401,10 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
     await page.getByRole('button', { name: 'Start talking', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const client = window.voiceFixture.clients[0];
       client.callbacks.onConnected!(); client.callbacks.onBotReady!({ version: '2.1.0' });
+      await client.micReady;
       client.emitTrack(client.tracks().local.audio!.clone(), { id: 'assistant', local: false, name: 'Assistant' });
       client.callbacks.onBotStartedSpeaking!();
     });
@@ -237,7 +417,56 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
   }
 
-  test('End shows stable review immediately while slow cleanup gates reconnect despite a hung SDK', async ({ page, voice }, info) => {
+  for (const ending of ['ready', 'cancel', 'failure'] as const) test(`connecting ringback emits quiet audio and stops on ${ending}`, async ({ page, voice }) => {
+    await page.evaluate(() => {
+      const Context = window.AudioContext;
+      window.AudioContext = class extends Context {
+        createBufferSource() {
+          const source = super.createBufferSource();
+          const analyser = this.createAnalyser();
+          const silent = this.createGain();
+          silent.gain.value = 0;
+          source.connect(analyser).connect(silent).connect(this.destination);
+          window.ringbackAudio = { context: this, analyser };
+          return source;
+        }
+      };
+    });
+    expect(await page.evaluate(() => window.ringbackAudio)).toBeUndefined();
+    await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
+    expect(await page.evaluate(() => window.ringbackAudio)).toBeUndefined();
+    await page.getByRole('button', { name: 'Start talking', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => {
+      const audio = window.ringbackAudio;
+      if (!audio) return 0;
+      const samples = new Float32Array(audio.analyser.fftSize);
+      audio.analyser.getFloatTimeDomainData(samples);
+      return Math.sqrt(samples.reduce((sum, sample) => sum + sample * sample, 0) / samples.length);
+    })).toBeGreaterThan(0.002);
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
+    await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onConnected!());
+    await expect(page.locator('.voice-status')).toHaveText('Connecting to assistant');
+    expect(await page.evaluate(() => window.ringbackAudio!.context.state)).toBe('running');
+    expect(await page.evaluate(() => ({ tracks: window.voiceFixture.tracks.length, enabled: window.voiceFixture.clients[0].isMicEnabled })))
+      .toEqual({ tracks: 0, enabled: false });
+    if (ending === 'ready') await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onBotReady!({ version: '2.1' }));
+    else if (ending === 'cancel') await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+    else await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onDisconnected!());
+    await expect.poll(() => page.evaluate(() => window.ringbackAudio!.context.state)).toBe('closed');
+    if (ending === 'ready') {
+      await expect(page.locator('.voice-status')).toHaveText('Listening');
+      expect(await page.evaluate(() => ({ tracks: window.voiceFixture.tracks.length, enabled: window.voiceFixture.clients[0].isMicEnabled,
+        capturing: window.voiceFixture.clients[0].tracks().local.audio?.enabled })))
+        .toEqual({ tracks: 1, enabled: true, capturing: true });
+      await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+    } else {
+      await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onBotReady!({ version: '2.1' }));
+      expect(await page.evaluate(() => window.voiceFixture.tracks.length)).toBe(0);
+    }
+    expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
+  });
+
+  test('End keeps Conversation visible immediately while slow cleanup gates reconnect despite a hung SDK', async ({ page, voice }, info) => {
     await speaking(page);
     const saved = await current(page);
     let release!: () => void;
@@ -250,14 +479,13 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     try {
       const end = page.getByRole('button', { name: 'End conversation', exact: true });
       await end.focus(); await page.keyboard.press('Enter');
-      await expect(page.locator('main')).toHaveAttribute('data-view', 'review', { timeout: 1000 });
-      await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+      await expect(page.locator('main')).toHaveAttribute('data-view', 'session', { timeout: 1000 });
+      await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended', { timeout: 1000 });
       await expect(page.locator('.conversation')).toHaveAttribute('data-cleanup-pending', 'true');
-      await expect(page.getByRole('heading', { name: 'Ready to talk again?', exact: true })).toBeVisible();
+      await expect(page.locator('.financial-pane')).toBeVisible();
       expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
       await expect(page.locator('audio')).toHaveJSProperty('srcObject', null);
       await expect(page.getByRole('link', { name: 'Money', exact: true })).toBeDisabled();
-      await page.getByRole('button', { name: 'Return to conversation', exact: true }).click();
       await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
       await expect(page.locator('.voice-status-hint')).toHaveText('Your microphone is off. Confirming the call is closed.');
       const reconnect = page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true });
@@ -282,7 +510,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[1]?.connections.length ?? 0)).toBe(1);
       expect(voice.calls.filter(method => method === 'POST')).toHaveLength(2);
       await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-      await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+      await ended(page);
     } finally { release(); }
   });
 
@@ -336,7 +564,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       if (route.request().method() !== 'POST' || !expire) { await route.fallback(); return; }
       expire = false;
       voice.calls.push('POST');
-      await route.fulfill({ json: { callId: route.request().postDataJSON().callId, url: 'https://voice-fixture.daily.co/room',
+      await route.fulfill({ json: { callId: route.request().postDataJSON().callId, conversationSlug: 'conversation-2026-09-12-000000', url: 'https://voice-fixture.daily.co/room',
         token: 'synthetic-provider-double', expiresAt: new Date(Date.now() - 1).toISOString() } satisfies CallJoin });
     });
     const created = await page.request.post('/api/session', { data: {} });
@@ -369,9 +597,20 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await mute.focus(); await page.keyboard.press('Enter');
     await expect(status).toHaveText('Microphone muted');
     await expect(capture).toHaveAttribute('data-capturing', 'false');
+    expect(await page.evaluate(async track => ({ same: window.voiceFixture.clients[0].tracks().local.audio === track,
+      enabled: track.enabled, ready: track.readyState,
+      permission: (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state,
+      disconnects: window.voiceFixture.clients[0].disconnects,
+    }), microphone)).toEqual({ same: true, enabled: false, ready: 'live', permission: 'granted', disconnects: 0 });
+    await expect(page.getByRole('alert')).toHaveCount(0);
     await page.getByRole('button', { name: 'Unmute microphone', exact: true }).click();
     await expect(status).toHaveText('Listening');
     await expect(capture).toHaveAttribute('data-capturing', 'true');
+    expect(await page.evaluate(async track => ({ same: window.voiceFixture.clients[0].tracks().local.audio === track,
+      enabled: track.enabled, ready: track.readyState,
+      permission: (await navigator.permissions.query({ name: 'microphone' as PermissionName })).state,
+      disconnects: window.voiceFixture.clients[0].disconnects,
+    }), microphone)).toEqual({ same: true, enabled: true, ready: 'live', permission: 'granted', disconnects: 0 });
     await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 1 }));
     await expect(status).toHaveText('Paused');
     await expect(capture).toHaveAttribute('data-capturing', 'false');
@@ -506,7 +745,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 3 });
       callbacks.onBotStartedSpeaking!();
     });
-    await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+    await ended(page);
     expect(await page.evaluate(() => window.voiceFixture.clients[0].isMicEnabled)).toBe(false);
     await expect(page.getByRole('button', { name: 'Continue', exact: true })).toHaveCount(0);
     await expect(page.getByRole('alert')).toHaveCount(0);
@@ -686,9 +925,10 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
     await page.getByRole('button', { name: 'Start talking', exact: true }).click();
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
-    await page.evaluate(() => {
+    await page.evaluate(async () => {
       const client = window.voiceFixture.clients[0];
       client.callbacks.onBotReady!({ version: '2.1.0' });
+      await client.micReady;
       client.emitTrack(client.tracks().local.audio!.clone(), { id: 'assistant', name: 'Assistant', local: false });
       client.callbacks.onBotStartedSpeaking!();
     });
@@ -844,7 +1084,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
       release();
       expect((await pending).status()).toBe(409);
     }
-    await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+    await ended(page);
     await stopped(page);
     await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onBotReady!({ version: '2.1.0' }));
     await expect(page.getByRole('button', { name: 'Mute microphone', exact: true })).toHaveCount(0);
@@ -857,6 +1097,13 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     expect(await page.evaluate(() => window.voiceFixture.destroyed)).toBe(0);
   });
 });
+
+async function ended(page: Page) {
+  await expect(page.locator('main')).toHaveAttribute('data-view', 'session');
+  await expect(page.locator('.conversation')).toHaveAttribute('data-phase', 'ended');
+  await expect(page.locator('.conversation-controls')).toBeVisible();
+  await expect(page.locator('.financial-pane')).toBeVisible();
+}
 
 async function current(page: Page): Promise<Snapshot> {
   const response = await page.request.get('/api/session', { maxRedirects: 0 });
@@ -1061,9 +1308,10 @@ test('focused call surface and history navigation', async ({ page, voice }, info
   await expect(start).toHaveText('');
   await start.click();
   await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0]?.connections.length ?? 0)).toBe(1);
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const client = window.voiceFixture.clients[0];
     client.callbacks.onConnected!(); client.callbacks.onBotReady!({ version: '2.1.0' });
+    await client.micReady;
     client.emitTrack(client.tracks().local.audio!.clone(), { id: 'assistant', local: false, name: 'Assistant' });
     client.callbacks.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
     for (const [text, timestamp] of [['Later figure', '2026-09-11T04:00:02.000Z'], ['Earlier figure', '2026-09-11T04:00:01.000Z']])
@@ -1169,12 +1417,12 @@ test('focused call surface and history navigation', async ({ page, voice }, info
   await expect(page.getByRole('button', { name: 'Privacy', exact: true })).toHaveCount(1);
   await privacy.click();
   const dialog = page.getByRole('dialog', { name: 'Privacy', exact: true });
-  await expect(dialog).toContainText(/Audio and words are processed/);
-  await expect(dialog).toContainText(/Avoid account numbers, passwords and card details/);
+  await expect(dialog).toContainText('Azure Speech processes audio and spoken replies.');
+  await expect(dialog).toContainText('Do not provide passwords, bank account numbers or full payment-card details.');
   const settings = await page.request.get('/api/settings', { maxRedirects: 0 });
   expect(settings.status()).toBe(200);
-  await expect(dialog).toContainText(`Figures and saved conversations are kept for up to ${(await settings.json() as Settings).retentionHours} hours.`);
-  await expect(dialog).toContainText('Deleting your plan or account also deletes its conversations. Signing out hides them on this device.');
+  await expect(dialog).toContainText(`Plans and associated conversations expire ${(await settings.json() as Settings).retentionHours} hours after plan creation and are removed during expiry cleanup.`);
+  await expect(dialog).toContainText('Signing out does not delete saved data.');
   await dialog.getByRole('button', { name: 'Close privacy', exact: true }).click();
   await expect(privacy).toBeFocused();
   await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 2 }));
@@ -1226,7 +1474,7 @@ test('focused call surface and history navigation', async ({ page, voice }, info
   await expect(page.getByRole('region', { name: 'Conversation messages', exact: true })).toHaveCount(0);
 });
 
-test('provider double: live picture → salary-date correction over SSE → review → real export', async ({ page, voice }, testInfo) => {
+test('provider double: live picture → salary-date correction over SSE → End → Money export', async ({ page, voice }, testInfo) => {
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1 })).toContainText('Talk it through.');
   await expect(page.getByRole('button', { name: 'Start conversation' })).toBeEnabled();
@@ -1382,9 +1630,8 @@ test('provider double: live picture → salary-date correction over SSE → revi
   await stable(page, picture, 'explicit changed-item navigation', true);
   await page.screenshot({ path: testInfo.outputPath('provider-double-corrected.png'), fullPage: true });
   await end.click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Your 30-day plan.');
-  await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
+  await ended(page);
+  await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
   expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);
   expect(await page.evaluate(() => window.voiceFixture.destroyed)).toBe(0);
   expect(await page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
@@ -1394,29 +1641,29 @@ test('provider double: live picture → salary-date correction over SSE → revi
   const figures = page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true });
   await expect(figures).toHaveCount(1);
   await expect(figures).toBeEnabled();
-  await focus.getByRole('button', { name: 'Plan details', exact: true }).click();
+  await page.screenshot({ path: testInfo.outputPath('provider-double-ended.png'), fullPage: true });
+  await figures.click();
+  await expect(page).toHaveURL(/\/money$/);
+  const calculation = page.getByRole('button', { name: 'View calculation', exact: true });
+  await calculation.click();
   const details = page.getByRole('dialog', { name: 'Plan details', exact: true });
-  await expect(focus).toContainText(corrected.plan.decisionAssessment!.outcome!.summary);
   await expect(details).toContainText(corrected.plan.decisionAssessment!.outcome!.conditions);
   expect(await details.evaluate(element => element.matches(':modal'))).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('provider-double-plan-details.png'), fullPage: true });
   await page.keyboard.press('Escape');
   await expect(details).toBeHidden();
-  await expect(focus.getByRole('button', { name: 'Plan details', exact: true })).toBeFocused();
-  await page.screenshot({ path: testInfo.outputPath('provider-double-review.png'), fullPage: true });
-  await page.getByRole('button', { name: 'Finish review' }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'finished');
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Your next step is clearer.');
+  await expect(calculation).toBeFocused();
   expect(await current(page)).toEqual(corrected);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({ path: testInfo.outputPath('provider-double-finished.png'), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath('provider-double-money.png'), fullPage: true });
   const exported = await page.request.get('/api/session/export', { maxRedirects: 0 });
   expect(exported.status()).toBe(200);
   const text = await exported.text();
   expect(text).toContain('Salary');
   expect(text).toContain(corrected.facts.records[0].schedule.date!);
+  await page.getByRole('button', { name: 'Plan tools', exact: true }).click();
   const download = page.waitForEvent('download');
-  await page.getByRole('link', { name: 'Download plan', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Plan tools', exact: true }).getByRole('link', { name: 'Download saved plan', exact: true }).click();
   const file = await download;
   expect(file.suggestedFilename()).toBe('cashflow.txt');
   expect(await file.failure()).toBeNull();
@@ -1610,8 +1857,9 @@ test('provider double: accept an exact whole proposal, replace consent and resto
   await expect(page.getByRole('listitem', { name: 'Card', exact: true })).toContainText('Reported outstanding: ₹90,000.00');
   await expect(page.getByRole('article', { name: 'Cash gap and timing risk', exact: true })).toContainText('₹7,000.00');
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
-  await expect(page.getByRole('article', { name: 'Dated cash requirements', exact: true }).locator('.workspace-result').filter({ has: page.getByText('Projected closing cash', { exact: true }) })).toContainText(money(confirmed.accepted!.plan.closingPaise));
+  await ended(page);
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Money in this plan', exact: true }).locator('.money-metric-closing')).toContainText(money(confirmed.accepted!.plan.closingPaise).replace(/\.00$/, ''));
   const exported = await page.request.get('/api/session/export', { maxRedirects: 0 });
   expect(exported.status()).toBe(200);
   expect(await exported.text()).toContain('reduced planned outflow');
@@ -1657,7 +1905,7 @@ test('provider double: unavailable opening and coverage answers advance the real
   for (const item of assessment.uncertainties!) await expect(questions).toContainText(item.question);
   await page.screenshot({ path: testInfo.outputPath('provider-double-unavailable-answers.png'), fullPage: true });
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+  await ended(page);
   await expect(page.getByRole('article', { name: 'Available opening cash', exact: true })).toContainText('Unknown');
   expect(await current(page)).toEqual(qualified);
   expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
@@ -1719,11 +1967,12 @@ test('provider double: close a preview without declining its cut, then explicitl
   await stable(page, ready, 'declined cut and unresolved rent gap', true);
   await page.screenshot({ path: testInfo.outputPath('provider-double-declined-cut.png'), fullPage: true });
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
-  await expect(page.getByRole('region', { name: 'Next steps', exact: true })).toContainText(next.question);
-  const step = page.getByRole('button', { name: 'Details: Contact the payee · Rent', exact: true });
+  await ended(page);
+  await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Money', exact: true }).click();
+  const step = page.getByRole('button', { name: 'Discuss payment options', exact: true });
   await step.click();
-  const steps = page.getByRole('dialog', { name: 'Details: Contact the payee · Rent', exact: true });
+  const steps = page.getByRole('dialog', { name: 'Your next step', exact: true });
+  await expect(steps).toContainText('Rent');
   await expect(steps).toContainText(next.question);
   expect(await steps.evaluate(element => element.matches(':modal'))).toBe(true);
   await page.keyboard.press('Escape');
@@ -1832,7 +2081,7 @@ test('provider-double: overlapping purchase refusal shows visible guidance witho
   ]);
   expect(commands[1].commandId).not.toBe(commands[0].commandId);
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+  await ended(page);
   expect(await current(page)).toEqual(discarded);
   expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
   expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(1);
@@ -2147,7 +2396,7 @@ test('provider double: official WebGL Orb renders five states, owned audio unifo
   expect(await current(page)).toEqual(snapshot);
   await node!.dispose();
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+  await ended(page);
   expect(await current(page)).toEqual(snapshot);
   expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
   expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(1);
@@ -2260,7 +2509,7 @@ test('provider double: live caption times survive partial speech and financial S
   await expect(live.locator('time')).toHaveAttribute('datetime', '2026-09-11T04:00:04.000Z');
   await stable(page, before, 'history return retains live caption and financial picture');
   await page.getByRole('button', { name: 'End conversation', exact: true }).click();
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
+  await ended(page);
   expect(await current(page)).toEqual(saved);
 });
 
@@ -2505,9 +2754,12 @@ test('provider double: live capture, interruption, bounded captions, disconnecti
   await expect(end).toBeInViewport({ ratio: 0.99 });
   await page.screenshot({ path: testInfo.outputPath('provider-double-enlarged-text.png'), fullPage: true });
   await page.keyboard.press('Enter');
-  await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Ready to talk again?');
-  await expect(page.getByRole('heading', { level: 1 })).toBeFocused();
+  await ended(page);
+  await expect(page.locator('.voice-status')).toHaveText('Conversation ended');
+  const reconnect = page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true });
+  await expect(reconnect).toBeEnabled();
+  await reconnect.scrollIntoViewIfNeeded();
+  await expect(reconnect).toBeInViewport({ ratio: 0.99 });
   expect(await current(page)).toEqual(snapshot);
   expect(await page.evaluate(() => window.voiceFixture.clients.map(client => client.disconnects))).toEqual([1, 1, 1]);
   expect(await page.evaluate(() => window.voiceFixture.tracks.every(track => track.readyState === 'ended'))).toBe(true);

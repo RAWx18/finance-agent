@@ -7,6 +7,19 @@ import { initialState, reducer } from '../src/session';
 import { scenario, settings, snapshot } from './fixtures';
 
 describe('session snapshot and command reducer', () => {
+  it('hides the previous workspace throughout selection and rejects its late snapshots after switching', () => {
+    const a = { ...snapshot(), conversationSlug: 'chat-a', sequence: 5, revision: 3 };
+    const b = { ...snapshot(), sessionId: 'chat-b-session', conversationSlug: 'chat-b', sequence: 6, revision: 4 };
+    let state = reducer(initialState, { type: 'loaded', settings, snapshot: a });
+    state = reducer(state, { type: 'connection', connection: 'live' });
+    state = reducer(state, { type: 'selecting' });
+    expect(state.snapshot).toBeNull(); expect(state.connection).toBe('closed'); expect(state.busy).toBe(true);
+    expect(reducer(state, { type: 'snapshot', snapshot: { ...a, sequence: 7 } })).toBe(state);
+    state = reducer(state, { type: 'started', snapshot: b });
+    expect(state.snapshot).toBe(b); expect(state.connection).toBe('closed'); expect(state.busy).toBe(false);
+    expect(reducer(state, { type: 'snapshot', snapshot: { ...a, sequence: 8 } })).toBe(state);
+  });
+
   it.each<{ operation: Command['operation']; message: string }>([
     { operation: { type: 'replaceFacts', facts: draftFacts(snapshot()) },
       message: 'Your figures are saved. 1 planning assumption(s) remain saved; 0 need fresh consent. The preview is cleared.' },

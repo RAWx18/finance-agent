@@ -41,16 +41,36 @@ it('passes loaded identity to history even while the financial session is unavai
   expect(api.start).not.toHaveBeenCalled();
 });
 
+it('explains shared and chat-only memory without creating a plan', async () => {
+  render(<App />);
+  await screen.findByRole('button', { name: 'Start conversation' });
+  await userEvent.click(screen.getByRole('button', { name: 'Privacy' }));
+  const privacy = screen.getByRole('dialog', { name: 'Privacy' });
+  expect(privacy).toHaveTextContent('display name and saved notes');
+  expect(privacy).toHaveTextContent('Account-level context expires separately');
+  expect(privacy).toHaveTextContent('Deleting a plan removes its conversations and chat notes, but not account-level preferences or context');
+  expect(privacy).toHaveTextContent('forget a saved note');
+  expect(privacy).toHaveTextContent('Deleting your account removes its saved application records');
+  expect(privacy).toHaveTextContent('does not save audio recordings');
+  expect(privacy).toHaveTextContent('does not guarantee deletion of provider-held data');
+  expect(api.start).not.toHaveBeenCalled();
+  expect(api.save).not.toHaveBeenCalled();
+});
+
 it('keeps one persistent Money link through conversation stages without creating data', async () => {
   vi.mocked(api.current).mockResolvedValue(planningSnapshot()); render(<App />);
-  await screen.findByRole('button', { name: /Review saved picture/ });
+  await screen.findByRole('button', { name: 'Start conversation' });
   await waitFor(() => expect(Stream.instances).toHaveLength(1)); act(() => Stream.instances[0].emit('snapshot', planningSnapshot()));
   const link = moneyLink(); await waitFor(() => expect(link).not.toHaveAttribute('aria-disabled', 'true'));
-  for (const action of ['Start conversation', 'Back to welcome', 'Review saved picture', 'Finish review', 'Return to conversation']) {
+  for (const action of ['Start conversation', 'Back to welcome', 'Start conversation']) {
     await userEvent.click(screen.getByRole('button', { name: new RegExp(`^${action}`) }));
     expect(moneyLink()).toBe(link); expect(link).toHaveAttribute('href', '/money');
   }
   await userEvent.click(link); expect(link).toHaveAttribute('aria-current', 'page');
+  await userEvent.click(screen.getByRole('button', { name: 'Plan tools' }));
+  const tools = screen.getByRole('dialog', { name: 'Plan tools' });
+  expect(within(tools).getByRole('link', { name: 'Download saved plan' })).toHaveAttribute('href', '/api/session/export');
+  await userEvent.click(within(tools).getByRole('button', { name: 'Close plan tools' }));
   await userEvent.click(screen.getByRole('link', { name: 'Continue conversation' }));
   expect(moneyLink()).toBe(link); expect(link).not.toHaveAttribute('aria-current');
   expect(api.start).not.toHaveBeenCalled(); expect(api.save).not.toHaveBeenCalled();
@@ -69,13 +89,16 @@ it('does not create a plan on StrictMode mount or pretend unavailable voice work
 });
 it('reopens saved unavailable answers without claiming missing money is zero', async () => {
   vi.mocked(api.current).mockResolvedValue(unconfirmedSnapshot()); render(<App />);
-  await userEvent.click(await screen.findByRole('button', { name: /Review saved picture/ }));
-  const picture = screen.getByRole('region', { name: 'Your financial picture' });
-  expect(picture).toHaveTextContent('Unconfirmed details remain open.');
-  expect(within(picture).queryByRole('article', { name: 'Available opening cash' })).not.toBeInTheDocument();
+  await screen.findByRole('button', { name: 'Start conversation' });
+  await userEvent.click(moneyLink());
+  const picture = await screen.findByRole('region', { name: 'Money content' });
+  expect(within(picture).getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('Unknown');
   expect(picture).not.toHaveTextContent(/₹0\.00|Known commitments look covered/);
-  expect(picture).toHaveTextContent('Have we covered all your income and commitments for these 30 days?');
-  expect(picture).toHaveTextContent('What cash was available at the original cash basis?'); expect(api.save).not.toHaveBeenCalled();
+  await userEvent.click(within(picture).getByRole('button', { name: '2 details to review' }));
+  const checks = screen.getByRole('dialog', { name: 'Needs your check' });
+  expect(checks).toHaveTextContent('Have we covered all your income and commitments for these 30 days?');
+  expect(checks).toHaveTextContent('What cash was available at the original cash basis?');
+  expect(api.save).not.toHaveBeenCalled();
 });
 it('distinguishes unreadable stored state from connectivity and retries without deleting', async () => {
   vi.mocked(api.current).mockRejectedValueOnce(new ApiError(500, { code: 'invalidStoredState', message: 'private input' })).mockResolvedValue(planningSnapshot());
@@ -83,7 +106,7 @@ it('distinguishes unreadable stored state from connectivity and retries without 
   expect(recovery).toHaveTextContent('Nothing has been deleted.'); expect(screen.queryByText('private input')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Start conversation' })).not.toBeInTheDocument();
   await userEvent.click(within(recovery).getByRole('button', { name: 'Retry connection' }));
-  await screen.findByRole('button', { name: /Review saved picture/ }); expect(api.current).toHaveBeenCalledTimes(2);
+  await screen.findByRole('button', { name: 'Start conversation' }); expect(api.current).toHaveBeenCalledTimes(2);
   expect(api.delete).not.toHaveBeenCalled(); expect(api.start).not.toHaveBeenCalled(); expect(api.save).not.toHaveBeenCalled();
 });
 it('retains a focused draft on disconnect and rejects stale overwrites after reconnect', async () => {
@@ -131,6 +154,6 @@ it('prevents duplicate load requests while retry settles', async () => {
   render(<App />); const recovery = await screen.findByRole('region', { name: 'Your saved plan is safe.' });
   const retry = within(recovery).getByRole('button', { name: 'Retry connection' }); await userEvent.click(retry);
   expect(recovery).toHaveAttribute('aria-busy', 'true'); expect(retry).toBeDisabled(); await userEvent.click(retry); expect(api.current).toHaveBeenCalledTimes(2);
-  await act(async () => resolve(planningSnapshot())); await screen.findByRole('button', { name: /Review saved picture/ });
+  await act(async () => resolve(planningSnapshot())); await screen.findByRole('button', { name: 'Start conversation' });
   expect(screen.queryByRole('region', { name: 'Your saved plan is safe.' })).not.toBeInTheDocument(); expect(api.start).not.toHaveBeenCalled(); expect(api.delete).not.toHaveBeenCalled();
 });

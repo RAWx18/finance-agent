@@ -6,7 +6,7 @@
 .page-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; }
 .page-heading h1 { font-size: clamp(1.65rem, 3vw, 2.15rem); margin: 0; }
 .page-heading .eyebrow { margin-bottom: .4rem; }
-main.product-main:not([data-route="/app"]):not([data-route^="/history"]) { grid-template-rows: auto minmax(0, 1fr); padding-bottom: 1rem; }
+main.product-main:not([data-route="/app"]):not([data-route^="/app/"]):not([data-route^="/history"]) { padding-bottom: 1rem; }
 .account-page { overflow: auto; min-height: 0; scrollbar-width: thin; padding: 0 .5rem .5rem 0; }
 main.product-main[data-route="/account"] { grid-template-rows: minmax(0, 1fr); }
 .account-content { width: min(100%, 42rem); margin-inline: auto; padding: 1rem 0; }
@@ -30,8 +30,6 @@ main.product-main[data-route="/account"] { grid-template-rows: minmax(0, 1fr); }
 #delete-confirmation { margin-block: .6rem 1rem; }
 @media (max-width: 700px) {
   .access-page { grid-template-columns: minmax(0, 1fr); align-content: start; gap: 1.5rem; padding-block: 1.5rem; }
-  .access-copy h1 { font-size: 2rem; }
-  .signin-card { max-width: none; }
   .account-content { padding-top: .75rem; }
   #root:has(.product-main[data-route="/account"]), #root:has(.access-page) { height: auto; min-height: 100dvh; }
   .account-page { overflow: visible; }
@@ -44,5 +42,5 @@ main.product-main[data-route="/account"] { grid-template-rows: minmax(0, 1fr); }
 }
 @media (max-width: 360px), (max-height: 560px) {
   .access-page, .account-page { overflow: visible; }
-  .page-heading h1, .access-copy h1 { overflow-wrap: anywhere; }
+  .page-heading h1 { overflow-wrap: anywhere; }
 }

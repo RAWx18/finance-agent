@@ -151,7 +151,7 @@ describe('authentication boundary and routes', () => {
     await screen.findByRole('heading', { name: 'Settings' });
     await act(async () => router.navigate(-1));
     expect(money).toBeVisible();
-    expect(within(money).getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹5,000.00');
+    expect(within(money).getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹5,000');
     await act(async () => router.navigate(-1));
     expect(router.state.location.pathname).toBe('/app');
     expect(screen.getByRole('link', { name: 'Money' })).toBe(ready);
@@ -455,8 +455,8 @@ describe('auth expiry, revalidation and race isolation', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /Correct cash on/ })).not.toBeInTheDocument());
     const late = structuredClone(planningSnapshot()); late.sequence = 5; late.facts.opening.amountPaise = 11100;
     await act(async () => pending.resolve(projectWorkspace(late)));
-    expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹222.00');
-    expect(screen.getByRole('region', { name: 'Money in this plan' })).not.toHaveTextContent('₹111.00');
+    expect(screen.getByRole('region', { name: 'Money in this plan' })).toHaveTextContent('₹222');
+    expect(screen.getByRole('region', { name: 'Money in this plan' })).not.toHaveTextContent('₹111');
     expect(api.save).toHaveBeenCalledTimes(1);
   });
 

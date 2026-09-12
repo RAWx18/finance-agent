@@ -29,6 +29,8 @@ const sdk = vi.hoisted(() => ({
   listeners: new Map<string, (track: MediaStreamTrack, participant?: Participant) => void>(),
 }));
 const orb = vi.hoisted(() => vi.fn());
+const ringing = vi.hoisted(() => ({ start: vi.fn(), stops: [] as ReturnType<typeof vi.fn>[] }));
+vi.mock('../src/ringback', () => ({ startRingback: ringing.start }));
 vi.mock('../src/components/assistant-ui/elements/voice', async (original) => {
   const module = await original<typeof import('../src/components/assistant-ui/elements/voice')>();
   return { ...module, VoiceOrb: (props: ComponentProps<typeof module.VoiceOrb>) => {
@@ -39,7 +41,7 @@ vi.mock('../src/components/assistant-ui/elements/voice', async (original) => {
 vi.mock('@pipecat-ai/client-js', async (original) => ({
   ...await original<typeof import('@pipecat-ai/client-js')>(),
   PipecatClient: class {
-    constructor(options: PipecatClientOptions) { if (sdk.constructionError) throw sdk.constructionError; sdk.options = options; sdk.clients.push(this); }
+    constructor(options: PipecatClientOptions) { if (sdk.constructionError) throw sdk.constructionError; sdk.options = options; sdk.enabled = options.enableMic ?? true; sdk.clients.push(this); }
     initDevices = sdk.initDevices;
     connect = sdk.connect;
     disconnect = sdk.disconnect;
@@ -61,7 +63,7 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const join = { callId: '31272278-5d9e-4712-848b-e148ac8f47ba' as const, url: 'https://room.daily.co/test', token: 'short-lived-test-token', expiresAt: '2026-09-11T05:00:00Z' };
+const join = { callId: '31272278-5d9e-4712-848b-e148ac8f47ba' as const, conversationSlug: 'conversation-2026-09-12-000000', url: 'https://room.daily.co/test', token: 'short-lived-test-token', expiresAt: '2026-09-11T05:00:00Z' };
 const remote: Participant = { id: 'bot', name: 'Assistant', local: false };
 function track(kind = 'audio', readyState = 'live') { return Object.assign(new EventTarget(), { kind, readyState, muted: false, enabled: true, stop: vi.fn() }) as unknown as MediaStreamTrack; }
 function show(props: Partial<ComponentProps<typeof Conversation>> = {}) {
@@ -100,6 +102,10 @@ async function hear(bot = track()) { await act(async () => sdk.listeners.get(RTV
 
 beforeEach(() => {
   orb.mockClear();
+  ringing.stops.length = 0;
+  ringing.start.mockReset().mockImplementation(() => {
+    const stop = vi.fn(); ringing.stops.push(stop); return stop;
+  });
   join.expiresAt = new Date(Date.now() + 3600000).toISOString();
   vi.spyOn(crypto, 'randomUUID').mockReturnValue(join.callId);
   vi.spyOn(performance, 'mark').mockImplementation(() => ({} as PerformanceMark));
@@ -112,13 +118,135 @@ beforeEach(() => {
   sdk.enableMic.mockReset().mockImplementation((enabled: boolean) => { sdk.enabled = enabled; });
   sdk.sendClientMessage.mockReset();
   sdk.dailyOn.mockReset(); sdk.dailyOff.mockReset();
-  vi.spyOn(api, 'start').mockResolvedValue(snapshot());
-  vi.spyOn(api, 'startCall').mockImplementation(async callId => ({ ...join, callId }));
+  const saved = snapshot();
+  vi.spyOn(api, 'start').mockImplementation(async () => structuredClone(saved));
+  vi.spyOn(api, 'current').mockImplementation(async () => structuredClone(saved));
+  vi.spyOn(api, 'startCall').mockImplementation(async (callId, conversationSlug) => {
+    saved.conversationSlug = conversationSlug ?? join.conversationSlug;
+    return { ...join, callId, conversationSlug: saved.conversationSlug };
+  });
   vi.spyOn(api, 'endCall').mockImplementation(async callId => ({ callId, status: 'ended', cleanupConfirmed: true, message: null }));
   vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined);
   vi.stubGlobal('MediaStream', class { constructor(private tracks: MediaStreamTrack[]) {} getTracks() { return this.tracks; } });
+});
+
+describe('connecting ringback lifecycle', () => {
+  it('keeps capture off until BotReady, stops ringing before enable, and does not override a later mute', async () => {
+    const view = show(); await start();
+    expect(sdk.options!.enableMic).toBe(false);
+    expect(sdk.transportOptions!.dailyConfig?.alwaysIncludeMicInPermissionPrompt).toBe(false);
+    expect(sdk.enabled).toBe(false);
+    expect(sdk.enableMic).not.toHaveBeenCalled();
+    act(() => {
+      sdk.options!.callbacks!.onConnected!();
+      sdk.options!.callbacks!.onTransportStateChanged!('ready');
+      sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 1 });
+    });
+    expect(sdk.enabled).toBe(false);
+    expect(ringing.stops[0]).not.toHaveBeenCalled();
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    ready();
+    expect(sdk.enableMic).toHaveBeenCalledExactlyOnceWith(true);
+    expect(ringing.stops[0].mock.invocationCallOrder[0]).toBeLessThan(sdk.enableMic.mock.invocationCallOrder[0]);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+    await userEvent.click(panel().getByRole('button', { name: 'Mute microphone' }));
+    ready();
+    expect(sdk.enableMic.mock.calls.map(([enabled]) => enabled)).toEqual([true, false]);
+    expect(sdk.enabled).toBe(false);
+  });
+
+  it('waits for the actual local microphone acknowledgement after readiness', async () => {
+    const view = show(); await start();
+    sdk.enableMic.mockImplementation(() => undefined);
+    ready();
+    expect(ringing.stops[0]).toHaveBeenCalledOnce();
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    act(() => { sdk.enabled = true; sdk.dailyOn.mock.lastCall![1]({ participant: { local: true } }); });
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+  });
+
+  it('stops the attempt if enabling the microphone fails at readiness', async () => {
+    show(); await start();
+    sdk.enableMic.mockImplementationOnce(() => { throw new Error('Microphone unavailable'); });
+    ready();
+    expect(ringing.stops[0]).toHaveBeenCalled();
+    expect(screen.getByRole('alert', { name: 'Microphone unavailable' })).toBeVisible();
+    expect(sdk.enabled).toBe(false);
+    await waitFor(() => expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId));
+  });
+
+  it('starts only on the call action and rings through transport connection until BotReady', async () => {
+    show();
+    expect(ringing.start).not.toHaveBeenCalled();
+    await start();
+    expect(ringing.start).toHaveBeenCalledOnce();
+    expect(ringing.start.mock.invocationCallOrder[0]).toBeLessThan(sdk.initDevices.mock.invocationCallOrder[0]);
+    const stop = ringing.stops[0];
+    expect(panel().getByRole('status')).toHaveTextContent(/^Connecting$/);
+    act(() => sdk.options!.callbacks!.onConnected!());
+    expect(panel().getByRole('status')).toHaveTextContent('Connecting to assistant');
+    act(() => sdk.options!.callbacks!.onTransportStateChanged!('ready'));
+    expect(stop).not.toHaveBeenCalled();
+    ready();
+    expect(stop).toHaveBeenCalledOnce();
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+    act(() => {
+      sdk.options!.callbacks!.onBotLlmStarted!();
+      sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state: 'waiting', sequence: 1 });
+    });
+    await userEvent.click(panel().getByRole('button', { name: 'Continue' }));
+    act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state: 'active', sequence: 2 }));
+    expect(ringing.start).toHaveBeenCalledOnce();
+  });
+
+  it.each(['end', 'failure', 'disconnect', 'pagehide', 'unmount', 'updates', 'session'] as const)('stops immediately on %s without waiting for SDK teardown', async action => {
+    const view = show(); await start();
+    sdk.disconnect.mockReturnValueOnce(new Promise(() => undefined));
+    const stop = ringing.stops[0];
+    act(() => {
+      if (action === 'end') fireEvent.click(panel().getByRole('button', { name: 'End conversation' }));
+      else if (action === 'failure') sdk.options!.callbacks!.onError!({ id: 'failure', label: 'rtvi-ai', type: 'error', data: { fatal: true, error: 'Unavailable' } });
+      else if (action === 'disconnect') sdk.options!.callbacks!.onDisconnected!();
+      else if (action === 'pagehide') window.dispatchEvent(new PageTransitionEvent('pagehide'));
+      else if (action === 'unmount') view.unmount();
+      else if (action === 'updates') view.change({ updatesLost: true });
+      else view.change({ sessionIssue: 'expired' });
+    });
+    expect(stop).toHaveBeenCalledOnce();
+    await act(async () => undefined);
+    act(() => sdk.options!.callbacks!.onBotReady!({ version: '2.1' }));
+    expect(sdk.enableMic).not.toHaveBeenCalled();
+    expect(ringing.start).toHaveBeenCalledOnce();
+  });
+
+  it.each(['cancel', 'denied'] as const)('stops while microphone permission is pending on %s', async action => {
+    const devices = deferred<void>(); sdk.initDevices.mockReturnValueOnce(devices.promise);
+    show(); await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
+    const stop = ringing.stops[0];
+    expect(stop).not.toHaveBeenCalled();
+    if (action === 'cancel') await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
+    else await act(async () => devices.reject(new DOMException('Denied', 'NotAllowedError')));
+    expect(stop).toHaveBeenCalledOnce();
+    expect(api.startCall).not.toHaveBeenCalled();
+    if (action === 'cancel') await act(async () => devices.resolve());
+    expect(ringing.start).toHaveBeenCalledOnce();
+  });
+
+  it('gives each explicit retry its own ring and ignores readiness from the disposed attempt', async () => {
+    show(); await start();
+    const previous = sdk.options!.callbacks!;
+    await userEvent.click(panel().getByRole('button', { name: 'End conversation' }));
+    expect(ringing.stops[0]).toHaveBeenCalledOnce();
+    await start();
+    expect(ringing.start).toHaveBeenCalledTimes(2);
+    act(() => previous.onBotReady!({ version: '2.1' }));
+    expect(ringing.stops[1]).not.toHaveBeenCalled();
+    ready();
+    expect(ringing.stops[1]).toHaveBeenCalledOnce();
+  });
 });
 
 describe('owned lifecycle deadlines and background cleanup', () => {
@@ -243,7 +371,10 @@ describe('owned lifecycle deadlines and background cleanup', () => {
 
   it.each(['response', 'before connect'] as const)('ends expired media credentials at %s without discarding the plan', async stage => {
     if (stage === 'response') vi.mocked(api.startCall).mockRejectedValueOnce(new ApiError(410, { code: 'callExpired', message: 'Call expired.' }));
-    else vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() - 1).toISOString() });
+    else {
+      vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() - 1).toISOString() });
+      vi.mocked(api.current).mockResolvedValueOnce({ ...snapshot(), conversationSlug: join.conversationSlug });
+    }
     const view = show();
     await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
     expect(await screen.findByRole('status', { name: 'Call expired' })).toHaveTextContent('saved figures');
@@ -259,6 +390,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     const view = show();
     try {
       vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() + 30000).toISOString() });
+      vi.mocked(api.current).mockResolvedValueOnce({ ...snapshot(), conversationSlug: join.conversationSlug });
       await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Start talking' })));
       ready();
       const microphone = sdk.tracks().local.audio as MediaStreamTrack;
@@ -292,7 +424,7 @@ describe('owned lifecycle deadlines and background cleanup', () => {
     expect(disconnect).toHaveBeenCalledOnce();
     expect(microphone.stop).not.toHaveBeenCalled();
     expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
-    expect(api.startCall).toHaveBeenCalledExactlyOnceWith('e2639293-b514-436d-b359-88637e030142');
+    expect(api.startCall).toHaveBeenCalledExactlyOnceWith('e2639293-b514-436d-b359-88637e030142', undefined);
     expect(api.endCall).not.toHaveBeenCalled();
   });
 
@@ -440,10 +572,53 @@ describe('Daily microphone acknowledgement', () => {
   const participant = (local = true): DailyEventObjectParticipant => ({ action: 'participant-updated',
     participant: { local, session_id: local ? 'consumer' : 'bot', audio: sdk.enabled } } as DailyEventObjectParticipant);
 
+  it.each(['before acknowledgement', 'after acknowledgement', 'after unmute'] as const)('keeps the same live microphone when mute reports TrackStopped %s', async timing => {
+    const microphone = track(); sdk.tracks.mockReturnValue({ local: { audio: microphone } });
+    const stopped = () => sdk.listeners.get(RTVIEvent.TrackStopped)!(microphone, { ...remote, local: true });
+    const view = show(); await start(); ready();
+    sdk.enableMic.mockClear();
+    sdk.enableMic.mockImplementation((enabled: boolean) => {
+      microphone.enabled = enabled;
+      if (!enabled && timing === 'before acknowledgement') stopped();
+    });
+    const bot = await hear();
+    const player = view.container.querySelector('audio')!;
+    const stream = player.srcObject;
+    const acknowledge = sdk.dailyOn.mock.lastCall![1];
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+
+    await userEvent.click(panel().getByRole('button', { name: 'Mute microphone' }));
+    expect(sdk.disconnect).not.toHaveBeenCalled();
+    act(() => { sdk.enabled = false; acknowledge(participant()); });
+    if (timing === 'after acknowledgement') act(stopped);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Microphone muted$/);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    expect(microphone.enabled).toBe(false);
+    expect(microphone.readyState).toBe('live');
+    expect(microphone.stop).not.toHaveBeenCalled(); expect(bot.stop).not.toHaveBeenCalled();
+    expect(player.srcObject).toBe(stream);
+
+    await userEvent.click(panel().getByRole('button', { name: 'Unmute microphone' }));
+    act(() => { sdk.enabled = true; acknowledge(participant()); });
+    if (timing === 'after unmute') act(stopped);
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
+    expect(view.container.querySelector('.voice-status-panel')).toHaveAttribute('data-capturing', 'true');
+    expect(sdk.tracks().local.audio).toBe(microphone);
+    expect(microphone.enabled).toBe(true); expect(microphone.readyState).toBe('live');
+    act(() => { sdk.options!.callbacks!.onUserStartedSpeaking!(); sdk.options!.callbacks!.onLocalAudioLevel!(0.6); });
+    expectOrb('listening', 0.6, 'userSpeaking');
+    expect(sdk.enableMic.mock.calls.map(([enabled]) => enabled)).toEqual([false, true]);
+    expect(sdk.initDevices).toHaveBeenCalledOnce(); expect(sdk.connect).toHaveBeenCalledOnce();
+    expect(api.startCall).toHaveBeenCalledOnce(); expect(api.endCall).not.toHaveBeenCalled();
+    expect(sdk.disconnect).not.toHaveBeenCalled(); expect(sdk.destroy).not.toHaveBeenCalled();
+    expect(microphone.stop).not.toHaveBeenCalled(); expect(bot.stop).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
   it.each(['toggle', 'Continue'] as const)('refreshes %s only after local audio settles without track events', async action => {
     const microphone = track(); sdk.tracks.mockReturnValue({ local: { audio: microphone } });
-    sdk.enableMic.mockImplementation(() => undefined);
     const view = show(); await start(); ready();
+    sdk.enableMic.mockClear().mockImplementation(() => undefined);
     expect(sdk.dailyOn).toHaveBeenCalledOnce();
     const [event, acknowledge] = sdk.dailyOn.mock.lastCall!;
     expect(event).toBe('participant-updated');
@@ -495,6 +670,7 @@ describe('Daily microphone acknowledgement', () => {
     act(() => stale(participant()));
     expect(panel().getByRole('status')).toHaveTextContent(/^Conversation ended$/);
     sdk.enabled = false; sdk.tracks.mockReturnValue({ local: { audio: track() } });
+    sdk.enableMic.mockImplementationOnce(() => undefined);
     await start(); ready();
     expect(panel().getByRole('status')).toHaveTextContent(/^Microphone muted$/);
     act(() => { sdk.enabled = true; stale(participant()); });
@@ -632,7 +808,7 @@ describe('server-controlled conversation waiting', () => {
     show(); await start(); ready(); state('active', 1);
     act(() => sdk.options!.callbacks!.onServerMessage!(data));
     expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
-    expect(sdk.enableMic).not.toHaveBeenCalled();
+    expect(sdk.enableMic).toHaveBeenCalledExactlyOnceWith(true);
     expect(sdk.disconnect).not.toHaveBeenCalled();
   });
 
@@ -1015,7 +1191,7 @@ describe('real SDK integration boundary', () => {
     await userEvent.click(screen.getByRole('button', { name: 'End conversation' }));
     await waitFor(() => expect(view.onPhaseChange).toHaveBeenLastCalledWith('ended'));
     expect(view.onPhaseChange.mock.calls.map(([phase]) => phase)).toEqual(['idle', 'connecting', 'active', 'ended']);
-    expect(view.onStarted).toHaveBeenCalledOnce();
+    expect(view.onStarted.mock.calls.map(([saved]) => saved.conversationSlug)).toEqual([null, join.conversationSlug]);
   });
   it('gives actual interruption precedence and preserves spoken prefixes against late output', async () => {
     show(); await start(); ready(); await hear();
@@ -1159,20 +1335,33 @@ describe('real SDK integration boundary', () => {
     await userEvent.click(panel().getByRole('button', { name: 'Retry ending call' }));
     await waitFor(() => expect(view.onBusyChange).toHaveBeenLastCalledWith(false));
   });
-  it('permits retry without invoking forbidden teardown when SDK construction fails before device setup', async () => {
+  it('offers one reconnect control after SDK failure and prevents duplicate attempts', async () => {
     sdk.constructionError = new Error('Synthetic construction failure');
     show(); await userEvent.click(screen.getByRole('button', { name: 'Start talking' }));
     expect(within(await screen.findByRole('alert', { name: 'Could not connect' })).getByText('Check your connection and microphone, then try again.')).toBeVisible();
     expect(sdk.destroy).not.toHaveBeenCalled(); expect(sdk.initDevices).not.toHaveBeenCalled(); expect(api.startCall).not.toHaveBeenCalled();
-    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    expect(panel().getByRole('status')).toHaveTextContent(/^Unable to connect$/);
+    const reconnect = panel().getByRole('button', { name: 'Reconnect' });
+    expect(panel().getAllByRole('button')).toEqual([reconnect]);
+    expect(reconnect).toBeEnabled();
+    sdk.constructionError = null;
+    const devices = deferred<void>(); sdk.initDevices.mockReturnValueOnce(devices.promise);
+    act(() => { fireEvent.click(reconnect); fireEvent.click(reconnect); });
+    expect(sdk.initDevices).toHaveBeenCalledOnce();
+    expect(api.startCall).not.toHaveBeenCalled();
+    await act(async () => devices.resolve());
+    await waitFor(() => expect(sdk.connect).toHaveBeenCalledOnce());
+    expect(api.startCall).toHaveBeenCalledOnce();
+    ready();
+    expect(panel().getByRole('status')).toHaveTextContent(/^Listening$/);
   });
   it('requests devices from the click before session/room creation and waits for BotReady, not connect resolution', async () => {
     const devices = deferred<void>(); sdk.initDevices.mockReturnValue(devices.promise);
     const view = show();
     expect(sdk.options).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Start talking' }));
-    expect(sdk.options).toMatchObject({ enableMic: true, enableCam: false });
-    expect(sdk.transportOptions).toEqual({ bufferLocalAudioUntilBotReady: false, dailyConfig: { avoidEval: true } });
+    expect(sdk.options).toMatchObject({ enableMic: false, enableCam: false });
+    expect(sdk.transportOptions).toEqual({ bufferLocalAudioUntilBotReady: false, dailyConfig: { avoidEval: true, alwaysIncludeMicInPermissionPrompt: false } });
     expect(api.startCall).not.toHaveBeenCalled(); expect(api.start).not.toHaveBeenCalled();
     await act(async () => devices.resolve());
     await waitFor(() => expect(sdk.connect).toHaveBeenCalledWith({ url: join.url, token: join.token }));
@@ -2005,6 +2194,7 @@ describe('notice ownership and current actions', () => {
     view.change({ disabled: true }); view.change({ disabled: false });
     expect(screen.getByRole('status', { name: 'Previous conversation stopped' })).toBeVisible();
     expect(view.container).not.toHaveTextContent('private call diagnostic');
+    vi.mocked(api.start).mockResolvedValueOnce({ ...snapshot(), sessionId: 'another-session', conversationSlug: join.conversationSlug });
     await start();
     expect(screen.queryByRole('status', { name: 'Previous conversation stopped' })).not.toBeInTheDocument();
   });

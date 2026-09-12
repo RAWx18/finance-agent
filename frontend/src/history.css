@@ -25,6 +25,9 @@ main.product-main[data-route^="/history"] { grid-template-rows: minmax(0, 1fr); 
 .history-chat-title h2:focus, .history-sidebar-heading h1:focus { outline: none; }
 .history-chat-title p { font-size: .7rem; color: var(--muted); margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history-back { display: none; }
+.history-chat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
+button.history-continue { min-height: 44px; padding: .5rem .7rem; gap: .4rem; font-size: .75rem; }
+.history-continue svg { width: 17px; height: 17px; }
 button.history-download { border: 0; background: transparent; font-size: .75rem; font-weight: 550; gap: .45rem; flex: none; padding: .5rem .6rem; color: var(--teal); }
 .history-download svg { width: 17px; }
 .history-download-error { flex: none; margin: 0 1rem .5rem; color: var(--warning); font-size: .8rem; }
@@ -38,6 +41,10 @@ button.history-download { border: 0; background: transparent; font-size: .75rem;
 .history-viewport:focus-visible { outline-offset: -3px; }
 button.history-latest { position: absolute; bottom: .85rem; left: 50%; transform: translateX(-50%); min-height: 36px; padding: .4rem .8rem; border: 1px solid var(--line); border-radius: 20px; font-size: .72rem; font-weight: 500; background: var(--paper); white-space: nowrap; box-shadow: 0 2px 8px rgb(32 59 50 / 6%); }
 button.history-latest:disabled { display: none; }
+@media (max-width: 1100px) {
+  .history-chat-heading { flex-wrap: wrap; }
+  .history-chat-actions { width: 100%; justify-content: flex-end; }
+}
 @media (max-width: 700px) {
   #root:has(.product-main[data-route^="/history"]) { height: 100dvh; min-height: 0; }
   main.product-main[data-route^="/history"] { padding-inline: .5rem; }

@@ -4,11 +4,12 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import { AssistantRuntimeProvider, ThreadPrimitive, useExternalStoreRuntime } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { api, ApiError, authEpoch } from './api';
+import { api, ApiError, authEpoch, conversationError } from './api';
 import type { ConversationMessage, ConversationSummary, SavedConversation } from './api';
 import { DaySeparator } from './components/assistant-ui/elements/daySeparator';
 import { ThreadList } from './components/assistant-ui/elements/threadList';
 import { MoneyIcon } from './MoneyIcon';
+import { CallIcon } from './CallIcon';
 import './history.css';
 import './components/assistant-ui/elements/history.css';
 
@@ -16,8 +17,9 @@ const convertMessage = (message: ConversationMessage): ThreadMessageLike => ({
   id: message.id, role: message.role, content: [{ type: 'text', text: message.text }], createdAt: new Date(message.createdAt),
 });
 
-export function History({ timezone, assistantName = 'Assistant', revision = '', ongoing = false }: {
+export function History({ timezone, assistantName = 'Assistant', revision = '', ongoing = false, continueBlocked, onContinue }: {
   timezone?: string; assistantName?: string; revision?: string; ongoing?: boolean;
+  continueBlocked?: string; onContinue?: (slug: string, signal: AbortSignal) => Promise<void>;
 }) {
   const { pathname } = useLocation();
   const slug = pathname.startsWith('/history/') ? pathname.slice('/history/'.length) : null;
@@ -70,18 +72,25 @@ export function History({ timezone, assistantName = 'Assistant', revision = '', 
       <Link className="history-return" to="/app"><MoneyIcon name="back" />{ongoing ? 'Return to call' : `Talk to ${assistantName}`}</Link>
     </aside>
     <div className="history-main">
-      {slug ? <SavedChat key={slug} slug={slug} timezone={timezone} assistantName={assistantName} revision={version} />
+      {slug ? <SavedChat key={slug} slug={slug} timezone={timezone} assistantName={assistantName} revision={version}
+        continueBlocked={continueBlocked ?? (ongoing ? 'End the current call before continuing another conversation.' : undefined)} onContinue={onContinue} />
         : <div className="history-empty"><span className="history-avatar" aria-hidden="true">{Array.from(assistantName)[0]}</span><h2>Your conversations with {assistantName}</h2><p>Choose a conversation to read it.</p></div>}
     </div>
   </section>;
 }
 
-function SavedChat({ slug, timezone, assistantName, revision }: { slug: string; timezone?: string; assistantName: string; revision: string }) {
+function SavedChat({ slug, timezone, assistantName, revision, continueBlocked, onContinue }: {
+  slug: string; timezone?: string; assistantName: string; revision: string;
+  continueBlocked?: string; onContinue?: (slug: string, signal: AbortSignal) => Promise<void>;
+}) {
   const [retry, setRetry] = useState(0);
   const [result, setResult] = useState<{ conversation?: SavedConversation; error?: 'unavailable' | 'gone' }>();
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState(false);
   const download = useRef<AbortController | null>(null);
+  const selection = useRef<AbortController | null>(null);
+  const [continuing, setContinuing] = useState(false);
+  const [continueError, setContinueError] = useState('');
   const title = useRef<HTMLHeadingElement>(null);
   const conversation = result?.conversation;
 
@@ -101,14 +110,28 @@ function SavedChat({ slug, timezone, assistantName, revision }: { slug: string; 
 
   useEffect(() => {
     title.current?.focus({ preventScroll: true });
-    return () => download.current?.abort();
+    return () => { download.current?.abort(); selection.current?.abort(); };
   }, [slug]);
 
   useEffect(() => {
     if (!conversation) return;
-    const timer = setTimeout(() => { download.current?.abort(); setResult({ error: 'gone' }); }, Math.max(0, Date.parse(conversation.expiresAt) - Date.now()));
+    const timer = setTimeout(() => { download.current?.abort(); selection.current?.abort(); setResult({ error: 'gone' }); }, Math.max(0, Date.parse(conversation.expiresAt) - Date.now()));
     return () => clearTimeout(timer);
   }, [conversation]);
+
+  async function continueTalking() {
+    if (!onContinue || !conversation || continueBlocked || selection.current) return;
+    const controller = new AbortController();
+    const epoch = authEpoch();
+    selection.current = controller;
+    setContinuing(true); setContinueError('');
+    try { await onContinue(slug, controller.signal); }
+    catch (error) {
+      if (!controller.signal.aborted && epoch === authEpoch()) setContinueError(conversationError(error));
+    } finally {
+      if (!controller.signal.aborted) { selection.current = null; setContinuing(false); }
+    }
+  }
 
   async function downloadCaptions() {
     if (download.current || !conversation?.messages.length) return;
@@ -138,9 +161,16 @@ function SavedChat({ slug, timezone, assistantName, revision }: { slug: string; 
       <div className="history-chat-title"><h2 id="history-conversation-heading" ref={title} tabIndex={-1}>{conversation?.title ?? 'Conversation'}</h2>
         {conversation && <p>{new Intl.DateTimeFormat('en-GB', { timeZone: timezone, dateStyle: 'medium', timeStyle: 'short' }).format(new Date(conversation.startedAt))} · {assistantName} & you</p>}
       </div>
-      {!!conversation?.messages.length && <button className="history-download" disabled={downloading} aria-label={downloading ? 'Preparing captions' : 'Download captions'}
-        title="Download captions" onClick={() => void downloadCaptions()}><MoneyIcon name="download" /><span>{downloading ? 'Preparing…' : 'Download captions'}</span></button>}
+      {conversation && <div className="history-chat-actions">
+        <button className="history-continue" disabled={!onContinue || !!continueBlocked || continuing} aria-busy={continuing}
+          aria-describedby={continueError || continueBlocked ? 'history-continue-status' : undefined} onClick={() => void continueTalking()}>
+          <CallIcon kind="call" /><span>{continuing ? 'Opening…' : 'Continue talking'}</span>
+        </button>
+        {!!conversation.messages.length && <button className="history-download" disabled={downloading} aria-label={downloading ? 'Preparing captions' : 'Download captions'}
+          title="Download captions" onClick={() => void downloadCaptions()}><MoneyIcon name="download" /><span>{downloading ? 'Preparing…' : 'Download captions'}</span></button>}
+      </div>}
     </header>
+    {(continueError || continueBlocked) && <p id="history-continue-status" className="history-download-error" role="status">{continueError || continueBlocked}</p>}
     {downloadError && <p className="history-download-error" role="status">Couldn’t download captions. Please try again.</p>}
     {!result ? <div className="history-empty" role="status"><p>Loading conversation…</p></div>
       : result.error ? <div className="history-empty" role="status"><h3>{result.error === 'gone' ? 'Conversation unavailable' : 'Couldn’t open this conversation'}</h3>

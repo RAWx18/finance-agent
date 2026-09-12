@@ -38,7 +38,8 @@ test('financial decisions and third-value resolutions use the same saved facts',
   await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
     conflicts: [{ recordId: loan, field: 'target', values: [{ id: 'second', amount: '5500', status: 'exact' }] }],
   } });
-  await page.goto('/app'); await page.getByRole('button', { name: 'Review saved picture' }).click();
+  await page.goto('/money/debts');
+  await page.getByRole('listitem', { name: 'Loan', exact: true }).getByRole('button', { name: 'Details for Loan', exact: true }).click();
   await page.getByRole('button', { name: 'Resolve Loan · Intended payment', exact: true }).click();
   const resolution = page.getByRole('dialog', { name: 'Resolve Loan · Intended payment', exact: true });
   await resolution.getByRole('radio', { name: 'Neither report — enter the correct value' }).check();
@@ -47,7 +48,8 @@ test('financial decisions and third-value resolutions use the same saved facts',
   await resolution.getByRole('button', { name: 'Confirm entered value' }).click();
   expect((await response).ok()).toBe(true);
   await expect(resolution).toBeHidden();
-  await expect(page.getByRole('listitem', { name: 'Loan', exact: true })).toContainText('Selected target: ₹4,500.00');
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('listitem', { name: 'Loan', exact: true }).getByText('Intended · includes minimum', { exact: true }).locator('..')).toContainText('₹4,500.00');
   saved = await (await page.request.get('/api/session')).json() as Snapshot;
   expect(saved.facts.conflicts).toEqual([]); expect(saved.plan.outflowPaise).toBe(450000);
   saved = await command(page, { type: 'updateFacts', changes: { expectedRevision: 0,
@@ -86,20 +88,23 @@ test('financial corrections retain rejected drafts and preserve saved payment an
       amount: { amount: '1000', status: 'exact' }, target: { amount: '5000', status: 'exact' },
       schedule: { date: day(initial.anchorDate, 2), certainty: 'exact', recurrence: 'once' } }],
   } });
-  await page.reload(); await page.getByRole('button', { name: 'Review saved picture' }).click();
-  await page.getByRole('button', { name: 'Correct Card', exact: true }).click();
+  await page.goto('/money/debts');
+  await page.getByRole('button', { name: 'Edit Card', exact: true }).click();
   const editor = page.getByRole('dialog', { name: 'Correct Card', exact: true });
   await editor.getByLabel('Amount (₹)').fill('6000');
   let response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
   await editor.getByRole('button', { name: 'Save correction' }).click();
   expect((await response).status()).toBe(422);
   await expect(editor).toBeVisible(); await expect(editor.getByLabel('Amount (₹)')).toHaveValue('6000');
-  await expect(editor).toContainText('Your entry is kept');
+  await expect(editor.getByRole('alert')).toBeVisible();
+  expect((await (await page.request.get('/api/session')).json() as Snapshot).facts).toEqual(saved.facts);
   await editor.getByLabel('Amount (₹)').fill('1300');
   response = page.waitForResponse(response => response.url().endsWith('/api/session/commands') && response.request().method() === 'POST');
   await editor.getByRole('button', { name: 'Save correction' }).click();
-  expect((await response).ok()).toBe(true); await expect(editor).toBeHidden();
-  await expect(page.getByRole('button', { name: 'Correct Card', exact: true })).toBeFocused();
+  expect((await response).ok()).toBe(true);
+  await editor.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(editor).toBeHidden();
+  await expect(page.getByRole('button', { name: 'Edit Card', exact: true })).toBeFocused();
   saved = await command(page, { type: 'previewAdjustments', adjustments: [{ eventId: saved.plan.events[0].id, amount: '2000' }] });
   await command(page, { type: 'acceptPreview', previewId: saved.preview!.id, confirmed: true, consentScope: 'unconditional' });
   await page.goto('/money');

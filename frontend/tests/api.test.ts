@@ -50,7 +50,7 @@ describe('same-origin API contract', () => {
   it('uses cookie-owned call endpoints and allows termination during page teardown', async () => {
     const callId = crypto.randomUUID();
     const state = { callId, status: 'ended', cleanupConfirmed: true, message: null };
-    const join = { callId, url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString() };
+    const join = { callId, conversationSlug: 'chat-a', url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString() };
     const fetch = vi.fn().mockImplementation((_path, init: RequestInit) => Promise.resolve(new Response(JSON.stringify(init.method === 'POST' ? join : state))));
     vi.stubGlobal('fetch', fetch);
     const body = JSON.stringify({ callId });
@@ -73,14 +73,14 @@ describe('same-origin API contract', () => {
     { url: 'https://test.daily.co/room?token=secret' }, { url: 'http://test.daily.co/room' },
   ])('rejects malformed credentials before provider connection: %j', async fields => {
     const callId = crypto.randomUUID();
-    const join = { callId, url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString(), ...fields };
+    const join = { callId, conversationSlug: 'chat-a', url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString(), ...fields };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(join))));
     await expect(api.startCall(callId)).rejects.toThrow();
   });
 
   it('rejects expired media credentials without treating the financial session as expired', async () => {
     const callId = crypto.randomUUID();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ callId, url: 'https://test.daily.co/room',
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ callId, conversationSlug: 'chat-a', url: 'https://test.daily.co/room',
       token: 'test-token', expiresAt: new Date(Date.now() - 1).toISOString() }))));
     await expect(api.startCall(callId)).rejects.toMatchObject({ status: 410, body: { code: 'callExpired' } });
   });
