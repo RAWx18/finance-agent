@@ -102,11 +102,17 @@ class MonthlyPattern(Model):
 
 
 class Schedule(Model):
-    """Payment timing, recurrence, certainty, and optional occurrence amounts."""
+    """Payment or spending-forecast timing, certainty, and optional occurrence amounts."""
 
     end_date: date | None = None
     date: date | None
     recurrence: Recurrence = "once"
+    basis: Literal["payment", "allowance"] = Field(
+        default="payment",
+        description="Use allowance only for reported recurring, uncommitted living spending, "
+        "not bills or debt. An ongoing scalar allowance may use the snapshot anchor for "
+        "forecast timing while retaining date=null. Finite or varying schedules need an origin.",
+    )
     certainty: Status = "exact"
     pattern: MonthlyPattern | None = None
     count: int | None = Field(default=None, ge=1, le=1000, strict=True)
@@ -115,6 +121,13 @@ class Schedule(Model):
     @model_validator(mode="after")
     def validate_certainty(self) -> "Schedule":
         """Validate timing certainty and compatible recurrence bounds and amounts."""
+        if self.basis == "allowance" and self.recurrence not in {
+            "daily",
+            "weekly",
+            "fortnightly",
+            "monthly",
+        }:
+            raise ValueError("An allowance requires daily, weekly, fortnightly or monthly cadence")
         if self.pattern is not None and (
             self.date is not None
             or self.recurrence != "monthly"
@@ -172,6 +185,14 @@ class RecordBase(Model):
             self.kind not in {"essential", "optional"} or self.auto_debit
         ):
             raise ValueError("monthlyBudget is only non-auto-debit essential or optional spending")
+        if self.schedule.basis == "allowance" and (
+            self.kind not in {"essential", "optional"}
+            or self.auto_debit
+            or self.controllability == "committed"
+        ):
+            raise ValueError(
+                "An allowance is only uncommitted, non-auto-debit essential or optional spending"
+            )
         return self
 
 
@@ -386,11 +407,12 @@ class CoveragePatch(Model):
 
 
 class SchedulePatch(Model):
-    """Partial changes to payment timing, recurrence, and occurrence amounts."""
+    """Partial changes to schedule basis, timing, recurrence, and occurrence amounts."""
 
     end_date: date | None = None
     date: Annotated[date | None, Field(default=None)]
     recurrence: Recurrence | None = None
+    basis: Literal["payment", "allowance"] | None = None
     certainty: Status | None = None
     pattern: MonthlyPattern | None = None
     count: int | None = Field(default=None, ge=1, le=1000, strict=True)

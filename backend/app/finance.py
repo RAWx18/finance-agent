@@ -273,6 +273,7 @@ def calculate(
             raise ValueError("An unresolved disputed field cannot have an authoritative value")
     issues: list[Issue] = []
     events: list[Event] = []
+    forecasted: set[str] = set()
     partial = facts.opening.amount_paise is None
 
     def issue(
@@ -297,6 +298,7 @@ def calculate(
         selected = record.target if record.target is not None else record.amount
         variable = bool(record.schedule.amounts)
         budget = record.schedule.recurrence == "monthlyBudget"
+        forecast = record.schedule.basis == "allowance"
         if (
             record.schedule.certainty == "exact"
             and record.schedule.date is not None
@@ -360,6 +362,19 @@ def calculate(
             )
         due = record.schedule.date
         pattern = record.schedule.pattern
+        if (
+            forecast
+            and due is None
+            and pattern is None
+            and record.schedule.count is None
+            and not variable
+            and not any(
+                item.record_id == record.id and item.field == "schedule.date"
+                for item in facts.conflicts
+            )
+        ):
+            due = anchor
+            forecasted.add(record.id)
         if due is None:
             partial = True
             if pattern is None:
@@ -373,6 +388,13 @@ def calculate(
                 "monthlyPattern",
                 "Dates calculated from the reported monthly pattern are estimates; timing "
                 "is unconfirmed. No arrears are inferred and income is not assured.",
+                record,
+            )
+        if forecast:
+            issue(
+                "spendingForecast",
+                "Reported recurring spending forecast; occurrence amounts are not prorated. "
+                "Dates are planning assumptions, not contractual due dates or unpaid arrears.",
                 record,
             )
         if budget:
@@ -416,7 +438,7 @@ def calculate(
                 day = date(year, month, month_day)
                 if anchor <= day < anchor + timedelta(days=config.horizon_days) and active(day, 0):
                     occurrences.append((day, day, 0))
-        if due is not None and due < anchor and not budget:
+        if due is not None and due < anchor and not budget and not forecast:
             if record.kind == "income":
                 partial = True
                 issue(
@@ -438,7 +460,7 @@ def calculate(
                         record,
                         anchor,
                     )
-        if due is not None and record.schedule.recurrence == "monthly":
+        if due is not None and record.schedule.recurrence == "monthly" and not forecast:
             months = {
                 (day.year, day.month)
                 for day in (
@@ -477,7 +499,15 @@ def calculate(
                 (recurrence == "once" and day == due)
                 or (recurrence == "weekly" and distance % 7 == 0)
                 or (recurrence == "fortnightly" and distance % 14 == 0)
-                or (recurrence == "monthly" and day.day == due.day)
+                or (
+                    recurrence == "monthly"
+                    and day.day
+                    == (
+                        min(due.day, calendar.monthrange(day.year, day.month)[1])
+                        if forecast
+                        else due.day
+                    )
+                )
                 or recurrence in {"daily", "monthlyBudget"}
             ) and active(day, index):
                 occurrences.append((day, day, index))
@@ -494,6 +524,10 @@ def calculate(
                 )
             if variable and counted.status == "estimate":
                 issue("estimate", "This occurrence amount is a reported estimate.", record, day)
+            if forecast:
+                counted = counted.model_copy(
+                    update={"status": "estimate" if counted.amount_paise is not None else "unknown"}
+                )
             if budget:
                 amount = counted.amount_paise
                 if amount is not None:
@@ -511,6 +545,30 @@ def calculate(
                     date=day,
                     original_due_date=original,
                     date_assumption=(
+                        f"Spending forecast for {day} from "
+                        + (
+                            f"snapshot anchor {anchor}; start date unknown"
+                            if record.id in forecasted
+                            else f"reported start {record.schedule.date}"
+                            if pattern is None
+                            else "reported monthly "
+                            + (
+                                f"day {pattern.day}"
+                                if pattern.kind == "dayOfMonth"
+                                else "month-end"
+                            )
+                            + " pattern"
+                        )
+                        + f" at the reported {record.schedule.recurrence} amount"
+                        + (
+                            "; short months use their last day"
+                            if record.schedule.recurrence == "monthly" and pattern is None
+                            else ""
+                        )
+                        + "; not a payment due date"
+                    )
+                    if forecast
+                    else (
                         f"Calculated for {day} from reported monthly "
                         + (f"day {pattern.day}" if pattern.kind == "dayOfMonth" else "month-end")
                         + " pattern; timing unconfirmed"
@@ -528,7 +586,7 @@ def calculate(
                     source=counted.source,
                     schedule_index=index if variable or budget or count is not None else None,
                     amount_basis="budget"
-                    if budget
+                    if budget or forecast
                     else "requiredOnly"
                     if required_only
                     else "reported",
@@ -600,7 +658,9 @@ def calculate(
         for reason, missing in (
             (
                 "missingDate",
-                record.schedule.date is None and record.schedule.pattern is None,
+                record.schedule.date is None
+                and record.schedule.pattern is None
+                and record.id not in forecasted,
             ),
             (
                 "missingAmount",
@@ -630,6 +690,7 @@ def calculate(
             record.kind == "income"
             or record.schedule.date is not None
             or record.schedule.pattern is not None
+            or record.id in forecasted
             or record.schedule.end_date is not None
             and record.schedule.end_date < anchor
         ):

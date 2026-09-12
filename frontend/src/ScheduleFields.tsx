@@ -9,12 +9,14 @@ import { PagedList } from './PagedList';
 type Record = Snapshot['facts']['records'][number];
 export type ScheduleDraft = {
   recurrence: Record['schedule']['recurrence']; endDate: string; count: string; amounts: MoneyInput[];
+  basis: NonNullable<Record['schedule']['basis']>;
   timing: 'date' | 'dayOfMonth' | 'monthEnd'; day: string;
 };
 
 /** Creates an editable draft of a record's schedule and occurrence amounts. */
 export function scheduleDraft(schedule: Record['schedule']): ScheduleDraft {
   return { recurrence: schedule.recurrence, endDate: schedule.endDate ?? '', count: schedule.count?.toString() ?? (schedule.amounts?.length ? String(schedule.amounts.length) : ''), amounts: structuredClone(schedule.amounts ?? []),
+    basis: schedule.basis ?? 'payment',
     timing: schedule.pattern?.kind ?? 'date', day: schedule.pattern?.day?.toString() ?? '' };
 }
 
@@ -27,6 +29,7 @@ export function scheduleAmounts(amounts: MoneyInput[]): MoneyInput[] {
 export function schedulePatch(draft: ScheduleDraft, schedule: Record['schedule']): components['schemas']['SchedulePatch'] {
   const initial = scheduleDraft(schedule);
   return { ...(draft.recurrence !== initial.recurrence ? { recurrence: draft.recurrence } : {}),
+    ...(draft.basis !== initial.basis ? { basis: draft.basis } : {}),
     ...(draft.timing !== 'date' && draft.recurrence === 'monthly'
       ? draft.timing !== initial.timing || draft.timing === 'dayOfMonth' && draft.day !== initial.day
         ? { pattern: draft.timing === 'dayOfMonth' ? { kind: draft.timing, day: Number(draft.day) } : { kind: draft.timing, day: null }, date: null, certainty: 'unknown', recurrence: 'monthly' } : {}
@@ -40,6 +43,7 @@ export function schedulePatch(draft: ScheduleDraft, schedule: Record['schedule']
 
 /** Reports the first invalid schedule choice or occurrence amount. */
 export function scheduleError(draft: ScheduleDraft, record: Record, limit: number): string | null {
+  if (draft.basis === 'allowance' && (!['essential', 'optional'].includes(record.kind) || record.autoDebit || record.controllability === 'committed' || !['daily', 'weekly', 'fortnightly', 'monthly'].includes(draft.recurrence))) return 'Recurring spending forecasts require daily, weekly, fortnightly or monthly uncommitted spending without automatic debit.';
   if (draft.timing !== 'date') {
     if (draft.recurrence !== 'monthly' || draft.count || draft.amounts.length) return 'Monthly timing patterns require monthly recurrence, no occurrence count and one amount for all occurrences.';
     if (draft.timing === 'dayOfMonth' && !/^([1-9]|[12][0-9]|3[01])$/.test(draft.day)) return 'Enter a whole day from 1 to 31.';
@@ -60,6 +64,7 @@ export function scheduleError(draft: ScheduleDraft, record: Record, limit: numbe
 /** Provides recurrence, timing-pattern, and finite-schedule inputs for a record. */
 export function ScheduleFields({ draft, record, onChange }: { draft: ScheduleDraft; record: Record; onChange: (draft: ScheduleDraft) => void }) {
   const budget = draft.recurrence === 'monthlyBudget';
+  const allowance = draft.basis === 'allowance';
   const pattern = draft.timing !== 'date';
   const finite = !!draft.count || !!draft.amounts.length;
   return <>
@@ -67,9 +72,15 @@ export function ScheduleFields({ draft, record, onChange }: { draft: ScheduleDra
       : <p className="hint">Starts {record.schedule.date ? dateLabel(record.schedule.date) : 'on an unknown date'}. Use the Date detail to correct the start. Occurrence dates are generated from this cadence, not entered separately.</p>}
     <label>Repeats<select value={draft.recurrence} onChange={event => onChange({ ...draft, recurrence: event.target.value as ScheduleDraft['recurrence'],
       ...(event.target.value !== 'monthly' ? { timing: 'date', day: '' } : {}),
+      ...(['once', 'monthlyBudget'].includes(event.target.value) ? { basis: 'payment' } : {}),
     })}>
       {Object.entries(recurrenceLabels).filter(([value]) => value !== 'monthlyBudget' || ['essential', 'optional'].includes(record.kind)).map(([value, label]) => <option key={value} value={value} disabled={value === 'monthlyBudget' && (!!draft.amounts.length || record.autoDebit)}>{label}</option>)}
     </select></label>
+    {['essential', 'optional'].includes(record.kind) && <label>Schedule basis<select value={draft.basis} onChange={event => onChange({ ...draft, basis: event.target.value as ScheduleDraft['basis'] })}>
+      <option value="payment">Reported payments</option>
+      <option value="allowance" disabled={record.autoDebit || record.controllability === 'committed' || !['daily', 'weekly', 'fortnightly', 'monthly'].includes(draft.recurrence)}>Recurring spending forecast</option>
+    </select></label>}
+    {allowance && <p className="hint">The reported amount is forecast in full each occurrence, not spread across days or treated as a bill. {record.schedule.date || pattern ? 'Timing follows the reported start or pattern.' : finite ? 'A finite count or varying amounts needs a known start date; no dates are invented.' : 'With no start date, forecast timing begins at the saved plan’s start; the reported date remains unknown.'} Monthly forecasts from a start date use the last day in shorter months. These are not payment due dates or overdue bills.</p>}
     <label>Timing basis<select value={draft.timing} onChange={event => onChange({ ...draft, timing: event.target.value as ScheduleDraft['timing'], day: '',
       ...(event.target.value !== 'date' ? { recurrence: 'monthly' } : {}),
     })}>
