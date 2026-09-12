@@ -3,86 +3,124 @@
 import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from 'react';
 import { DeviceError, PipecatClient, RTVIEvent } from '@pipecat-ai/client-js';
 import { DailyTransport } from '@pipecat-ai/daily-transport';
+import type { DailyEventObjectParticipant } from '@daily-co/daily-js';
 import { api, ApiError, authEpoch } from './api';
 import type { CallJoin, Settings, Snapshot } from './api';
-import { Captions } from './Captions';
-import type { Caption } from './Captions';
-import { Details } from './Dialog';
+import { LiveCaption } from './Captions';
+import type { Caption, Transcript } from './Captions';
+import { CallIcon } from './CallIcon';
 import { dismiss, notify } from './Toast';
 import type { Notice } from './Toast';
-import { VoiceCircle } from './VoiceCircle';
-import type { VoiceState } from './VoiceCircle';
+import { VoiceOrb } from './components/assistant-ui/elements/voice';
+import type { VoiceOrbState } from './components/assistant-ui/elements/voice';
 
 export type VoicePhase = 'idle' | 'connecting' | 'active' | 'ending' | 'ended' | 'disconnected' | 'error';
+type VoiceState = 'idle' | 'connecting' | 'listening' | 'userSpeaking' | 'assistantSpeaking'
+  | 'processing' | 'interrupted' | 'reconnecting' | 'muted' | 'paused' | 'unavailable' | 'disconnected' | 'ended' | 'ending';
 type Release = 'ended' | 'error' | 'unconfirmed';
+type CallOwner = { callId?: string; authEpoch: number };
 type Problem = Omit<Notice, 'action'> & { type: 'retry' | 'reconnect' | 'availability' | 'end' | 'session' };
 const notices = ['voice:problem', 'voice:audio', 'voice:availability', 'voice:previous'];
 const unavailable: Problem = { id: 'voice:availability', type: 'availability', title: 'Conversations unavailable', severity: 'error', duration: null,
-  message: 'Conversations are temporarily unavailable. Try again shortly.' };
+  message: 'Try again shortly.' };
 const quiet = { user: false, bot: false, generating: false, tool: false, muted: false, paused: false,
-  capture: false, interrupted: false, connected: false, reconnecting: false, remote: false, playing: false, blocked: false };
+  capture: false, interrupted: false, connected: false, reconnecting: false, remote: false, playing: false, blocked: false,
+  waiting: false, continuing: false, resumeFailed: false, responseMissing: false };
 type Attempt = {
   client: PipecatClient; cancelled: boolean; ready: boolean; activity: typeof quiet;
-  authEpoch: number;
+  authEpoch: number; callId: string; shutdownSeconds: number;
+  startupTimer?: ReturnType<typeof setTimeout>;
+  devicesPending?: boolean; connectionPending?: boolean; connection?: Promise<unknown>;
+  sequence: number; resumeSequence?: number; resumeTimer?: ReturnType<typeof setTimeout>;
   sessionId?: string; parentSession?: string;
   devices?: Promise<void>; join?: Promise<CallJoin>; cleanup?: Promise<Release>;
+  financialReady?: () => void;
   tracks: Set<MediaStreamTrack>;
   observers: Map<MediaStreamTrack, () => void>;
-  localTrack?: MediaStreamTrack; remoteTrack?: MediaStreamTrack; remoteId?: string; botId?: string;
+  localTrack?: MediaStreamTrack; suspendedTrack?: MediaStreamTrack; remoteTrack?: MediaStreamTrack; remoteId?: string; botId?: string;
   level: number; levelAt?: number; meter?: ReturnType<typeof setTimeout>;
   onPageHide: () => void;
+  removeParticipantListener?: () => void;
 };
 
-async function releaseCall(epoch = authEpoch()): Promise<Release> {
-  if (epoch !== authEpoch()) return 'unconfirmed';
-  try {
-    const call = await api.endCall();
-    return call.status === 'idle' || call.status === 'ended' ? 'ended' : call.status === 'error' ? 'error' : 'unconfirmed';
-  } catch { return 'unconfirmed'; }
+function mark(stage: string) {
+  performance.mark(`voice:${stage}`);
 }
 
-// Room creation can finish after cancellation; release it before allowing another start.
+async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> {
+  if (owner.authEpoch !== authEpoch()) return 'unconfirmed';
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async (): Promise<Release> => {
+        if (!owner.callId) {
+          const call = await api.call(controller.signal);
+          if (call.cleanupConfirmed && ['idle', 'ended', 'error'].includes(call.status)) return call.status === 'error' ? 'error' : 'ended';
+          owner.callId = call.callId ?? undefined;
+        }
+        if (!owner.callId || owner.authEpoch !== authEpoch() || controller.signal.aborted) return 'unconfirmed';
+        mark('end-request');
+        const call = await api.endCall(owner.callId, controller.signal);
+        if (owner.authEpoch !== authEpoch() || call.callId !== owner.callId || call.cleanupConfirmed !== true) return 'unconfirmed';
+        if (call.status !== 'idle' && call.status !== 'ended' && call.status !== 'error') return 'unconfirmed';
+        mark('end-confirmed');
+        return call.status === 'error' ? 'error' : 'ended';
+      })(),
+      new Promise<Release>(resolve => { timer = setTimeout(() => { controller.abort(); resolve('unconfirmed'); }, seconds * 1000); }),
+    ]);
+  } catch { return 'unconfirmed'; }
+  finally { clearTimeout(timer); }
+}
+
+function stopTracks(attempt: Attempt) {
+  try {
+    for (const track of Object.values(attempt.client.tracks().local)) if (track) attempt.tracks.add(track);
+  } catch { /* Failed device setup can leave SDK track access unavailable. */ }
+  for (const track of attempt.tracks) track.stop();
+}
+
+async function disconnect(attempt: Attempt) {
+  stopTracks(attempt);
+  try { await attempt.client.disconnect(); } catch { /* Local teardown must not prevent owned room release. */ }
+}
+
+// Late device and transport work belongs only to this SDK instance, never the next attempt.
 function dispose(attempt: Attempt): Promise<Release> {
   if (attempt.cleanup) return attempt.cleanup;
   attempt.cancelled = true;
+  attempt.removeParticipantListener?.();
+  attempt.financialReady?.();
   clearTimeout(attempt.meter);
+  clearTimeout(attempt.resumeTimer);
+  clearTimeout(attempt.startupTimer);
   window.removeEventListener('pagehide', attempt.onPageHide);
   for (const [track, observer] of attempt.observers) {
     for (const event of ['mute', 'unmute', 'ended']) track.removeEventListener?.(event, observer);
   }
-  const stopTracks = () => {
-    try {
-      for (const track of Object.values(attempt.client.tracks().local)) if (track) attempt.tracks.add(track);
-    } catch { /* Failed device setup can leave SDK track access unavailable. */ }
-    for (const track of attempt.tracks) track.stop();
-  };
-  stopTracks();
-  attempt.cleanup = (async () => {
-    await attempt.devices?.catch(() => undefined);
-    stopTracks();
-    // Pipecat owns Daily's lifecycle; leave after device setup to release late capture and observers.
-    try { await attempt.client.disconnect(); } catch { /* Teardown must not mask the original failure or prevent room release. */ }
-    if (!attempt.join) return 'ended';
-    try { await attempt.join; }
-    catch (error) { if (error instanceof ApiError && error.status < 500) return error.status === 409 ? 'unconfirmed' : 'ended'; }
-    return releaseCall(attempt.authEpoch);
-  })();
+  stopTracks(attempt);
+  mark('local-stop');
+  attempt.cleanup = attempt.join ? releaseCall(attempt, attempt.shutdownSeconds) : Promise.resolve('ended');
+  // Pending permission cannot be cancelled by the browser; release any eventual capture in the background.
+  if (attempt.devicesPending) void attempt.devices?.then(() => disconnect(attempt), () => disconnect(attempt));
+  else void disconnect(attempt);
+  if (attempt.connectionPending) void attempt.connection?.then(() => disconnect(attempt), () => disconnect(attempt));
   return attempt.cleanup;
 }
 
 function callError(error: unknown): Problem {
   if ((error instanceof DOMException && error.name === 'NotAllowedError') || (error instanceof DeviceError && error.type === 'permissions'))
     return { id: 'voice:problem', type: 'retry', title: 'Microphone access denied', severity: 'warning', duration: null,
-      message: 'Microphone access was denied. Allow microphone access in your browser’s site settings, then try again.' };
+      message: 'Allow microphone access in your browser’s site settings, then try again.' };
   if ((error instanceof DOMException && error.name === 'NotFoundError') || (error instanceof DeviceError && error.type === 'not-found'))
     return { id: 'voice:problem', type: 'retry', title: 'No microphone found', severity: 'error', duration: null,
-      message: 'No microphone was found. Connect a microphone, then try again.' };
+      message: 'Connect a microphone, then try again.' };
   if ((error instanceof DOMException && error.name === 'NotReadableError') || (error instanceof DeviceError && error.type === 'in-use'))
     return { id: 'voice:problem', type: 'retry', title: 'Microphone in use', severity: 'error', duration: null,
-      message: 'Your microphone is in use. Close other calling apps, then try again.' };
+      message: 'Close other calling apps, then try again.' };
   if (error instanceof DeviceError && error.type === 'undefined-mediadevices')
     return { id: 'voice:problem', type: 'retry', title: 'Microphone unavailable', severity: 'error', duration: null,
-      message: 'Microphone access is unavailable in this browser. Open this page in a current browser, then try again.' };
+      message: 'Open this page in a current browser, then try again.' };
   if (error instanceof ApiError && (error.status === 401 || error.status === 403))
     return { id: 'voice:problem', type: 'session', title: 'Sign-in required', severity: 'error', duration: null, dismissible: false,
       message: 'Your sign-in could not be verified. Reload the page and sign in again to continue.' };
@@ -96,13 +134,13 @@ function callError(error: unknown): Problem {
   if (error instanceof ApiError && error.status === 503) return unavailable;
   if (error instanceof TypeError || !navigator.onLine)
     return { id: 'voice:problem', type: 'reconnect', title: 'Connection lost', severity: 'error', duration: null,
-      message: 'The audio connection closed. Check your internet connection, then reconnect.' };
+      message: 'Check your internet connection, then reconnect.' };
   return { id: 'voice:problem', type: 'retry', title: 'Could not connect', severity: 'error', duration: null,
-    message: 'The conversation could not connect. Check your connection and microphone, then try again.' };
+    message: 'Check your connection and microphone, then try again.' };
 }
 
 function audioSource(current: Attempt): 'local' | 'remote' | undefined {
-  if (!current.ready || current.cancelled || current.activity.reconnecting) return;
+  if (!current.ready || current.cancelled || current.activity.reconnecting || current.activity.waiting) return;
   const { activity, localTrack, remoteTrack } = current;
   if (activity.user && activity.capture && !activity.paused && !activity.muted && current.client.isMicEnabled
     && localTrack?.readyState === 'live' && !localTrack.muted && localTrack.enabled !== false) return 'local';
@@ -110,13 +148,15 @@ function audioSource(current: Attempt): 'local' | 'remote' | undefined {
     && remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false) return 'remote';
 }
 
-export function Conversation({ settings, sessionId, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, visible = true, sessionIssue, updatesLost = false }: {
+export function Conversation({ settings, sessionId, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, onTranscriptChange, visible = true, sessionIssue, updatesLost = false, updatesReady = true }: {
   settings: Settings | null; sessionId?: string; disabled: boolean;
   onStarted: (snapshot: Snapshot) => void; onBusyChange: (busy: boolean) => void;
   presentation: 'landing' | 'ready' | 'session'; onPrepare: () => void;
   onPhaseChange: (phase: VoicePhase) => void; onSettings: (settings: Settings) => void;
   visible?: boolean; sessionIssue?: 'expired' | 'deleted' | 'unreadable' | 'unauthorized';
   updatesLost?: boolean;
+  updatesReady?: boolean;
+  onTranscriptChange?: (transcript: Transcript) => void;
 }) {
   const [phase, setPhase] = useState<VoicePhase>('idle');
   const [activity, setActivity] = useState(quiet);
@@ -127,6 +167,19 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const [endIssue, setEndIssue] = useState<'open' | 'unconfirmed' | null>(null);
   const [checkedSession, setCheckedSession] = useState<string>();
   const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const voiceAvailable = settings?.voiceAvailable;
+  const [observed, setObserved] = useState({ sessionId, sessionIssue, updatesLost, voiceAvailable });
+  if (observed.sessionId !== sessionId || observed.sessionIssue !== sessionIssue || observed.updatesLost !== updatesLost
+    || observed.voiceAvailable !== voiceAvailable) {
+    const contextChanged = observed.sessionId !== sessionId || observed.sessionIssue !== sessionIssue || observed.updatesLost !== updatesLost;
+    setObserved({ sessionId, sessionIssue, updatesLost, voiceAvailable });
+    setCheckingAvailability(false);
+    if (observed.sessionId && observed.sessionId !== sessionId || sessionIssue && observed.sessionIssue !== sessionIssue) {
+      setCaptions([]); setInterim(null); setEndIssue(null);
+    }
+    if (observed.sessionId && observed.sessionId !== sessionId || contextChanged && (sessionIssue || problem?.type === 'session' || problem?.type === 'availability')
+      || observed.voiceAvailable !== voiceAvailable && voiceAvailable && problem?.type === 'availability') setProblem(null);
+  }
   const audio = useRef<HTMLAudioElement>(null);
   const attempt = useRef<Attempt | null>(null);
   const mounted = useRef(false);
@@ -134,6 +187,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const interimTime = useRef<number | null>(null);
   const generation = useRef(0);
   const ending = useRef(false);
+  const previousCall = useRef<CallOwner | null>(null);
   const availability = useRef<AbortController | null>(null);
   const sessionBlocked = !!sessionIssue || problem?.type === 'session';
   const needsEnd = endIssue !== null && !sessionBlocked;
@@ -141,15 +195,20 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const checkingCall = !!sessionId && !sessionBlocked && checkedSession !== sessionId;
   const busy = running || needsEnd || checkingCall;
   const startBlocked = disabled || updatesLost || sessionBlocked || !settings?.voiceAvailable || running || needsEnd || checkingCall;
-  const actions = useRef({ start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId });
+  const actions = useRef({ start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId, updatesReady });
   const notifyPhase = useEffectEvent(onPhaseChange);
   const notifyBusy = useEffectEvent(onBusyChange);
+  const notifyTranscript = useEffectEvent((transcript: Transcript) => onTranscriptChange?.(transcript));
 
-  useLayoutEffect(() => { actions.current = { start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId }; });
+  useLayoutEffect(() => {
+    actions.current = { start, finish, playAudio, checkAvailability, onStarted, onSettings, sessionBlocked, sessionId, updatesReady };
+    if (updatesReady && attempt.current?.sessionId === sessionId) attempt.current?.financialReady?.();
+  });
   useEffect(() => { notifyPhase(phase); }, [phase]);
   useEffect(() => { notifyBusy(busy); }, [busy]);
+  useLayoutEffect(() => { notifyTranscript({ captions, interim }); }, [captions, interim]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     mounted.current = true;
     const player = audio.current;
     return () => {
@@ -165,23 +224,22 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const stopUnavailable = useEffectEvent(() => {
     const current = attempt.current;
     availability.current?.abort(); availability.current = null;
-    setCheckingAvailability(false);
     if (sessionIssue) {
       dismiss('voice:problem'); dismiss('voice:availability'); dismiss('voice:audio');
-      setProblem(null);
-    } else setProblem(value => value?.type === 'session' ? null : value);
+    }
     if (current && (sessionIssue || updatesLost || sessionId !== current.parentSession && sessionId !== current.sessionId))
       void actions.current.finish('error', updatesLost && !sessionIssue ? { id: 'voice:problem', type: 'reconnect', title: 'Conversation stopped',
-        severity: 'warning', duration: null, message: 'Financial updates were interrupted. Microphone and assistant audio are off. Restore updates, then reconnect.' } : undefined);
+        severity: 'warning', duration: null, message: 'Your microphone is off. Start talking again when you’re ready.' } : undefined);
   });
-  useLayoutEffect(() => { stopUnavailable(); }, [sessionIssue, sessionId, updatesLost]);
+  // Capture and playback must stop before paint when their financial session becomes unsafe.
+  useLayoutEffect(() => { stopUnavailable(); }, [sessionIssue, sessionId, updatesLost, voiceAvailable]);
 
   useEffect(() => {
-    if (!problem || sessionIssue) { dismiss('voice:problem'); return; }
+    if (!problem || sessionIssue || updatesLost) { dismiss('voice:problem'); dismiss('voice:availability'); return; }
     notify({ ...problem, action: problem.type === 'session' ? undefined : problem.type === 'availability'
-      ? { label: 'Check availability', disabled: checkingAvailability || disabled, onClick: () => actions.current.checkAvailability() }
-      : { label: problem.type === 'reconnect' ? 'Reconnect' : 'Retry', disabled: startBlocked, onClick: () => actions.current.start() } });
-  }, [problem, sessionIssue, startBlocked, checkingAvailability, disabled]);
+      ? { label: 'Check availability', dismiss: false, disabled: checkingAvailability || disabled, onClick: () => actions.current.checkAvailability() }
+      : { label: problem.type === 'reconnect' ? 'Reconnect' : 'Retry', dismiss: false, disabled: startBlocked, onClick: () => actions.current.start() } });
+  }, [problem, sessionIssue, updatesLost, startBlocked, checkingAvailability, disabled]);
 
   useEffect(() => {
     if (!endIssue || sessionBlocked) { dismiss('voice:previous'); return; }
@@ -189,35 +247,35 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       message: endIssue === 'open' ? 'Another conversation is still open. End it before connecting here.'
         : 'Microphone off. We couldn’t confirm the call ended. Retry ending it before starting again.',
       severity: 'critical', duration: null, dismissible: false,
-      action: { label: 'Retry ending call', disabled: phase === 'ending', onClick: () => actions.current.finish('ended') } });
+      action: { label: 'Retry ending call', disabled: phase === 'ending', dismiss: false, onClick: () => actions.current.finish('ended') } });
   }, [endIssue, phase, sessionBlocked]);
 
   useEffect(() => {
     if (!activity.blocked || sessionBlocked) { dismiss('voice:audio'); return; }
     notify({ id: 'voice:audio', title: 'Assistant audio paused', severity: 'warning', duration: null,
       message: 'Your browser paused playback. Resume audio to hear the assistant.',
-      action: { label: 'Resume audio', disabled, onClick: () => actions.current.playAudio() } });
+      action: { label: 'Resume audio', dismiss: false, disabled, onClick: () => actions.current.playAudio() } });
   }, [activity, sessionBlocked, disabled]);
 
-  const available = useEffectEvent(() => {
-    if (settings?.voiceAvailable) {
-      dismiss('voice:availability');
-      setProblem(value => value?.id === 'voice:availability' ? null : value);
-    }
-  });
-  useEffect(() => { available(); }, [settings?.voiceAvailable]);
-
   useEffect(() => {
-    if (!sessionId || sessionIssue) return;
+    if (!sessionId || sessionIssue || !settings) return;
     if (attempt.current) { setCheckedSession(sessionId); return; }
     const controller = new AbortController();
     const version = generation.current;
+    previousCall.current = null;
+    const timer = setTimeout(() => {
+      controller.abort();
+      if (attempt.current || version !== generation.current) return;
+      setCheckedSession(sessionId); setEndIssue('unconfirmed');
+    }, settings.voiceStartupSeconds * 1000);
     void api.call(controller.signal).then((call) => {
       if (controller.signal.aborted || attempt.current || version !== generation.current) return;
       const open = call.status === 'active' || call.status === 'connecting';
+      const unconfirmed = !call.cleanupConfirmed || call.status === 'ending';
+      previousCall.current = { callId: call.callId ?? undefined, authEpoch: authEpoch() };
       setCheckedSession(sessionId);
-      setEndIssue(open ? 'open' : null);
-      if (call.status === 'error' && !actions.current.sessionBlocked) setProblem({ id: 'voice:problem', type: 'retry', severity: 'info', duration: 6000,
+      setEndIssue(open ? 'open' : unconfirmed ? 'unconfirmed' : null);
+      if (call.status === 'error' && call.cleanupConfirmed && !actions.current.sessionBlocked) setProblem({ id: 'voice:problem', type: 'retry', severity: 'info', duration: 6000,
         title: 'Previous conversation stopped', message: 'The previous conversation stopped with an error. You can try a new conversation.' });
     }).catch((error) => {
       if (!controller.signal.aborted && !attempt.current && version === generation.current) {
@@ -226,9 +284,9 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         setEndIssue(issue.type === 'session' ? null : 'unconfirmed');
         if (issue.type === 'session') setProblem(issue);
       }
-    });
-    return () => controller.abort();
-  }, [sessionId, sessionIssue]);
+    }).finally(() => clearTimeout(timer));
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [sessionId, sessionIssue, settings]);
 
   function resetLevel(current: Attempt) {
     clearTimeout(current.meter);
@@ -262,6 +320,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     const current = attempt.current;
     if (!mounted.current || current?.cancelled || ending.current || !current && sessionBlocked) return;
     ending.current = true;
+    mark('end');
     generation.current += 1;
     setPhase('ending');
     setInterim(null); interimTime.current = null;
@@ -271,11 +330,14 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     dismiss('voice:audio');
     audio.current?.pause();
     if (audio.current) audio.current.srcObject = null;
-    const released = current ? await dispose(current) : await releaseCall();
+    const owner = current ?? previousCall.current ?? { authEpoch: authEpoch() };
+    previousCall.current = owner;
+    const released = current ? await dispose(current) : settings ? await releaseCall(owner, settings.voiceShutdownSeconds) : 'unconfirmed';
     if (!mounted.current || attempt.current !== current) return;
     attempt.current = null;
     ending.current = false;
-    setEndIssue(released === 'unconfirmed' ? issue?.type === 'end' || endIssue === 'open' ? 'open' : 'unconfirmed' : null);
+    if (issue?.type === 'end') previousCall.current = { authEpoch: owner.authEpoch };
+    setEndIssue(issue?.type === 'end' ? 'open' : released === 'unconfirmed' ? endIssue === 'open' ? 'open' : 'unconfirmed' : null);
     setPhase(released === 'ended' ? next : 'error');
     if (issue && issue.type !== 'end' && !actions.current.sessionBlocked) setProblem(issue);
     if (released === 'error' && !issue && !problem && !actions.current.sessionBlocked) setProblem({ ...callError(undefined),
@@ -289,20 +351,24 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     const player = audio.current;
     const stream = player?.srcObject;
     if (!current || current.cancelled || current.remoteTrack?.readyState !== 'live' || !player || !stream) return;
+    if (current.activity.waiting && !current.activity.continuing) return;
+    const sequence = current.sequence;
     try {
       await player.play();
-      if (mounted.current && attempt.current === current && !current.cancelled && player.srcObject === stream) {
-        updateActivity(current, { playing: true, blocked: false }); dismiss('voice:audio');
+      if (mounted.current && attempt.current === current && !current.cancelled && player.srcObject === stream && current.sequence === sequence) {
+        updateActivity(current, { playing: !current.activity.waiting, blocked: false }); dismiss('voice:audio');
       }
     } catch {
-      if (player.srcObject === stream) updateActivity(current, { playing: false, blocked: true });
+      if (player.srcObject === stream && current.sequence === sequence && !current.activity.waiting)
+        updateActivity(current, { playing: false, blocked: true });
     }
   }
 
   async function start() {
-    if (!mounted.current || disabled || sessionBlocked) return;
+    if (!mounted.current || disabled || sessionBlocked || !settings) return;
     if (!visible || presentation === 'landing') { onPrepare(); return; }
     if (attempt.current || ending.current || startBlocked) return;
+    mark('start');
     generation.current += 1;
     availability.current?.abort(); availability.current = null;
     setCheckingAvailability(false);
@@ -318,15 +384,19 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     try {
       // Daily's script loader must respect the application's no-eval content security policy.
       const transport = new DailyTransport({ bufferLocalAudioUntilBotReady: false, dailyConfig: { avoidEval: true } });
-      const live = () => mounted.current && current !== null && attempt.current === current && !current.cancelled && !actions.current.sessionBlocked;
-      const update = (patch: Partial<typeof quiet>) => { if (live() && current) updateActivity(current, patch); };
+      const live = () => mounted.current && current !== null && attempt.current === current && !current.cancelled
+        && current.authEpoch === authEpoch() && !actions.current.sessionBlocked;
+      const update = (patch: Partial<typeof quiet>) => {
+        if (live() && current) updateActivity(current, current.activity.waiting ? { ...patch,
+          user: false, bot: false, generating: false, tool: false, paused: false, interrupted: false, capture: false, playing: false, blocked: false } : patch);
+      };
       const tools = new Set<string>();
       const unfinished = new Set<string>();
       let spokenId: string | undefined;
       const updateTracks = () => {
         if (!live() || !current) return;
         const { localTrack, remoteTrack } = current;
-        if (localTrack?.readyState === 'ended') { microphoneLost(); return; }
+        if (localTrack?.readyState === 'ended' && !current.activity.waiting && client.isMicEnabled) { microphoneLost(); return; }
         if (remoteTrack?.readyState === 'ended') update({ playing: false, blocked: false });
         update({ capture: localTrack?.readyState === 'live' && !localTrack.muted && localTrack.enabled !== false, muted: !client.isMicEnabled,
           remote: remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false });
@@ -342,7 +412,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
       const client = new PipecatClient({ transport, enableMic: true, enableCam: false, callbacks: {
         onConnected: () => update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false }),
-        onBotReady: () => { if (live() && current) { current.ready = true; setPhase('active'); update({ reconnecting: false }); updateTracks(); } },
+        onBotReady: () => { if (live() && current) { mark('bot-ready'); clearTimeout(current.startupTimer); current.ready = true; setPhase('active'); update({ reconnecting: false }); updateTracks(); } },
         onBotConnected: (participant) => {
           if (!live() || !current || participant.local) return;
           current.botId = participant.id;
@@ -362,18 +432,62 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         },
         onDisconnected: disconnected,
         onBotDisconnected: disconnected,
-        onError: () => fail({ ...callError(undefined), title: 'Conversation stopped', message: 'The assistant could not continue. Check your connection and try again.' }),
+        onError: (message) => {
+          if (!message.data || typeof message.data !== 'object' || !('fatal' in message.data) || message.data.fatal !== false)
+            fail({ ...callError(undefined), title: 'Conversation stopped', message: 'The assistant could not continue. Check your connection and try again.' });
+          else if (live() && current?.activity.continuing) {
+            clearTimeout(current.resumeTimer);
+            update({ continuing: false, resumeFailed: true });
+          }
+        },
+        onServerMessage: (data: unknown) => {
+          if (!live() || !current?.join || !data || typeof data !== 'object' || Array.isArray(data)) return;
+          if (!('type' in data) || data.type !== 'conversation-state' || !('state' in data)
+            || data.state !== 'waiting' && data.state !== 'active' || !('sequence' in data)
+            || typeof data.sequence !== 'number' || !Number.isSafeInteger(data.sequence) || data.sequence <= current.sequence) return;
+          if (data.state === 'waiting' && !current.ready) return;
+          // Only this attempt's explicit Continue can authorize capture after a wait.
+          if (data.state === 'active' && current.activity.waiting && current.resumeSequence !== current.sequence) return;
+          const resuming = current.activity.waiting && data.state === 'active';
+          current.sequence = data.sequence;
+          clearTimeout(current.resumeTimer); current.resumeSequence = undefined;
+          if (data.state === 'waiting') {
+            updateActivity(current, { waiting: true, continuing: false, resumeFailed: false, user: false, bot: false,
+              responseMissing: 'reason' in data && data.reason === 'response',
+              generating: false, tool: false, paused: false, interrupted: false, capture: false, playing: false, blocked: false });
+            tools.clear();
+            setInterim(null); interimTime.current = null;
+            setCaptions(items => items.map(item => item.pending ? { ...item, pending: false, interrupted: true } : item));
+            if (audio.current) { audio.current.muted = true; audio.current.pause(); }
+            current.suspendedTrack = current.localTrack;
+            try { client.enableMic(false); updateTracks(); }
+            catch { fail({ ...callError(undefined), title: 'Microphone unavailable', message: 'The microphone could not be paused. The conversation has stopped.' }); }
+          } else if (resuming) {
+            updateActivity(current, { waiting: false, continuing: false, resumeFailed: false, responseMissing: false });
+            try {
+              client.enableMic(true);
+              if (!live()) return;
+              current.localTrack = client.tracks().local.audio ?? current.localTrack;
+              if (current.localTrack?.readyState === 'ended') current.localTrack = undefined;
+              if (current.localTrack) { current.tracks.add(current.localTrack); observe(current.localTrack); }
+              updateTracks();
+              if (audio.current) audio.current.muted = false;
+              void actions.current.playAudio(true);
+            } catch { fail({ ...callError(undefined), title: 'Microphone unavailable', message: 'The microphone could not resume. Check microphone access, then try again.' }); }
+          }
+        },
         onDeviceError: (error) => fail(callError(error)),
         onLocalAudioLevel: (value) => { if (current) measure(current, 'local', value); },
         onRemoteAudioLevel: (value, participant) => {
           if (current && !participant.local && participant.id === current.remoteId) measure(current, 'remote', value);
         },
         onUserStartedSpeaking: () => {
-          if (!live() || !current?.ready || current.activity.reconnecting) return;
+          if (!live() || !current?.ready || current.activity.reconnecting || current.activity.waiting) return;
           update({ user: true, interrupted: current.activity.bot, generating: false });
           // SDK completions can arrive before React applies the caption update.
           const interrupted = new Set(unfinished);
-          setCaptions((items) => items.map((item) => item.pending || interrupted.has(item.id) ? { ...item, pending: false, interrupted: true } : item));
+          setCaptions((items) => items.some(item => item.pending || interrupted.has(item.id))
+            ? items.map((item) => item.pending || interrupted.has(item.id) ? { ...item, pending: false, interrupted: true } : item) : items);
         },
         onUserStoppedSpeaking: () => update({ user: false, interrupted: false }),
         onBotStartedSpeaking: () => {
@@ -387,7 +501,7 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         onBotLlmStarted: () => update({ generating: true }),
         onBotLlmStopped: () => update({ generating: false }),
         onLLMFunctionCallStarted: () => update({ tool: true }),
-        onLLMFunctionCallInProgress: (data) => { tools.add(data.tool_call_id); update({ tool: true }); },
+        onLLMFunctionCallInProgress: (data) => { if (live() && !current?.activity.waiting) { tools.add(data.tool_call_id); update({ tool: true }); } },
         onLLMFunctionCallStopped: (data) => { tools.delete(data.tool_call_id); update({ tool: tools.size > 0 }); },
         onUserMuteStarted: () => update({ paused: true, user: false, interrupted: false }),
         onUserMuteStopped: () => update({ paused: false }),
@@ -426,11 +540,25 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
           });
         },
       } });
-      current = { client, cancelled: false, ready: false, activity, authEpoch: authEpoch(), sessionId, parentSession: sessionId, tracks: new Set(), observers: new Map(), level: 0, onPageHide: () => {
+      current = { client, cancelled: false, ready: false, activity, sequence: 0, authEpoch: authEpoch(), callId: crypto.randomUUID(), shutdownSeconds: settings.voiceShutdownSeconds, sessionId, parentSession: sessionId, tracks: new Set(), observers: new Map(), level: 0, onPageHide: () => {
         if (live()) void actions.current.finish('disconnected', callError(new TypeError()));
       } };
       attempt.current = current;
+      previousCall.current = null;
+      const deadline = (seconds = settings.voiceStartupSeconds) => {
+        if (!current) return;
+        clearTimeout(current.startupTimer);
+        current.startupTimer = setTimeout(() => fail({ ...callError(undefined), title: 'Connection timed out',
+          message: 'The conversation took too long to connect. Check microphone access and your connection, then retry.' }), seconds * 1000);
+      };
       window.addEventListener('pagehide', current.onPageHide);
+      // Daily settles local audio asynchronously, even when the persistent track emits no event.
+      const daily = transport.dailyCallClient;
+      const onParticipantUpdated = (event: DailyEventObjectParticipant) => {
+        if (event.participant.local) updateTracks();
+      };
+      daily.on('participant-updated', onParticipantUpdated);
+      current.removeParticipantListener = () => { daily.off('participant-updated', onParticipantUpdated); };
       current.client.on(RTVIEvent.TrackStarted, (track, participant) => {
         if (!live()) { track.stop(); return; }
         if (!current) return;
@@ -453,8 +581,13 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       });
       current.client.on(RTVIEvent.TrackStopped, (track, participant) => {
         if (!live()) return;
-        current?.tracks.delete(track);
-        if (participant?.local && current?.localTrack === track) { microphoneLost(); return; }
+        if (track.readyState === 'ended') current?.tracks.delete(track);
+        const suspended = current?.suspendedTrack === track;
+        if (current && suspended) current.suspendedTrack = undefined;
+        if (participant?.local && current?.localTrack === track) {
+          if (!suspended && !current.activity.waiting && client.isMicEnabled) { microphoneLost(); return; }
+          if (current.activity.waiting || !client.isMicEnabled || track.readyState === 'ended') current.localTrack = undefined;
+        }
         if (current?.remoteTrack === track) { current.remoteTrack = undefined; current.remoteId = undefined; }
         updateTracks();
         const stream = audio.current?.srcObject as MediaStream | null;
@@ -463,21 +596,42 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
         }
       });
       // Device permission starts directly in the click handler, before any room request.
-      current.devices = current.client.initDevices();
-      await current.devices;
+      deadline();
+      mark('mic-request');
+      current.devicesPending = true;
+      try { current.devices = current.client.initDevices(); await current.devices; }
+      finally { current.devicesPending = false; }
       if (!live()) return;
+      mark('mic-ready');
+      deadline();
       current.localTrack = current.client.tracks().local.audio ?? current.localTrack;
       if (current.localTrack) { current.tracks.add(current.localTrack); observe(current.localTrack); }
       updateTracks();
+      mark('setup-request');
       const saved = await api.start();
       if (!live()) return;
       current.sessionId = saved.sessionId;
       actions.current.onStarted(saved);
+      if (!actions.current.updatesReady) await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
       if (!live()) return;
-      current.join = api.startCall();
-      const join = await current.join;
+      mark('setup-ready');
+      deadline(settings.voiceStartupSeconds + settings.voiceShutdownSeconds);
+      mark('join-request');
+      current.join = api.startCall(current.callId);
+      let join: CallJoin;
+      try { join = await current.join; }
+      catch (error) {
+        if (error instanceof ApiError && error.status < 500) current.join = undefined;
+        throw error;
+      }
       if (!live()) return;
-      await current.client.connect({ url: join.url, token: join.token });
+      if (join.callId !== current.callId) throw new Error('Call ownership could not be confirmed.');
+      mark('join-ready');
+      deadline();
+      mark('connect');
+      current.connectionPending = true;
+      current.connection = current.client.connect({ url: join.url, token: join.token });
+      try { await current.connection; } finally { current.connectionPending = false; }
     } catch (error) {
       if (mounted.current && attempt.current === current && !current?.cancelled && !actions.current.sessionBlocked) {
         if (current) await actions.current.finish('error', callError(error));
@@ -490,13 +644,31 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
 
   function toggleMic() {
     const current = attempt.current;
-    if (!current || current.cancelled || phase !== 'active' || sessionBlocked) return;
+    if (!current || current.cancelled || phase !== 'active' || current.activity.waiting || sessionBlocked) return;
     try {
       current.client.enableMic(!current.client.isMicEnabled);
       updateActivity(current, { muted: !current.client.isMicEnabled, user: false, interrupted: false });
     } catch {
       void finish('error', { ...callError(undefined), title: 'Microphone unavailable',
         message: 'The microphone could not be changed. The call has been stopped; check microphone access before trying again.' });
+    }
+  }
+
+  function continueConversation() {
+    const current = attempt.current;
+    if (!mounted.current || !current || current.cancelled || current.authEpoch !== authEpoch() || sessionBlocked || disabled
+      || phase !== 'active' || !current.activity.waiting || current.activity.continuing || current.activity.reconnecting) return;
+    current.resumeSequence = current.sequence;
+    updateActivity(current, { continuing: true, resumeFailed: false });
+    // This deadline only offers retry; the server alone authorizes leaving waiting.
+    current.resumeTimer = setTimeout(() => {
+      if (!current.cancelled && current.activity.waiting) updateActivity(current, { continuing: false, resumeFailed: true });
+    }, 10_000);
+    void playAudio();
+    try { current.client.sendClientMessage('continue-conversation', { sequence: current.sequence }); }
+    catch {
+      clearTimeout(current.resumeTimer);
+      updateActivity(current, { continuing: false, resumeFailed: true });
     }
   }
 
@@ -529,9 +701,9 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
     }
   }
 
-  const capturing = phase === 'active' && activity.capture && !activity.muted && !activity.paused && !activity.reconnecting;
+  const capturing = phase === 'active' && activity.capture && !activity.muted && !activity.paused && !activity.reconnecting && !activity.waiting;
   const audible = activity.remote && activity.playing && !activity.blocked;
-  const state: VoiceState = phase === 'active' ? activity.reconnecting ? 'reconnecting' : activity.blocked ? 'paused'
+  const state: VoiceState = phase === 'active' ? activity.waiting ? 'paused' : activity.reconnecting ? 'reconnecting' : activity.blocked ? 'paused'
     : capturing && activity.interrupted ? 'interrupted' : activity.bot ? audible ? 'assistantSpeaking' : activity.remote ? 'paused' : 'unavailable'
     : activity.muted ? 'muted' : activity.paused ? 'paused' : !activity.capture ? 'unavailable'
     : activity.generating || activity.tool ? 'processing' : activity.user ? 'userSpeaking' : 'listening'
@@ -540,46 +712,66 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
   const status = { idle: checkingCall ? 'Checking for an open conversation…' : 'Ready when you are',
     connecting: activity.connected ? 'Connecting to assistant' : 'Connecting', reconnecting: 'Reconnecting',
     listening: 'Listening', userSpeaking: 'Listening to you', assistantSpeaking: 'Speaking', processing: 'Thinking', interrupted: 'Interrupted · listening',
-    muted: 'Microphone muted', paused: activity.blocked || activity.bot ? 'Assistant audio paused' : 'Listening paused',
+    muted: 'Microphone muted', paused: activity.waiting ? 'Paused' : activity.blocked || activity.bot ? 'Assistant audio paused' : 'Listening paused',
     unavailable: sessionBlocked ? 'Conversation unavailable' : phase === 'error' ? 'Unable to connect' : !running ? 'Conversations unavailable'
       : activity.bot ? 'Assistant audio unavailable' : 'Microphone not connected',
     disconnected: 'Disconnected', ended: 'Conversation ended', ending: 'Ending…' }[state];
-  const hint = phase === 'active' ? activity.blocked || activity.reconnecting ? '' : activity.muted ? 'Unmute to speak'
+  const hint = phase === 'active' ? activity.waiting ? activity.resumeFailed ? 'No response yet. Try Continue again.'
+    : activity.continuing ? 'Waiting for the assistant…' : activity.responseMissing ? 'The assistant did not finish a response. Continue to try again.' : 'Continue when you’re ready.' : activity.blocked || activity.reconnecting ? '' : activity.muted ? 'Unmute to speak'
     : capturing ? activity.bot && audible && !activity.interrupted ? 'Speak to interrupt' : 'Go ahead' : activity.paused ? '' : 'Reconnect your microphone'
-    : phase === 'connecting' ? 'Allow microphone access if asked' : '';
+    : phase === 'connecting' ? 'Allow microphone access if asked' : phase === 'ending' ? 'Your microphone is off. Confirming the call ended.' : '';
+  const orbState: VoiceOrbState = state === 'connecting' || state === 'reconnecting' ? 'connecting'
+    : phase === 'active' && (activity.muted || activity.paused) || state === 'paused' || state === 'muted' ? 'muted'
+      : state === 'assistantSpeaking' ? 'speaking'
+        : ['listening', 'userSpeaking', 'interrupted', 'processing'].includes(state) ? 'listening' : 'idle';
+  const orbVolume = orbState === 'listening' || orbState === 'speaking' ? level : 0;
 
   return <>
-    <audio ref={audio} autoPlay aria-label="Assistant audio" onPause={() => {
+    <audio ref={audio} autoPlay muted={activity.waiting} aria-label="Assistant audio" onPause={() => {
       const current = attempt.current;
-      if (current && !ending.current) updateActivity(current, { playing: false, blocked: current.remoteTrack?.readyState === 'live' });
+      if (current && !ending.current) updateActivity(current, { playing: false, blocked: !current.activity.waiting && current.remoteTrack?.readyState === 'live' });
     }} onPlaying={() => {
       const current = attempt.current;
-      if (current?.remoteTrack && !ending.current && (audio.current?.srcObject as MediaStream | null)?.getTracks().includes(current.remoteTrack))
+      if (current?.remoteTrack && !ending.current && !current.activity.waiting && (audio.current?.srcObject as MediaStream | null)?.getTracks().includes(current.remoteTrack))
         updateActivity(current, { playing: true, blocked: false });
     }} />
     {presentation === 'landing' ? <div className="conversation-entry no-print">
       <button className="primary" disabled={disabled || !settings || sessionBlocked} onClick={onPrepare}>Start conversation</button>
     </div> : <section className="conversation card no-print" data-phase={phase} data-running={running} aria-labelledby="conversation-heading">
-      <div className="conversation-heading"><h2 id="conversation-heading">Your conversation</h2></div>
-      <div className="conversation-circle-panel"><div className="voice-status-panel" data-capturing={capturing}>
-        <VoiceCircle state={state} level={level} label={status} />
-        <p className="voice-status" role="status">{status}</p>
-        <p className="voice-status-hint">{hint}</p>
-        {phase === 'active' && activity.connected && !activity.reconnecting && <span className="voice-connection">Connected</span>}
-      </div></div>
-      <div className="conversation-controls">
-        {phase === 'active' && <button onClick={toggleMic} aria-pressed={activity.muted}>{activity.muted ? 'Unmute microphone' : 'Mute microphone'}</button>}
-        {running || needsEnd ? <button className="danger" disabled={phase === 'ending'} onClick={() => void finish('ended')}>{needsEnd && !running ? 'Retry ending call' : 'End conversation'}</button>
-          : <button className="primary" disabled={startBlocked} onClick={() => void start()}>{phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'Reconnect' : 'Start talking'}</button>}
-        {activity.blocked && <button disabled={disabled} onClick={() => void playAudio()}>Resume audio</button>}
-        {!running && !sessionBlocked && (settings?.voiceAvailable === false || phase === 'error') &&
-          <button disabled={checkingAvailability || disabled} onClick={() => void checkAvailability()}>{checkingAvailability ? 'Checking availability…' : 'Check availability'}</button>}
-      </div>
-      <Captions captions={captions} interim={interim} timezone={settings?.timezone} />
-      <footer className="voice-more"><Details label="Privacy">
-        <p>Audio and words are processed to prepare your plan. Avoid account numbers, passwords and card details.</p>
-        <p>{settings && `Figures kept ${settings.retentionHours} hours; `}captions only this visit.</p>
-      </Details></footer>
+      <h2 id="conversation-heading" className="sr-only">Your conversation</h2>
+      <header className="call-header">
+        <div className="voice-status-panel" data-capturing={capturing}>
+          <div className="call-orb" role="img" aria-label={status} data-state={state} data-volume={orbVolume}>
+            {visible && <VoiceOrb state={orbState} volume={orbVolume} variant="emerald" />}
+          </div>
+          <div className="voice-status-copy">
+            <p className="voice-status" role="status">{status}</p>
+            <p className="voice-status-hint" aria-live={activity.waiting ? 'polite' : 'off'}>{hint}</p>
+          </div>
+        </div>
+        <div className="conversation-controls">
+          {phase === 'active' && activity.waiting && <button type="button" className="call-control primary" disabled={disabled || activity.continuing || activity.reconnecting}
+            aria-label="Continue" aria-busy={activity.continuing} title="Continue conversation" onClick={continueConversation}><CallIcon kind="play" /></button>}
+          {phase === 'active' && !activity.waiting && <button type="button" className="call-control" onClick={toggleMic} aria-pressed={activity.muted}
+            aria-label={activity.muted ? 'Unmute microphone' : 'Mute microphone'} title={activity.muted ? 'Unmute microphone' : 'Mute microphone'}>
+            <CallIcon kind="microphone" muted={activity.muted} />
+          </button>}
+          {running || needsEnd ? <button type="button" className="call-control call-end danger" disabled={phase === 'ending'} onClick={() => void finish('ended')}
+            aria-busy={phase === 'ending'}
+            aria-label={needsEnd && !running ? 'Retry ending call' : 'End conversation'} title={needsEnd && !running ? 'Retry ending call' : 'End conversation'}>
+            <CallIcon kind="end" />
+          </button>
+            : <button type="button" className="call-control primary" disabled={startBlocked} onClick={() => void start()}
+              aria-label={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'Reconnect' : 'Start talking'}
+              title={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'Reconnect' : 'Start talking'}>
+              <CallIcon kind={phase === 'ended' || phase === 'disconnected' || phase === 'error' ? 'retry' : 'call'} />
+            </button>}
+          {activity.blocked && <button type="button" className="call-control" disabled={disabled} aria-label="Resume audio" title="Resume audio" onClick={() => void playAudio()}><CallIcon kind="audio" /></button>}
+          {!running && !sessionBlocked && (settings?.voiceAvailable === false || phase === 'error') &&
+            <button type="button" className="call-control" disabled={checkingAvailability || disabled} aria-busy={checkingAvailability} aria-label={checkingAvailability ? 'Checking availability…' : 'Check availability'} title="Check availability" onClick={() => void checkAvailability()}><CallIcon kind="retry" /></button>}
+        </div>
+      </header>
+      <LiveCaption captions={captions} interim={interim} timezone={settings?.timezone} assistantName={settings?.assistantName} />
     </section>}
   </>;
 }
