@@ -8,11 +8,11 @@ import { dateLabel, lastDate, money } from './money';
 export function MoneyChart({ snapshot }: { snapshot: Snapshot }) {
   const id = useId().replaceAll(':', '');
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
-  const opening = snapshot.facts.opening.amountPaise;
+  const opening = plan.planningFacts.opening.amountPaise;
   const events = plan.events.filter(event => event.included && event.balancePaise !== null);
   if (opening === null || !events.length || plan.closingPaise === null) return <div className="money-chart-empty">
     <span className="money-chart-placeholder" aria-hidden="true" />
-    <p>{opening === null ? 'Add your starting cash to see the picture.' : 'Add an income date or payment to see your cash flow.'}</p>
+    <p>{opening === null ? snapshot.facts.opening.source?.conversion ? 'Starting cash conversion needs checking before the forecast can be shown.' : 'Add your starting cash to see the picture.' : 'Add an income date or payment to see your cash flow.'}</p>
   </div>;
 
   const start = Date.parse(snapshot.anchorDate);

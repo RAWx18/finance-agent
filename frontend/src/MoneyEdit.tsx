@@ -124,7 +124,7 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
       {obsolete && <p role="alert" className="notice warning">Saved figures changed. Your correction is kept here for reference. Close and reopen to check the latest values before saving; it cannot overwrite them.</p>}
       {state.pending && <p className="notice warning">Save not confirmed. Keep this page open and retry the same save before changing anything.</p>}
       {!state.pending && submitted && state.messageKind === 'error' && <p role="alert">{state.message}</p>}
-      {target.recordId ? <p className="hint">{record?.label ?? 'Item no longer available'}{record?.schedule.date && <> · {dateLabel(record.schedule.date)}</>}. Only this detail of this exact item changes.</p>
+      {target.recordId ? <p className="hint">{record?.label ?? 'Item no longer available'}{record?.schedule.date && <> · {dateLabel(record.schedule.date)}</>}. Related forecasts will be recalculated.</p>
         : target.field === 'opening' && <p>Cash at the original plan start, {dateLabel(snapshot.anchorDate)}. This does not update today’s bank balance.</p>}
       {target.field === 'reserve' && <p>A buffer within your cash, not another expense or extra money.</p>}
       {(snapshot.preview || snapshot.accepted) && <p className="hint">Saving clears the preview. Affected saved changes need fresh consent; unrelated changes remain.</p>}
@@ -143,10 +143,11 @@ export function MoneyEdit({ target, snapshot, state, active, onClose, onCommand,
                 <p className="hint">Amounts and dates remain unknown until you share them. This creates a separate item, even if another has the same name.</p></>
                 : moneyField ? <>
                   {field === 'amount' && record ? <RecordAmountFields record={record} amount={amount!} draft={schedule} clearTarget={clearTarget} onAmount={setAmount} onSchedule={setSchedule} onClearTarget={setClearTarget} />
-                    : <MoneyFields value={amount} onChange={setAmount} optional={['target', 'outstanding'].includes(field)} certainty={field !== 'reserve'} />}
+                    : <MoneyFields value={amount} onChange={setAmount} foreign={field !== 'reserve'} income={field === 'opening'} valuation={field === 'outstanding'} optional={['target', 'outstanding'].includes(field)} certainty={field !== 'reserve'} />}
                   {field === 'amount' && record?.amount.source?.conversion && !record.schedule.amounts?.length && <p className="hint">Last saved: {amountLabel(record.amount)}. Recalculated only after saving.</p>}
-                  {record?.kind === 'income' && <p className="hint">Only exact amounts and conversion assumptions with exact dates and reliable receipts count in projected balances.</p>}
+                  {record?.kind === 'income' && <p className="hint">Expected income is not confirmed received. Estimates remain labelled in your forecast.</p>}
                   {field === 'target' && <p className="hint">The intended payment includes the minimum. It is not an additional payment.</p>}
+                  {field === 'outstanding' && <p className="hint">Total debt remaining, not the payment due.</p>}
                   {field === 'target' && !!record?.schedule.amounts?.length && <p className="hint">Varying required payments cannot use a single intended payment. Switch to one amount in the Amount detail first, or choose Not supplied.</p>}
                 </> : field === 'schedule.date' ? <>
                   {record?.schedule.pattern && <p className="hint">The saved monthly timing pattern has no known date. Generated dates remain estimates; saving this Date detail replaces the pattern.</p>}

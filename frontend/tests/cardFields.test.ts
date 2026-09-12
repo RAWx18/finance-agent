@@ -6,7 +6,7 @@ import { cardMoney, fieldDraft, fieldError, fieldOperation, fieldSaved, sourceAm
 import { planningSnapshot } from './fixtures';
 
 /** Creates an estimated USD amount fixture with explicit conversion and fee terms. */
-const foreign = (): MoneyInput => ({ amount: '1200.25', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-12', fee: '250.50', feeStatus: 'exact' } });
+const foreign = (): MoneyInput => ({ amount: '1200.25', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-12', fee: '250.50', feeStatus: 'exact', direction: 'payment' } });
 
 it('formats Indian grouping without discarding nonzero paise or changing unknown to zero', () => {
   expect(cardMoney(60000000)).toBe('₹6,00,000'); expect(cardMoney(60000025)).toBe('₹6,00,000.25');
@@ -48,7 +48,7 @@ it.each(['rate', 'fee', 'rateDate'] as const)('edits %s without reconstructing n
   draft.value = term === 'rate' ? '84.12345678' : term === 'fee' ? '300.25' : '2026-09-13';
   const patch = fieldOperation(saved, target, draft).changes.records![0].amount!;
   expect(patch.amount).toBe('1200.25'); expect(patch.status).toBe('estimate');
-  expect(patch.conversion).toEqual({ ...foreign().conversion, [term]: draft.value });
+  expect(patch.conversion).toEqual({ ...foreign().conversion, [term]: draft.value, ...(term === 'rate' ? { provider: null, fetchedAt: null } : {}) });
   expect(fieldError(draft, target)).toBeNull();
 });
 

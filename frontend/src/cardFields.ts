@@ -58,7 +58,7 @@ function draftMoney(draft: CardDraft, target: CardTarget): MoneyInput {
   const source = draft.source ?? { amount: null, status: 'unknown' };
   const value = draft.status === 'unknown' ? null : draft.value.trim();
   if (target.term && source.conversion) return { ...source, conversion: { ...source.conversion, [target.term]: value,
-    ...(target.term === 'rate' ? { rateStatus: draft.status } : target.term === 'fee' ? { feeStatus: draft.status } : {}) } };
+    ...(target.term === 'rate' ? { rateStatus: draft.status, provider: null, fetchedAt: null } : target.term === 'fee' ? { feeStatus: draft.status } : {}) } };
   return { ...source, amount: value, status: draft.status };
 }
 
@@ -113,7 +113,8 @@ function sameMoney(left: MoneyInput, right: MoneyInput): boolean {
   if (left.status !== right.status || !sameDecimal(left.amount, right.amount)) return false;
   const a = left.conversion; const b = right.conversion;
   return !a || !b ? !a && !b : a.currency === b.currency && sameDecimal(a.rate, b.rate) && sameDecimal(a.fee, b.fee)
-    && a.rateStatus === b.rateStatus && a.feeStatus === b.feeStatus && (a.rateDate ?? null) === (b.rateDate ?? null);
+    && a.rateStatus === b.rateStatus && a.feeStatus === b.feeStatus && (a.rateDate ?? null) === (b.rateDate ?? null)
+    && (a.provider ?? null) === (b.provider ?? null) && (a.fetchedAt ?? null) === (b.fetchedAt ?? null);
 }
 
 /** Checks that saved facts reflect the submitted card correction without a remaining conflict. */

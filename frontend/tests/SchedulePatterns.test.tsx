@@ -182,7 +182,7 @@ it('offers pattern timing only after an existing count is explicitly cleared', a
 });
 
 it('preserves finite variable FX source inputs and blocks conflicting timing options', async () => {
-  const source: MoneyInput = { amount: '125.50', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact' } };
+  const source: MoneyInput = { amount: '125.50', status: 'estimate', conversion: { currency: 'USD', rate: '83.12345678', rateStatus: 'estimate', rateDate: '2026-09-10', fee: '0', feeStatus: 'exact', direction: 'receipt' } };
   const saved = planningSnapshot(); saved.facts.records[0].kind = 'income';
   saved.facts.records[0].amount = { amountPaise: null, status: 'unknown' };
   saved.facts.records[0].schedule = { date: '2026-08-31', certainty: 'estimate', recurrence: 'monthly', basis: 'payment', count: null, amounts: [source, { amount: '500', status: 'exact', conversion: null }] };

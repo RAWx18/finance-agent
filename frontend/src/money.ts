@@ -41,9 +41,10 @@ export function sourceDescription(source: MoneyInput): string {
   const conversion = source.conversion;
   if (!conversion) return '';
   return `${conversion.currency} ${source.amount ?? 'Unknown amount'} · ${amountStatus[source.status]} original amount; `
-    + `Rate: ${conversion.rate == null ? 'Unknown' : `₹${conversion.rate} per 1 ${conversion.currency}`} · ${conversion.rateStatus === 'exact' ? 'Fixed / confirmed' : amountStatus[conversion.rateStatus]}`
+    + `Rate: ${conversion.rate == null ? 'Unknown' : `₹${conversion.rate} per 1 ${conversion.currency}`} · ${conversion.provider === 'frankfurter' ? 'Frankfurter reference estimate' : conversion.rateStatus === 'exact' ? 'Fixed / confirmed' : amountStatus[conversion.rateStatus]}`
     + `${conversion.rateDate ? ` · as of ${dateLabel(conversion.rateDate)}` : ' · as-of date not supplied'}; `
-    + `INR deduction: ${conversion.fee == null ? 'Unknown' : `₹${conversion.fee}`} · ${amountStatus[conversion.feeStatus]}`;
+    + `INR fee: ${conversion.fee == null ? 'Unknown' : `₹${conversion.fee}`} · ${amountStatus[conversion.feeStatus]}`
+    + ('direction' in conversion ? conversion.direction === 'valuation' ? ' · retained, not applied to balance valuation' : conversion.direction === 'payment' ? ' · added to payment' : ' · deducted from receipt' : '');
 }
 
 /** Labels a monetary value, retaining its source currency alongside calculated INR when applicable. */
@@ -79,7 +80,7 @@ export function moneyError(value: MoneyInput, limit: number): string | null {
   if (conversion.rateStatus !== 'unknown' && (!/^(0|[1-9][0-9]{0,12})(\.[0-9]{1,8})?$/.test(conversion.rate ?? '') || !/[1-9]/.test(conversion.rate ?? '')))
     return 'Enter a rate greater than zero with up to eight decimal places, or mark it unknown.';
   if (conversion.feeStatus !== 'unknown' && parseAmount(conversion.fee ?? '', limit) === null)
-    return 'Enter the INR deduction with up to two decimal places, including 0 for no deduction, or mark it unknown.';
+    return 'Enter the INR fee/deduction with up to two decimal places, including 0 for no deduction or fee, or mark it unknown.';
   return null;
 }
 

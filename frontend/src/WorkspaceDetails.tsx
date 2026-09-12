@@ -7,6 +7,7 @@ import { Details, Dialog } from './Dialog';
 import { amountLabel, amountStatus, budgetDescription, dateLabel, decimal, lastDate, money, moneyError, moneyInput, sourceDescription, submittedMoney } from './money';
 import { PagedList } from './PagedList';
 import { MoneyFields } from './MoneyFields';
+import { ExchangeValues } from './MoneyValues';
 
 export type WorkspaceCard = components['schemas']['WorkspaceCard'];
 export type WorkspaceResult = components['schemas']['WorkspaceResult'];
@@ -48,7 +49,7 @@ const assumptions: Record<string, string> = {
   unreportedFactsNotZero: 'Unreported amounts are unknown, not zero.', noPaymentExecution: 'These are requirements, not completed payments.',
   proposedAdjustments: 'Includes the proposed changes; they are not saved.', acceptedAdjustments: 'Includes saved planning assumptions, not completed actions.',
   monthlyBudgetEvenDailyForecastActualMonthLength: budgetDescription,
-  currencyConversionReportedRateAndFeeOnly: 'INR income uses only your reported original amount, exchange rate and INR deduction. No live rate is fetched.',
+  currencyConversionReportedRateAndFeeOnly: 'Reported quotes keep their supplied rate and fee. Frankfurter reference rates provide approximate planning INR, not actual bank rates or net quotes. Planning estimates exclude unknown conversion fees, not assume zero. Outstanding balances use rate-only valuation.',
   reportedMonthlyPatternEstimatedDatesNoArrears: 'Dates are calculated estimates from your reported monthly pattern. Earlier unpaid payments are not inferred.',
   recurringAllowanceForecastTiming: 'Recurring living costs are forecast per occurrence. Without a supplied start, the first is assumed at the plan start; actual spending dates may differ.',
   undatedPaymentWhatIfNotAccepted: 'What-if only: one eligible payment per undated item, if unpaid and due in this period. Not a maximum or an accepted change.',
@@ -56,6 +57,7 @@ const assumptions: Record<string, string> = {
 export const reasons: Record<string, string> = {
   reportedOpening: 'Reported opening cash', unknownOpening: 'Opening cash is unknown', reported: 'Reported amount',
   requiredOnly: 'Known required payment only', target: 'Selected target, including the minimum',
+  requiredFloor: 'Current required minimum exceeds the retained chosen target; the minimum is counted',
   acceptedAssumption: 'Saved assumption, not paid', proposedAssumption: 'Proposed assumption, not saved',
   spendingForecast: 'Recurring spending forecast, not a payment due',
   unknownAmount: 'Amount is unknown', conditionalReceipt: 'Receipt is not confirmed enough to count on',
@@ -65,7 +67,7 @@ export const reasons: Record<string, string> = {
   afterResultPoint: 'After the point measured by this result; cannot cover that earlier cash gap',
   countedReliableIncome: 'Already counted as reliable income; not counted again as uncertain income',
   monthlyBudget: 'Monthly cash budget distributed across calendar days as an estimate',
-  currencyConversion: 'INR receipt calculated from the original currency amount, reported rate and INR deduction',
+  currencyConversion: 'INR calculated from the original currency and the applicable reported or reference conversion terms',
   variableAmounts: 'The amount reported for this occurrence in the ordered schedule',
   undatedWhatIf: 'Included only in the separate undated-payment comparison, not the dated balance',
   unknownOccurrenceAmount: 'Amount or number of occurrences is unknown',
@@ -77,7 +79,7 @@ export function incomeChecks(record: Fact, occurrence?: MoneyInput): string[] {
   return [record.reliability !== 'reliable' ? record.reliability === 'uncertain' ? 'Receipt is uncertain' : 'Receipt reliability is not confirmed' : null,
     amounts.some(amount => amount.status === 'unknown') ? 'Amount is unknown' : amounts.some(amount => amount.status === 'estimate') ? 'Amount is estimated' : null,
     amounts.some(amount => amount.conversion && (amount.conversion.rateStatus === 'unknown' || amount.conversion.rate === null)) ? 'Exchange rate is unknown' : amounts.some(amount => amount.conversion?.rateStatus === 'estimate') ? 'Exchange rate is estimated' : null,
-    amounts.some(amount => amount.conversion && (amount.conversion.feeStatus === 'unknown' || amount.conversion.fee === null)) ? 'INR deduction is unknown' : amounts.some(amount => amount.conversion?.feeStatus === 'estimate') ? 'INR deduction is estimated' : null,
+    amounts.some(amount => amount.conversion && amount.conversion.direction !== 'valuation' && (amount.conversion.feeStatus === 'unknown' || amount.conversion.fee === null)) ? 'INR conversion fee is unknown' : amounts.some(amount => amount.conversion?.direction !== 'valuation' && amount.conversion?.feeStatus === 'estimate') ? 'INR conversion fee is estimated' : null,
     record.schedule.pattern ? 'Calculated date from your monthly pattern, not confirmed' : record.schedule.date === null ? 'Date is unknown' : record.schedule.certainty !== 'exact' ? 'Date is estimated or unconfirmed' : null,
   ].filter((item): item is string => item !== null);
 }
@@ -85,11 +87,18 @@ export function incomeChecks(record: Fact, occurrence?: MoneyInput): string[] {
 /** Explains a contribution's amount, qualifications, and inclusion in a calculated result. */
 function EvidenceRow({ item, snapshot, selected, reason }: { item: Contribution; snapshot: Snapshot; selected: boolean; reason?: string }) {
   const record = snapshot.facts.records.find(record => record.id === item.recordId);
-  const event = (snapshot.accepted?.plan ?? snapshot.plan).events.find(event => event.id === item.eventId);
+  const plan = snapshot.accepted?.plan ?? snapshot.plan;
+  const event = plan.events.find(event => event.id === item.eventId);
+  const basis = event?.amountBasis ?? plan.undatedImpact?.items.find(value => value.recordId === record?.id)?.amountBasis;
+  const field = record?.kind === 'debt' && basis !== 'requiredOnly' && basis !== 'requiredFloor' && record.target && (record.target.amountPaise != null || record.target.source?.conversion) ? 'target' : 'amount';
+  const captured = record ? record[field] : snapshot.facts.opening;
+  const variable = !!record?.schedule.amounts?.length;
+  const source = variable ? record?.schedule.amounts?.[event?.scheduleIndex ?? -1] : captured?.source;
+  const current = !record ? plan.planningFacts.opening : variable ? plan.occurrenceAmounts?.[record.id]?.[event?.scheduleIndex ?? -1] : plan.planningFacts.records.find(value => value.id === record.id)?.[field];
   const checks = record?.kind === 'income' && !item.included ? incomeChecks(record, event ? moneyInput({ amountPaise: event.amountPaise, status: event.amountStatus, source: event.source }) : undefined) : [];
   return <li>
     <strong>{record?.label ?? 'Opening cash'}</strong> · {!event && record?.schedule.amounts?.length ? 'Varies by occurrence' : money(item.amountPaise)}{item.date && <> · {dateLabel(item.date)}</>}
-    {event?.source?.conversion && <p>{sourceDescription(event.source)}</p>}
+    {source?.conversion && <ExchangeValues source={source} capturedPaise={variable ? undefined : captured?.amountPaise} currentMoney={current ?? undefined} event={event} plan={plan} monthly={record?.schedule.recurrence === 'monthlyBudget'} />}
     {event && <p>{amountStatus[event.amountStatus]} amount for this occurrence.</p>}
     {event?.dateAssumption && <p>{event.dateAssumption}</p>}
     {event?.amountBasis === 'budget' && <p>Estimated daily budget share · not a payment due.</p>}
