@@ -41,8 +41,7 @@ async def test_change_references_cover_fact_and_dependent_cards_without_rekeying
         item.id for item in baseline.workspace.cards
     ]
     changed = {card_id for item in corrected.workspace.change.items for card_id in item.card_ids}
-    assert {"income", "timeline", "outcome"} <= changed
-    assert "cash" not in changed
+    assert changed == {"cash", "timeline"}
     assert corrected.plan.first_gap == baseline.plan.first_gap
     assert corrected.plan.closing_paise == baseline.plan.closing_paise + 1000000
     assert await store.get("owner") == corrected

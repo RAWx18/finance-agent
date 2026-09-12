@@ -234,12 +234,9 @@ async def test_mixed_income_multiple_debts_and_corrections_share_one_dated_plan(
     assert state["activePlan"]["closingPaise"] == 1010000
     assert state["activePlan"]["outflowPaise"] == 990000
     assert len(state["snapshot"]["facts"]["records"]) == 10
-    assert {item["template"] for item in state["workspace"]["cards"]} >= {
-        "cash",
-        "income",
-        "essential",
-        "optional",
-        "loans",
-        "creditCards",
-        "timeline",
+    assert {item["template"] for item in state["workspace"]["cards"]} >= {"cash", "timeline"}
+    timeline = next(item for item in state["workspace"]["cards"] if item["template"] == "timeline")
+    assert set(timeline["recordIds"]) == {
+        item["id"] for item in state["snapshot"]["facts"]["records"]
     }
+    assert {row["field"] for row in timeline["rows"]} == set(timeline["recordIds"])

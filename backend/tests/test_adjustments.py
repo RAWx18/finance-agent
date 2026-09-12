@@ -250,6 +250,7 @@ def test_calculation_requires_matching_recorded_occurrences(config):
 
 def test_partial_estimates_and_uncertain_income_survive_reductions():
     data = scenario_two()
+    data["records"][1]["controllability"] = "committed"
     data["coverage"]["debt"] = "notDiscussed"
     data["opening"] = money("5000", "estimate")
     data["records"][0]["reliability"] = "uncertain"

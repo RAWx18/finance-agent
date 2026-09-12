@@ -388,7 +388,7 @@ def create_app(
             max_records=config.max_records,
             max_money_paise=config.max_money_paise,
             max_request_bytes=config.max_request_bytes,
-            recurrence=["once", "weekly", "fortnightly", "monthly"],
+            recurrence=["once", "daily", "weekly", "fortnightly", "monthly", "monthlyBudget"],
             voice_startup_seconds=config.voice.startup_seconds,
             voice_shutdown_seconds=config.voice.shutdown_seconds,
             voice_available=reason is None,

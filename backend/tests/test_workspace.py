@@ -434,7 +434,7 @@ async def test_empty_intake_no_placeholder_cards_cash_only_is_qualified_and_cove
     empty = await store.create("owner")
     assert empty.workspace.cards == []
     snapshot = await store.command("owner", update(0, opening=money("5000")))
-    assert {card.id for card in snapshot.workspace.cards} == {"cash", "questions", "outcome"}
+    assert [card.id for card in snapshot.workspace.cards] == ["cash"]
     assert snapshot.plan.decision_assessment.outcome.readiness == "qualified"
     assert len(snapshot.workspace.questions) <= 3
     assert len(snapshot.workspace.actions) <= store.config.workspace_max_actions
@@ -503,14 +503,18 @@ async def test_later_cut_preserves_early_gap_and_correction_invalidates_assumpti
         ),
     )
     assert accepted.facts == baseline.facts
-    assert any(card.id == "assumptions" for card in accepted.workspace.cards)
+    assert any(
+        card.id == "proposal" and card.state == "accepted" for card in accepted.workspace.cards
+    )
     corrected = await store.command(
         "owner", update(accepted.revision, records=[{"id": "gym", "amount": money("900")}])
     )
     assert corrected.accepted is None
     assert corrected.invalidated_assumptions[0].event_id == "gym:2026-09-25"
     assert corrected.facts.records[-1].amount.amount_paise == 90000
-    assert any(card.id == "invalidation" for card in corrected.workspace.cards)
+    assert any(
+        card.id == "proposal" and card.state == "unresolved" for card in corrected.workspace.cards
+    )
 
 
 async def test_rejection_is_not_discard_and_matching_proposal_is_not_resuggested(store):
@@ -898,7 +902,9 @@ async def test_questions_are_live_bounded_and_unavailable_conflicts_remain_visib
     assert "opening" not in {item.id for item in snapshot.workspace.questions}
     conflicts = {item.id for item in snapshot.facts.conflicts}
     assert conflicts <= {item.id for item in snapshot.workspace.issues}
-    assert conflicts <= {row.field for card in snapshot.workspace.cards for row in card.rows}
+    assert conflicts <= {
+        identity for card in snapshot.workspace.cards for identity in card.issue_ids
+    }
     action_ids = {item.id for item in snapshot.workspace.actions}
     assert all(item.action_id in action_ids for item in snapshot.workspace.questions)
     question = snapshot.workspace.questions[1]
@@ -914,7 +920,9 @@ async def test_questions_are_live_bounded_and_unavailable_conflicts_remain_visib
     )
     assert question.id not in {item.id for item in answered.workspace.questions}
     assert question.id in {item.id for item in answered.workspace.issues}
-    assert conflicts <= {row.field for card in answered.workspace.cards for row in card.rows}
+    assert conflicts <= {
+        identity for card in answered.workspace.cards for identity in card.issue_ids
+    }
     with pytest.raises(Problem) as error:
         await store.command(
             "owner",

@@ -168,7 +168,7 @@ async def test_long_turn_remembers_bill_date_even_behind_opening(store, known_ca
     if not known_cash:
         assert next_action(snapshot.plan).id == "clarify:opening"
         snapshot = await store.command("owner", update(1, opening=money("5000")))
-    assert next_action(snapshot.plan).kind == "contactPayee"
+    assert next_action(snapshot.plan).kind == "seekSupport"
     assert snapshot.plan.first_gap.amount_paise == 200000
     assert snapshot.plan.peak_gap_paise == 600000
     assert snapshot.plan.reliable_income_paise == 0
@@ -188,8 +188,8 @@ async def test_long_turn_remembers_bill_date_even_behind_opening(store, known_ca
     assert result["currentAction"]["question"] == result["outcome"]["nextStep"]
     assert result["actionResponses"][0]["actionId"] == f"clarify:{identity}:schedule.date"
     card = next(card for card in snapshot.workspace.cards if identity in card.record_ids)
-    row = next(row for row in card.rows if row.field == f"{identity}.schedule")
-    assert row.state == "missing" and row.value["date"] is None
+    row = next(row for row in card.rows if row.field == identity)
+    assert row.state == "missing" and row.references == [f"facts.records.{identity}"]
     assert f"{identity}:schedule.date" in card.issue_ids
     assert all(
         question.action_id != f"clarify:{identity}:schedule.date"
@@ -270,7 +270,9 @@ async def test_competing_values_are_not_unavailable_answers(store, field):
     assert [response.action_id for response in snapshot.facts.decision.responses] == [
         f"clarify:{identity}:{'amount' if field == 'schedule.date' else 'schedule.date'}"
     ]
-    assert next_action(snapshot.plan).id.startswith("clarify:conflict:")
+    assert f"clarify:{snapshot.facts.conflicts[0].id}" in {
+        action.id for action in snapshot.plan.decision_assessment.actions
+    }
     assert len(snapshot.facts.conflicts[0].values) == 2
 
 

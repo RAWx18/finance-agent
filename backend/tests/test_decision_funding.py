@@ -240,14 +240,71 @@ def test_loan_comparison_preserves_other_gaps(config, timing):
     assert str(comparison.first_gap.date) in action.question
     assert ("fits at that deadline" in action.question) == (timing == "later")
     assert next_action(plan).record_ids == (
-        ["rent"]
-        if timing in {"earlier", "later"}
-        else ["loan"]
-        if timing == "minimumGap"
-        else ["loan", "salary"]
+        ["rent"] if timing in {"earlier", "later"} else ["loan"]
     )
+    if timing == "sameDay":
+        assert next_action(plan).kind == "contactPayee"
+        assert "INR 1000.00 remains unfunded" in action.question
+        assert plan.first_gap.amount_paise == 400000
+        assert plan.timing_risks[0].remaining_gap_paise == 100000
+        assert comparison.first_gap.amount_paise == 100000
+        assert comparison.timing_risks[0].remaining_gap_paise == 0
+        assert not any(item.kind == "confirmReceipt" for item in plan.decision_assessment.actions)
     assert source.records[0].target.amount_paise == 500000
     assert plan.outflow_paise == (900000 if timing in {"earlier", "later"} else 500000)
+
+
+async def test_loan_same_day_deferral_keeps_target_gap_until_explicit_correction(store):
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "1000",
+                [
+                    record("loan", "debt", "2000", "2026-09-14", target=money("5000")),
+                    record("salary", "income", "3000", "2026-09-14"),
+                ],
+            )
+        ),
+    )
+    assert next_action(baseline.plan).id == "contact:loan:2026-09-14"
+    assert not (await store.options("owner")).options
+    deferred = await store.command("owner", response_command(baseline, "unavailable"))
+    assert next_action(deferred.plan).kind == "reviewOutcome"
+    assert deferred.plan.decision_assessment.next_question_id is None
+    assert deferred.plan.events == baseline.plan.events
+    assert deferred.plan.timing_risks == baseline.plan.timing_risks
+    assert deferred.plan.first_gap == baseline.plan.first_gap
+    assert deferred.facts.model_dump(exclude={"decision"}) == baseline.facts.model_dump(
+        exclude={"decision"}
+    )
+    assert deferred.facts.decision.responses[0].action_id == next_action(baseline.plan).id
+    assert deferred.facts.decision.responses[0].response == "unavailable"
+    assert deferred.preview is deferred.accepted is None
+    assert "INR 1000.00 is still unfunded" in deferred.plan.decision_assessment.outcome.summary
+    assert not any(
+        action.kind in {"confirmReceipt", "previewChange"}
+        or "fits at that deadline" in action.question
+        for action in deferred.plan.decision_assessment.actions
+    )
+    assert not deferred.workspace.questions
+    assert await store.get("owner") == deferred
+
+    source = facts_input(deferred.facts)
+    source.records[0].target = source.records[0].amount.model_copy()
+    corrected = await store.command("owner", parsed_command(source.model_dump(), deferred.revision))
+    assert next_action(corrected.plan).id == "clarify:schedule:sameDayTiming:2026-09-14"
+    assert next_action(corrected.plan).kind == "confirmReceipt"
+    assert next_action(corrected.plan).record_ids == ["loan", "salary"]
+    assert corrected.plan.decision_assessment.next_question_id is None
+    assert corrected.plan.outflow_paise == 200000
+    assert corrected.plan.first_gap.amount_paise == 100000
+    assert corrected.plan.timing_risks[0].remaining_gap_paise == 0
+    assert corrected.facts.decision.responses == []
+    assert corrected.facts.provider_responses == []
+    assert corrected.preview is corrected.accepted is None
+    assert "fits at that deadline" not in next_action(corrected.plan).question
 
 
 @pytest.mark.parametrize(

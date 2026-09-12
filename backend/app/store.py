@@ -25,6 +25,7 @@ from .models import (
     Adjustment,
     AdjustmentInput,
     AdjustmentOptions,
+    ChangeSource,
     ClearAccepted,
     Command,
     Coverage,
@@ -450,7 +451,7 @@ class Store:
                         raise Problem(
                             422, "invalidFacts", "Provider report cannot be future-dated."
                         )
-                    if event is None or event.kind == "income":
+                    if event is None or event.kind == "income" or event.amount_basis == "budget":
                         if prior is not None and not fresh:
                             invalidated.append(
                                 InvalidatedAssumption(
@@ -461,7 +462,9 @@ class Store:
                             )
                             continue
                         raise Problem(
-                            422, "invalidFacts", "Provider response needs a due occurrence."
+                            422,
+                            "invalidFacts",
+                            "Provider response needs a contractual due occurrence.",
                         )
                     key = dependency_key(records[event.record_id], event)
                     if prior is not None and prior.dependency_key != key and not fresh:
@@ -541,6 +544,23 @@ class Store:
                             value = getattr(change, field)
                             if value is not None and value.status == "unknown":
                                 unknowns.add(f"clarify:{identity}:{field}")
+                        money_inputs = (
+                            change.schedule.amounts
+                            if change.schedule and change.schedule.amounts
+                            else [change.amount]
+                            if change.amount is not None
+                            else []
+                        )
+                        for value in money_inputs:
+                            conversion = value.conversion
+                            if conversion is None:
+                                continue
+                            for term in ("rate", "fee"):
+                                if (
+                                    term in conversion.model_fields_set
+                                    and getattr(conversion, term) is None
+                                ):
+                                    unknowns.add(f"clarify:{identity}:conversion{term.title()}")
                         if (
                             change.schedule is not None
                             and "date" in change.schedule.model_fields_set
@@ -842,6 +862,16 @@ class Store:
             snapshot.latest_change = change_set(
                 before, snapshot, command.command_id, operation.type, changes
             )
+            if (
+                isinstance(operation, UpdateFacts)
+                and operation.source == "humanCardEdit"
+                and snapshot.facts != before.facts
+                and snapshot.latest_change is not None
+                and snapshot.latest_change.id == command.command_id
+            ):
+                snapshot.latest_change.source = ChangeSource(
+                    kind="humanCardEdit", actor_id=owner, at=now
+                )
             snapshot.workspace.change = snapshot.latest_change
             result = snapshot.model_dump_json(by_alias=True)
             async with self.transaction():

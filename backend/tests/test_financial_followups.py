@@ -167,7 +167,7 @@ async def test_declined_card_targets_explain_combined_minimums_without_applying_
     assert "intended payments of INR 2000.00" in action.question
     assert "minimums fit at that deadline" in action.question
     assert "declined" in action.question and "unchanged" in action.question
-    assert "No payment or payee agreement is assumed" in action.question
+    assert "No payment or agreement is assumed" in action.question
     assert current.facts.records == baseline.facts.records
     assert current.plan.events == baseline.plan.events
     assert current.plan.first_gap == baseline.plan.first_gap

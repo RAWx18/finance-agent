@@ -88,6 +88,7 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
                 "debt_type",
                 "auto_debit",
                 "controllability",
+                "schedule",
             },
         )
         values["debtConflict"] = any(
@@ -138,6 +139,7 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
                     "debt_type",
                     "auto_debit",
                     "controllability",
+                    "schedule",
                 },
             )
             for event in events
@@ -176,6 +178,9 @@ def action_dependency_key(facts: Facts, plan: Plan, action_id: str) -> str | Non
             "uncertainDate": {"schedule", "reliability"},
             "pastIncome": {"amount", "schedule", "reliability"},
             "sameDayTiming": {"amount", "target", "schedule", "reliability", "auto_debit"},
+            "conversionRate": {"amount", "schedule", "reliability"},
+            "conversionFee": {"amount", "schedule", "reliability"},
+            "monthlyBudget": {"amount", "schedule"},
         }.get(field)
         if fields is None:
             return None
@@ -216,6 +221,7 @@ def assess(
 ) -> DecisionAssessment:
     assessment = DecisionAssessment()
     records = {record.id: record for record in facts.records}
+    timing_risks = {item.date: item for item in plan.timing_risks}
     responses = {response.event_id: response for response in facts.provider_responses}
     answered = {
         item.action_id: item.response
@@ -229,6 +235,22 @@ def assess(
         if plan.first_gap
         else min((event.date for event in dues if event.date >= today), default=today)
     )
+    effective_receipts = {
+        identity
+        for identity, impact in receipt_impacts.items()
+        if impact.first_gap != plan.first_gap
+        or any(
+            risk.date == deadline
+            and plan.first_gap is not None
+            and risk.remaining_gap_paise
+            < (
+                timing_risks[deadline].remaining_gap_paise
+                if deadline in timing_risks
+                else plan.first_gap.amount_paise
+            )
+            for risk in impact.timing_risks
+        )
+    }
     questions: dict[str, str] = {}
     dependencies: list[Action] = []
     changes: list[Action] = []
@@ -373,6 +395,46 @@ def assess(
         )
         if any(item.record_id == record.id and item.field == field for item in facts.conflicts):
             continue
+        if field == "amount":
+            sources = [
+                event.source
+                for event in plan.events
+                if event.record_id == record.id and event.amount_paise is None
+            ] or [record.amount.source]
+            for term in ("rate", "fee"):
+                unknown_sources = [
+                    source
+                    for source in sources
+                    if source is not None
+                    and source.conversion is not None
+                    and getattr(source.conversion, term) is None
+                ]
+                if unknown_sources:
+                    currencies = ", ".join(
+                        sorted(
+                            {
+                                source.conversion.currency
+                                for source in unknown_sources
+                                if source.conversion is not None
+                            }
+                        )
+                    )
+                    question(
+                        f"{record.id}:conversion{term.title()}",
+                        f"amount.conversion.{term}",
+                        f"What INR per {currencies} rate applies to {record.label}, and is it "
+                        "explicitly fixed or estimated?"
+                        if term == "rate"
+                        else f"What INR conversion fee applies to {record.label} ({currencies})? "
+                        "Confirm zero only if no fee was explicitly reported.",
+                        [record.id],
+                        "Net INR is unknown until the source amount, rate and fee are known; "
+                        "foreign units are not spendable rupees.",
+                        day=day,
+                        immediate=day is None or day <= deadline,
+                    )
+            if all(source is not None and source.amount is not None for source in sources):
+                continue
         if field == "schedule.date" and required:
             assessment.constraints.append(
                 Constraint(
@@ -413,6 +475,8 @@ def assess(
             (
                 f"When will {record.label} be available to use?"
                 if record.kind == "income"
+                else f"When should the evenly spread monthly budget for {record.label} start?"
+                if record.schedule.recurrence == "monthlyBudget"
                 else f"When is {record.label} due?"
             )
             if field == "schedule.date"
@@ -424,6 +488,8 @@ def assess(
             if record.kind == "debt"
             else f"What amount do you expect from {record.label}?"
             if record.kind == "income"
+            else f"What is the calendar-month budget for {record.label}?"
+            if record.schedule.recurrence == "monthlyBudget"
             else f"What is the amount for {record.label}?",
             [record.id],
             "The required minimum already has a shortfall; intended extras cannot remove it."
@@ -455,22 +521,36 @@ def assess(
         ]
         if not events:
             continue
-        selected = record.target if record.target is not None else record.amount
+        if record.schedule.recurrence == "monthlyBudget":
+            question(
+                f"{record.id}:monthlyBudget",
+                "schedule",
+                f"{record.label} is an evenly spread calendar-month spending forecast, not "
+                "daily bills. Revisit the budget or timing if actual needs differ.",
+                [record.id],
+                "Daily amounts use the actual month length with deterministic remainder "
+                "allocation; clipped days are not redistributed.",
+                kind="uncertain",
+                ask=False,
+            )
+            continue
+        selected = next(
+            (event for event in events if not event.included and event.amount_paise is not None),
+            events[0],
+        )
         if (
             record.kind == "income"
-            and selected.amount_paise
+            and any(event.amount_paise and not event.included for event in events)
             and (
                 record.reliability != "reliable"
-                or selected.status != "exact"
+                or selected.amount_status != "exact"
                 or record.schedule.certainty != "exact"
             )
         ):
             effective = [
                 event
                 for event in events
-                if event.id in receipt_impacts
-                and receipt_impacts[event.id].first_gap != plan.first_gap
-                and event.date <= deadline
+                if event.id in effective_receipts and event.date <= deadline
             ]
             relevant_due = min(
                 (event.date for event in dues if event.date >= max(today, events[0].date)),
@@ -515,13 +595,27 @@ def assess(
                 )
                 assessment.actions.append(action)
                 followups.append(action)
-        elif selected.status == "estimate" or record.amount.status == "estimate":
+        elif any(
+            (event.amount_status == "estimate" and event.amount_basis != "assumed")
+            or event.required_status == "estimate"
+            for event in events
+        ):
+            selected = next(
+                event
+                for event in events
+                if (event.amount_status == "estimate" and event.amount_basis != "assumed")
+                or event.required_status == "estimate"
+            )
             field = (
                 "target"
-                if record.target is not None and selected.status == "estimate"
+                if record.target is not None and record.target.status == "estimate"
                 else "amount"
             )
-            selected = selected if field == "target" else record.amount
+            estimated_amount = (
+                selected.required_paise
+                if field == "amount" and record.kind == "debt"
+                else selected.amount_paise
+            )
             description = (
                 "intended payment"
                 if field == "target"
@@ -535,22 +629,22 @@ def assess(
             question(
                 f"{record.id}:estimate",
                 field,
-                f"{record.label} is estimated at {rupees(selected.amount_paise)} on "
-                f"{events[0].date}. Could you hold off before committing, or confirm a smaller "
+                f"{record.label} is estimated at {rupees(estimated_amount)} on "
+                f"{selected.date}. Could you hold off before committing, or confirm a smaller "
                 "planned amount? The estimate stays in the plan until you report a decision."
                 if exposed and record.kind == "optional"
                 else f"Can you confirm {record.label}'s estimated {description} of "
-                f"{rupees(selected.amount_paise)} before its exposed deadline?"
+                f"{rupees(estimated_amount)} before its exposed deadline?"
                 if exposed
                 else f"{record.label} uses a reported {description} estimate of "
-                f"{rupees(selected.amount_paise)}.",
+                f"{rupees(estimated_amount)}.",
                 [record.id],
                 "This estimate contributes to the imminent shortfall; a confirmed amount or "
                 "a controllable spending decision can change affordability."
                 if exposed
                 else "Use a qualified conclusion at the reported estimate; no invented "
                 "range or exactness gate. Revisit if the amount changes.",
-                day=events[0].date,
+                day=selected.date,
                 kind="uncertain",
                 immediate=exposed,
                 ask=exposed,
@@ -596,10 +690,11 @@ def assess(
             if immediate
             else "This affects a later obligation, not the earlier exposed deadline.",
             day=day,
-            immediate=immediate,
+            immediate=immediate and issue.code != "sameDayTiming",
             kind="conflict" if issue.code == "debtBalanceConflict" else "uncertain",
+            ask=issue.code != "sameDayTiming",
         )
-        if not immediate:
+        if not immediate and issue.code != "sameDayTiming":
             deferred.append(action)
     for day, grouped in groupby(plan.events, key=lambda event: event.date):
         events = list(grouped)
@@ -622,7 +717,7 @@ def assess(
                         kind=kind,
                         event_ids=[event.id],
                         date=day,
-                        amount_paise=record.amount.amount_paise
+                        amount_paise=event.required_paise
                         if kind == "minimumDue"
                         else event.amount_paise,
                     )
@@ -643,6 +738,29 @@ def assess(
                 amount_paise=exposure,
             )
         )
+        timing = timing_risks.get(day)
+        if timing is not None:
+            if not timing.remaining_gap_paise:
+                action = Action(
+                    id=f"clarify:schedule:sameDayTiming:{day}",
+                    kind="confirmReceipt",
+                    record_ids=list(dict.fromkeys(event.record_id for event in events)),
+                    before_date=day,
+                    question=f"Check that money arriving on {day} is available before paying "
+                    f"{labels(list(dict.fromkeys(event.record_id for event in due)))}; "
+                    f"up to {rupees(exposure)} is needed before those receipts."
+                    + (
+                        " An automatic debit may still fail; check its timing with your bank."
+                        if any(event.auto_debit for event in due)
+                        else " Payments and dates stay unchanged."
+                    ),
+                    consequence_ids=[consequence_id],
+                    if_declined_consequence_ids=[consequence_id],
+                )
+                assessment.actions.append(action)
+                enquiries.append(action)
+                continue
+            exposure = timing.remaining_gap_paise
         targets = [
             option
             for option in options
@@ -667,10 +785,10 @@ def assess(
                 f"{rupees(sum(option.original_paise for option in targets))} on {day}, not their "
                 "combined required minimum of "
                 f"{rupees(sum(option.minimum_paise for option in targets))}. "
-                "The required minimums fit at that deadline in the modeled comparison with other "
+                "The required minimums fit at that deadline in this comparison with other "
                 "reported commitments unchanged. You declined the minimum-only reductions; "
                 "intended payments and required minimums stay unchanged. "
-                "No payment or payee agreement is assumed.",
+                "No payment or agreement is assumed.",
                 consequence_ids=[consequence_id],
                 if_declined_consequence_ids=[],
             )
@@ -680,7 +798,8 @@ def assess(
         mandatory = [
             event
             for event in due
-            if (
+            if event.amount_basis != "budget"
+            and (
                 event.kind in {"essential", "debt"}
                 or event.auto_debit
                 or records[event.record_id].controllability == "committed"
@@ -693,6 +812,30 @@ def assess(
                 for option in options
             )
         ]
+        for event in due:
+            if (
+                event.amount_basis != "budget"
+                or event.kind != "essential"
+                or any(
+                    action.kind == "seekSupport" and event.record_id in action.record_ids
+                    for action in assessment.actions
+                )
+            ):
+                continue
+            action = Action(
+                id=f"contact:{event.id}",
+                kind="seekSupport",
+                record_ids=[event.record_id],
+                before_date=day,
+                question=f"Protect the essential {event.label} budget: the evenly spread "
+                f"forecast shows {rupees(exposure)} unfunded on {day}. Confirm available "
+                "funds or seek essential-needs support; this is not a contractual daily bill. "
+                "The essential budget stays unchanged.",
+                consequence_ids=[consequence_id],
+                if_declined_consequence_ids=[consequence_id],
+            )
+            assessment.actions.append(action)
+            enquiries.append(action)
         if len(mandatory) > 1 and not focus.intersection(event.record_id for event in mandatory):
             text = (
                 f"Resolve {labels([event.record_id for event in mandatory])} together on {day}: "
@@ -729,12 +872,9 @@ def assess(
                     record_ids=[record.id],
                     before_date=event.original_due_date,
                     question=f"Protect {record.label} as an essential need on "
-                    f"{event.original_due_date}; the planned cashflow has "
-                    f"{rupees(exposure)} unfunded at this deadline. Confirm funds actually "
-                    "available before then or seek essential-needs support. The essential "
-                    "amount stays unchanged. If this is an existing payment obligation, "
-                    "confirm that before discussing payment flexibility; no creditor or "
-                    "overdue bill is assumed.",
+                    f"{event.original_due_date}: {rupees(exposure)} remains unfunded. "
+                    "Check available funds or seek essential-needs support before then. "
+                    "The essential amount stays unchanged.",
                     consequence_ids=[consequence_id],
                     if_declined_consequence_ids=[consequence_id],
                 )
@@ -742,12 +882,12 @@ def assess(
                 enquiries.append(action)
                 continue
             comparison_text = ""
-            if record.target is not None and event.amount_paise != record.amount.amount_paise:
+            if record.target is not None and event.amount_paise != event.required_paise:
                 comparison_text = (
                     f"The {rupees(exposure)} cash exposure is against the intended payment of "
                     f"{rupees(event.amount_paise)} for {record.label} on {day}, not an "
                     f"established shortfall in its required payment of "
-                    f"{rupees(record.amount.amount_paise)}. "
+                    f"{rupees(event.required_paise)}. "
                 )
             minimum = impacts.get(event.id) if record.debt_type == "loan" else None
             if minimum is not None:
@@ -775,10 +915,10 @@ def assess(
                         record_ids=[record.id],
                         before_date=day,
                         question=comparison_text
-                        + "The required payment fits at that deadline in the modeled comparison. "
+                        + "The required payment fits at that deadline in this comparison. "
                         "The intended payment and required payment stay unchanged until you "
                         "report a change; this comparison does not apply a reduction. "
-                        "No payment or payee agreement is assumed.",
+                        "No payment or agreement is assumed.",
                         consequence_ids=[consequence_id],
                         if_declined_consequence_ids=[],
                     )
@@ -792,8 +932,8 @@ def assess(
                     if response.status == "awaiting"
                     else f"{record.label} declined flexibility for {event.original_due_date}; "
                     f"{rupees(exposure)} remains unfunded without a chosen change. "
-                    "Confirm consequences and the payee's hardship process or seek "
-                    "qualified debt/support advice; no approval or new loan is assumed."
+                    "Ask about hardship support or seek qualified debt advice. "
+                    "Original dues remain unchanged."
                 )
                 action = Action(
                     id=f"response:{event.id}",
@@ -810,10 +950,9 @@ def assess(
             text = (
                 f"{record.label} on {event.original_due_date}: "
                 f"{rupees(exposure)} remains unfunded. "
-                "What flexibility has actually been confirmed? Ask the payee for the payment "
-                "amount, date, cost, acceptance requirements and auto-debit implications. "
-                "Original dues remain without agreement; cash exposure is before any chosen "
-                "spending change."
+                "Ask whether a different payment date or amount is possible and what it costs. "
+                "Original dues remain without agreement."
+                + (" Check auto-debit timing with your bank." if event.auto_debit else "")
             )
             if event.overdue or event.original_due_date < today:
                 text = (
@@ -909,6 +1048,9 @@ def assess(
         peak = impact.peak_gap_paise != plan.peak_gap_paise
         useful = (
             first
+            and not (
+                deadline in timing_risks and timing_risks[deadline].remaining_gap_paise == 0
+            )
             if plan.first_gap
             else impact.reserve_shortfall_paise != plan.reserve_shortfall_paise
         )
@@ -1059,9 +1201,8 @@ def assess(
             receipt_impacts[event.id]
             for event in plan.events
             if event.record_id in action.record_ids
-            and event.id in receipt_impacts
+            and event.id in effective_receipts
             and event.date <= deadline
-            and receipt_impacts[event.id].first_gap != plan.first_gap
         ]
         protected = [
             records[identity]
@@ -1090,7 +1231,14 @@ def assess(
                 default=0,
             ),
             not bool(protected),
-            -max((record.amount.amount_paise or 0 for record in protected), default=0),
+            -max(
+                (
+                    event.amount_paise or 0
+                    for event in plan.events
+                    if event.record_id in {record.id for record in protected}
+                ),
+                default=max((record.amount.amount_paise or 0 for record in protected), default=0),
+            ),
             semantic(action),
             action.id,
         )
@@ -1130,14 +1278,24 @@ def assess(
             question=f"{rupees(plan.first_gap.amount_paise)} remains a shortfall against "
             f"{target.label}'s intended payment of {rupees(target.original_paise)} on "
             f"{target.date}, not its required minimum of {rupees(target.minimum_paise)}. "
-            "The required minimum fits at that deadline in the modeled comparison with other "
+            "The required minimum fits at that deadline in this comparison with other "
             "reported commitments unchanged. You declined the minimum-only reduction; the "
             "intended payment and required minimum stay unchanged. "
-            "No payment or payee agreement is assumed."
+            "No payment or agreement is assumed."
             if target and plan.first_gap
             else "Confirm which elapsed commitments remain unpaid and the current cash "
             "position before starting a fresh plan; no retrospective reduction is available."
             if elapsed
+            else "Payment timing is still unconfirmed. Planned amounts and dates stay unchanged; "
+            "revisit if receipt or payment information changes."
+            if plan.timing_risks
+            and all(
+                item.date is not None
+                and item.date in timing_risks
+                and not timing_risks[item.date].remaining_gap_paise
+                for item in assessment.consequences
+                if item.kind == "cashExposure"
+            )
             else "No further funded change is established for the remaining shortfall; keep "
             "original commitments and unresolved risks explicit. Revisit when information or "
             "your choices change."
@@ -1207,12 +1365,47 @@ def assess(
         if item.code in {"missingMonthDay", "overdueRecurrence", "pastIncome", "uncertainDate"}
         and item.record_id in records
     )
+    funding_risks = [
+        item
+        for item in assessment.consequences
+        if item.kind == "cashExposure"
+        and item.date is not None
+        and (item.date not in timing_risks or timing_risks[item.date].remaining_gap_paise)
+    ]
     if plan.first_gap:
-        summary = (
-            f"First shortfall {rupees(plan.first_gap.amount_paise)} on {plan.first_gap.date}; "
-            f"peak cumulative shortfall {rupees(plan.peak_gap_paise)} on {plan.peak_gap_date}. "
-            "These are not amounts to add together."
+        exposed_ids = list(
+            dict.fromkeys(event.record_id for event in dues if event.date == plan.first_gap.date)
         )
+        timing = timing_risks.get(plan.first_gap.date)
+        if timing:
+            summary = (
+                f"For {labels(exposed_ids)} on {timing.date}, "
+                f"{rupees(timing.remaining_gap_paise)} is still unfunded after that day's "
+                f"receipts. Up to {rupees(timing.exposure_paise)} is needed before they arrive."
+                if timing.remaining_gap_paise
+                else f"Payment timing matters for {labels(exposed_ids)} on {timing.date}: "
+                f"{rupees(timing.exposure_paise)} is needed before that day's money arrives; "
+                "the day's receipts cover these payments."
+            )
+            later_risk = next((item for item in funding_risks if item.date != timing.date), None)
+            if later_risk:
+                amount = (
+                    timing_risks[later_risk.date].remaining_gap_paise
+                    if later_risk.date is not None and later_risk.date in timing_risks
+                    else later_risk.amount_paise
+                )
+                summary += f" A later shortfall of {rupees(amount)} remains on {later_risk.date}."
+        else:
+            summary = (
+                f"{labels(exposed_ids)}: first shortfall {rupees(plan.first_gap.amount_paise)} "
+                f"on {plan.first_gap.date}."
+            )
+        if plan.peak_gap_paise != plan.first_gap.amount_paise:
+            summary += (
+                f" Largest pre-receipt exposure {rupees(plan.peak_gap_paise)} "
+                if plan.peak_gap_date in timing_risks
+                else f" Largest shortfall {rupees(plan.peak_gap_paise)} "
+            ) + f"on {plan.peak_gap_date}; do not add this to the first amount."
     elif plan.closing_paise is None:
         summary = "Available opening cash is unknown, so funding cannot yet be established."
     elif facts.decision.ambiguous_record_ids:
@@ -1222,6 +1415,7 @@ def assess(
         )
     elif incomplete:
         summary = (
+            f"The dated items leave {rupees(plan.closing_paise)} at the end of this period. "
             "Unresolved "
             + "; ".join(incomplete[:2])
             + (f" and {len(incomplete) - 2} other details" if len(incomplete) > 2 else "")
@@ -1229,12 +1423,12 @@ def assess(
         )
     elif scope and not plan.events:
         summary = (
-            "Payments and income coverage is unconfirmed; opening cash alone does not "
+            "Payments and income are not fully reported; opening cash alone does not "
             "establish what the next 30 days can cover."
         )
     elif needs_scope:
         summary = (
-            f"Reported amounts give a modeled minimum balance of {rupees(plan.trough_paise)}. "
+            f"Reported amounts give a minimum balance of {rupees(plan.trough_paise)}. "
             "Other essential costs, required payments or committed spending are not yet "
             "confirmed, so affordability cannot be established from the reported amounts alone."
         )
@@ -1242,7 +1436,7 @@ def assess(
         summary = (
             "For reported commitments, dated payments fit with a minimum cash cushion of "
             f"{rupees(plan.trough_paise)}; this is conditional on reported amounts and timing"
-            + (" and does not cover unconfirmed scope." if scope else ".")
+            + (" and excludes anything not yet reported." if scope else ".")
         )
     covered = (
         f"Reported opening cash is {rupees(facts.opening.amount_paise)}; payments and receipts "
@@ -1254,18 +1448,17 @@ def assess(
     )
     if plan.budget_basis.dated_projection_complete and plan.trough_paise is not None:
         covered += (
-            f" Modeled headroom above the reserve floor is "
+            f" The cushion above the reserve floor is "
             f"{rupees(max(0, plan.trough_paise - facts.reserve_paise))} at the lowest balance; "
             "this is not permission for unreported spending."
             if plan.trough_paise >= facts.reserve_paise and (plan.events or not scope)
             else ""
         )
-    risks = [item for item in assessment.consequences if item.kind == "cashExposure"]
     critical_risks = [
         item
-        for item in risks
+        for item in funding_risks
         if item.date in {plan.first_gap.date if plan.first_gap else None, plan.peak_gap_date}
-    ]
+    ] or funding_risks[:1]
     exposed_ids = list(
         dict.fromkeys(
             event.record_id
@@ -1277,7 +1470,9 @@ def assess(
         f"{labels(exposed_ids)} face unfunded commitments; no payment allocation or execution "
         "is assumed."
         if exposed_ids
-        else "No known cash shortage is modeled; unreported costs and actual payment execution "
+        else "Payments depend on money arriving first; availability before paying is not confirmed."
+        if plan.timing_risks
+        else "No known cash shortage is calculated; unreported costs and actual payment execution "
         "are not established."
     )
     if plan.reserve_shortfall_paise:
@@ -1293,7 +1488,9 @@ def assess(
         )
     conditions = "Reported facts and accepted assumptions are not completed payments or approvals."
     if "unavailable" in answered.values():
-        conditions += " Unavailable details remain unknown, not confirmation of funds or coverage."
+        conditions += (
+            " Unavailable details remain unknown; funds and unreported items are unconfirmed."
+        )
     if deferred_steps:
         conditions += (
             " Deferred steps remain outstanding for "
@@ -1304,14 +1501,14 @@ def assess(
                     )
                 )
             )
-            + "; no payee response or completed action is implied."
+            + "; no response or completed action is implied."
         )
     if "declined" in answered.values():
         conditions += (
             " Declined reductions are not applied; controllability and dues stay unchanged."
         )
     if any(item.kind == "coverage" for item in assessment.uncertainties):
-        conditions += " Category coverage is incomplete."
+        conditions += " Other income or commitments may be missing."
     if facts.decision.ambiguous_record_ids:
         conditions += " The correction target remains unresolved; no candidate was changed."
     if any(
@@ -1323,6 +1520,8 @@ def assess(
         conditions += " Unresolved amounts or dates prevent any available-to-spend conclusion."
     if plan.income_comparisons:
         conditions += " Uncertain receipts are excluded; arrival comparisons are conditional."
+    if any(issue.code == "monthlyBudget" for issue in plan.issues):
+        conditions += " Monthly budgets use estimated daily spending and assumed timing, not bills."
     later = next(
         (
             event

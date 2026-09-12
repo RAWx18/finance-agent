@@ -187,6 +187,35 @@ async def test_question_choice_is_bounded_and_unavailable_is_not_repeated(store)
     assert response["outcome"]["readiness"] == "qualified"
 
 
+async def test_later_intake_questions_do_not_displace_help_for_the_current_gap(store):
+    await store.create("owner")
+    snapshot = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "1000",
+                [
+                    record("rent", "essential", "2000", "2026-09-12"),
+                    record("trip", "optional", "500", None),
+                ],
+                coverage={},
+                decision={"concern": "Rent is due before payday."},
+            )
+        ),
+    )
+    state = canonical(snapshot)
+    assert state["currentAction"]["kind"] == "seekSupport"
+    assert snapshot.workspace.questions
+    assert state["dialogue"]["purpose"] == "explainNextStep"
+    assert state["dialogue"]["questionOptions"] == []
+    assert (
+        state["workspace"]["questions"]
+        == snapshot.workspace.model_dump(mode="json", by_alias=True)["questions"]
+    )
+    assert state["outcome"]["branch"] == "gap"
+    assert state["outcome"]["readiness"] == "qualified"
+
+
 async def test_read_workspace_is_single_snapshot_not_an_unbounded_options_fetch(store, monkeypatch):
     await store.create("owner")
     monkeypatch.setattr(store, "options", AsyncMock(side_effect=AssertionError("No option scan")))

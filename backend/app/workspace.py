@@ -6,11 +6,14 @@ from uuid import UUID
 
 from pydantic import JsonValue
 
+from .amounts import money_value
 from .config import Config
+from .decisions import rupees
 from .finance import dependency_key, reconcile
 from .models import (
     ChangeItem,
     Contribution,
+    Event,
     FactsPatch,
     FieldChange,
     Money,
@@ -79,7 +82,7 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
             (
                 action
                 for action in workspace.actions
-                if action.id == f"clarify:{item.id}"
+                if (action.kind == "clarify" and action.id == f"clarify:{item.id}")
                 or (
                     action.kind == "confirmReceipt" and item.id == f"{action.record_ids[0]}:receipt"
                 )
@@ -177,28 +180,25 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
                     }
                 )
             )
-    if (
-        facts.opening.amount_paise is not None
-        or any(item.field == "opening" for item in facts.conflicts)
-        or facts.reserve_paise
-    ):
+    opening_conflicts = [item.id for item in facts.conflicts if item.field == "opening"]
+    if facts.opening.amount_paise is not None or opening_conflicts or facts.reserve_paise or events:
         workspace.cards.append(
             WorkspaceCard(
                 id="cash",
                 template="cash",
                 section="facts",
-                title="Available opening cash",
+                title="Cash & timing",
                 state="conflicting"
-                if any(item.field == "opening" for item in facts.conflicts)
+                if opening_conflicts
+                else "unresolved"
+                if plan.first_gap or plan.reserve_shortfall_paise
                 else money_state(facts.opening),
                 rows=[
                     WorkspaceRow(
                         field="opening",
                         label="Cash at the plan start",
                         value=facts.opening.amount_paise,
-                        state="conflicting"
-                        if any(item.field == "opening" for item in facts.conflicts)
-                        else money_state(facts.opening),
+                        state="conflicting" if opening_conflicts else money_state(facts.opening),
                         references=["facts.opening"],
                     ),
                     WorkspaceRow(
@@ -209,290 +209,221 @@ def project(snapshot: Snapshot, config: Config) -> Workspace:
                         references=["facts.reservePaise"],
                     ),
                 ],
-                dependencies=["facts.opening", "facts.reservePaise"],
-                result_ids=["opening", "reserveShortfall"],
+                issue_ids=opening_conflicts,
+                result_ids=["opening"]
+                + (["firstGap", "closing", "trough"] if events else [])
+                + (["reserveShortfall"] if facts.reserve_paise else []),
+                dependencies=["facts.opening", "facts.reservePaise", "facts.conflicts"]
+                + (["accepted.plan" if snapshot.accepted else "plan"] if events else []),
             )
         )
-    groups: dict[str, WorkspaceCard] = {}
-    for record in facts.records:
-        template = (
-            "creditCards"
-            if record.debt_type == "card"
-            else "loans"
-            if record.kind == "debt"
-            else record.kind
-        )
-        if template not in groups:
-            groups[template] = WorkspaceCard.model_validate(
-                {
-                    "id": template,
-                    "template": template,
-                    "section": "facts",
-                    "title": {
-                        "income": "Expected income",
-                        "essential": "Essential spending",
-                        "optional": "Optional spending",
-                        "loans": "Loan payments",
-                        "creditCards": "Credit card payments",
-                    }[template],
-                    "state": "known",
-                }
-            )
-        card = groups[template]
-        card.record_ids.append(record.id)
-        reference = f"facts.records.{record.id}"
-        card.dependencies.append(reference)
-        conflicts = [item for item in facts.conflicts if item.record_id == record.id]
-        for field, money in (
-            ("amount", record.amount),
-            ("target", record.target),
-            ("outstanding", record.outstanding),
-        ):
-            if money is None:
-                continue
-            state = (
-                "conflicting"
-                if any(item.field == field for item in conflicts)
-                else money_state(money)
-            )
-            card.rows.append(
-                WorkspaceRow(
-                    field=f"{record.id}.{field}",
-                    label=f"{record.label} · "
-                    + (
-                        "required/minimum payment"
-                        if field == "amount" and record.kind == "debt"
-                        else field
-                    ),
-                    value=money.amount_paise,
-                    state=state,
-                    references=[f"{reference}.{field}"],
-                )
-            )
-        card.rows.append(
-            WorkspaceRow(
-                field=f"{record.id}.schedule",
-                label=f"{record.label} · timing",
-                value=record.schedule.model_dump(mode="json", by_alias=True),
-                state="conflicting"
-                if any(item.field == "schedule.date" for item in conflicts)
-                else "missing"
-                if record.schedule.date is None
-                else "estimated"
-                if record.schedule.certainty == "estimate"
-                else "known",
-                references=[f"{reference}.schedule"],
+    workspace.cards.extend(timeline_cards(snapshot, plan, workspace))
+    if snapshot.preview or snapshot.accepted or snapshot.invalidated_assumptions:
+        scenarios = [item for item in (snapshot.preview, snapshot.accepted) if item is not None]
+        event_ids = list(
+            dict.fromkeys(
+                [item.event_id for scenario in scenarios for item in scenario.adjustments]
+                + [item.event_id for item in snapshot.invalidated_assumptions]
             )
         )
-        if record.kind == "income":
-            card.rows.append(
-                WorkspaceRow(
-                    field=f"{record.id}.reliability",
-                    label=f"{record.label} · receipt certainty",
-                    value=record.reliability,
-                    state="known" if record.reliability == "reliable" else "uncertain",
-                    references=[f"{reference}.reliability"],
-                )
-            )
-        card.event_ids.extend(event.id for event in plan.events if event.record_id == record.id)
-        card.issue_ids.extend(
-            item.id for item in assessment.uncertainties if record.id in item.record_ids
-        )
-        card.result_ids = (
-            ["reliableIncome", "uncertainIncome"] if record.kind == "income" else ["datedOutflow"]
-        )
-    states: list[WorkspaceState] = ["conflicting", "missing", "uncertain", "estimated"]
-    for card in groups.values():
-        card.state = next(
-            (state for state in states if any(row.state == state for row in card.rows)),
-            "known",
-        )
-        workspace.cards.append(card)
-    for conflict in facts.conflicts:
-        card = next(
-            card
-            for card in workspace.cards
-            if (conflict.record_id in card.record_ids if conflict.record_id else card.id == "cash")
-        )
-        card.issue_ids = list(dict.fromkeys([*card.issue_ids, conflict.id]))
-        card.rows.append(
-            WorkspaceRow(
-                field=conflict.id,
-                label="Competing reported values",
-                value=conflict.model_dump(mode="json", by_alias=True),
-                state="conflicting",
-                references=[f"facts.conflicts.{conflict.id}"],
-            )
-        )
-    if workspace.questions:
         workspace.cards.append(
             WorkspaceCard(
-                id="questions",
-                template="questions",
-                section="issues",
-                title="Information that changes the plan",
-                state="conflicting" if facts.conflicts else "unresolved",
-                issue_ids=[item.id for item in workspace.questions],
+                id="proposal",
+                template="proposal",
+                section="decisions",
+                title="Plan changes",
+                state="proposed"
+                if snapshot.preview
+                else "unresolved"
+                if snapshot.invalidated_assumptions
+                else "accepted",
                 record_ids=list(
                     dict.fromkeys(
-                        identity for item in workspace.questions for identity in item.record_ids
+                        [item.record_id for scenario in scenarios for item in scenario.adjustments]
+                        + [
+                            identity.rsplit(":", 1)[0]
+                            for identity in event_ids
+                            if identity.rsplit(":", 1)[0] in records
+                        ]
                     )
                 ),
-                dependencies=["workspace.questions", "facts.conflicts"],
-                rows=[
-                    WorkspaceRow(
-                        field=item.id,
-                        label="Needed information",
-                        value=item.model_dump(mode="json", by_alias=True),
-                        state="conflicting"
-                        if any(conflict.id == item.id for conflict in facts.conflicts)
-                        else "unresolved",
-                        references=[f"workspace.questions.{item.id}"],
-                    )
-                    for item in workspace.questions
-                ],
+                event_ids=event_ids,
+                result_ids=["firstGap", "peakGap", "closing"]
+                + (
+                    [
+                        "proposal:firstGap",
+                        "proposal:peakGap",
+                        "proposal:closing",
+                        "impact:firstGap",
+                        "impact:peakGap",
+                        "impact:closing",
+                    ]
+                    if snapshot.preview
+                    else []
+                ),
+                dependencies=["preview", "accepted", "invalidatedAssumptions"],
             )
         )
-    if plan.events:
-        workspace.cards.append(
+    return workspace
+
+
+def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list[WorkspaceCard]:
+    facts = snapshot.facts
+    records = {record.id: record for record in facts.records}
+    cards: list[WorkspaceCard] = []
+    next_events: dict[str, Event] = {}
+    for event in plan.events:
+        if event.amount_basis != "budget":
+            next_events.setdefault(event.record_id, event)
+    exposed = next(
+        (
+            event
+            for event in plan.events
+            if plan.first_gap
+            and event.date == plan.first_gap.date
+            and event.kind != "income"
+            and event.included
+            and event.amount_paise
+            and event.balance_paise is not None
+            and event.balance_paise < 0
+        ),
+        None,
+    )
+    if exposed and exposed.amount_basis != "budget":
+        next_events[exposed.record_id] = exposed
+    first_payment = next((item for item in next_events.values() if item.kind != "income"), None)
+    first_receipt = next((item for item in next_events.values() if item.kind == "income"), None)
+    priorities = sorted(
+        (item for item in workspace.issues if item.kind != "coverage"),
+        key=lambda item: (
+            item.kind != "conflict",
+            "immediateDecision" not in item.blocks,
+            item.priority,
+            item.before_date or date.max,
+            item.id,
+        ),
+    )
+    corrections = (
+        {
+            identity
+            for item in snapshot.latest_change.items
+            if item.state in {"updated", "resolved", "merged"}
+            for identity in item.record_ids
+            if item.id.startswith(("record:", "merge:", "conflict:"))
+        }
+        if snapshot.latest_change
+        else set()
+    )
+    ordered_ids = list(
+        dict.fromkeys(
+            ([exposed.record_id] if exposed else [])
+            + sorted(facts.decision.focus_record_ids)[:1]
+            + sorted(corrections)[:1]
+            + ([first_receipt.record_id] if exposed and first_receipt else [])
+            + [
+                item.record_id
+                for item in next_events.values()
+                if item in (first_payment, first_receipt)
+            ]
+            + sorted(facts.decision.focus_record_ids)
+            + sorted(corrections)
+            + [identity for item in priorities for identity in sorted(item.record_ids)]
+            + sorted(records)
+        )
+    )
+    ordered_ids = [identity for identity in ordered_ids if identity in records]
+    if ordered_ids:
+        states: list[WorkspaceState] = ["conflicting", "missing", "uncertain", "estimated"]
+        rows = []
+        for identity in ordered_ids:
+            record = records[identity]
+            amounts = (
+                [money_value(value)[1] for value in record.schedule.amounts]
+                if record.schedule.amounts
+                else [record.amount.status]
+            )
+            rows.append(
+                WorkspaceRow(
+                    field=identity,
+                    label=record.label,
+                    value=None,
+                    state="conflicting"
+                    if any(item.record_id == identity for item in facts.conflicts)
+                    else "missing"
+                    if record.schedule.date is None
+                    or "unknown" in amounts
+                    else "uncertain"
+                    if record.kind == "income" and record.reliability != "reliable"
+                    else "estimated"
+                    if record.schedule.recurrence == "monthlyBudget"
+                    or record.schedule.certainty == "estimate"
+                    or "estimate" in amounts
+                    else "known",
+                    references=[f"facts.records.{identity}"],
+                )
+            )
+        cards.append(
             WorkspaceCard(
                 id="timeline",
                 template="timeline",
                 section="timeline",
-                title="Dated cash requirements",
-                state="uncertain" if plan.projection_partial else "known",
-                event_ids=[event.id for event in plan.events],
-                record_ids=list(dict.fromkeys(event.record_id for event in plan.events)),
-                result_ids=["closing", "trough", "firstGap", "peakGap"],
-                dependencies=["accepted.plan.events" if snapshot.accepted else "plan.events"],
-                rows=[
-                    WorkspaceRow(
-                        field="ordering",
-                        label="Same-day order",
-                        value="Outflows before income; balances are requirements, "
-                        "not executed payments.",
-                        state="known",
-                        references=[],
-                    )
-                ],
-            )
-        )
-    if plan.peak_gap_paise or plan.reserve_shortfall_paise:
-        workspace.cards.append(
-            WorkspaceCard(
-                id="gap",
-                template="gap",
-                section="issues",
-                title="Cash gap and timing risk",
-                state="unresolved",
-                result_ids=["firstGap", "peakGap", "reserveShortfall"],
+                title="Next & commitments",
+                state=next(
+                    (state for state in states if any(row.state == state for row in rows)),
+                    "known",
+                ),
+                record_ids=ordered_ids,
                 event_ids=[
-                    event.id
-                    for event in plan.events
-                    if event.balance_paise is not None and event.balance_paise < 0
+                    next_events[identity].id for identity in ordered_ids if identity in next_events
                 ],
-                issue_ids=[item.id for item in assessment.consequences],
+                issue_ids=[item.id for item in priorities if item.record_ids],
+                rows=rows,
                 dependencies=[
-                    "workspace.results.firstGap",
-                    "workspace.results.peakGap",
-                    "workspace.results.reserveShortfall",
+                    "facts.records",
+                    "facts.conflicts",
+                    "facts.decision.focusRecordIds",
+                    "latestChange",
+                    "workspace.issues",
+                    "accepted.plan.events" if snapshot.accepted else "plan.events",
                 ],
             )
         )
-    for scenario, identity, scenario_template, title, state in (
-        (snapshot.preview, "proposal", "proposal", "Proposed planning change", "proposed"),
+    visible_ids = set(ordered_ids[:4])
+    question = next(
         (
-            snapshot.accepted,
-            "assumptions",
-            "assumptions",
-            "Accepted planning assumptions · no payments executed",
-            "accepted",
+            item
+            for item in priorities
+            if not (item.record_ids and set(item.record_ids) <= visible_ids)
+            and not (
+                any(card.id == "cash" for card in workspace.cards)
+                and item.field in {"opening", "reserve"}
+            )
         ),
-    ):
-        if scenario is None:
-            continue
-        workspace.cards.append(
-            WorkspaceCard.model_validate(
-                {
-                    "id": identity,
-                    "template": scenario_template,
-                    "section": "decisions",
-                    "title": title,
-                    "state": state,
-                    "record_ids": list(
-                        dict.fromkeys(item.record_id for item in scenario.adjustments)
-                    ),
-                    "event_ids": [item.event_id for item in scenario.adjustments],
-                    "result_ids": [
-                        f"{'proposal:' if state == 'proposed' else ''}{metric}"
-                        for metric in ("firstGap", "peakGap", "closing")
-                    ],
-                    "dependencies": ["preview" if state == "proposed" else "accepted"],
-                    "rows": [
-                        WorkspaceRow(
-                            field=str(scenario.id),
-                            label="Planning assumptions",
-                            value=scenario.model_dump(mode="json", by_alias=True, exclude={"plan"}),
-                            state=state,
-                            references=["preview" if state == "proposed" else "accepted"],
-                        )
-                    ],
-                }
-            )
-        )
-    if snapshot.invalidated_assumptions:
-        workspace.cards.append(
+        None,
+    )
+    if question and (records or workspace.cards):
+        cards.append(
             WorkspaceCard(
-                id="invalidation",
-                template="invalidation",
-                section="decisions",
-                title="Assumptions need confirmation again",
-                state="unresolved",
-                event_ids=[item.event_id for item in snapshot.invalidated_assumptions],
-                dependencies=["invalidatedAssumptions"],
+                id="questions",
+                template="questions",
+                section="issues",
+                title="Important uncertainty",
+                state="conflicting" if question.kind == "conflict" else "unresolved",
+                record_ids=question.record_ids,
+                issue_ids=[question.id],
+                dependencies=[f"workspace.issues.{question.id}", "facts.conflicts"],
                 rows=[
                     WorkspaceRow(
-                        field=item.event_id,
-                        label="Invalidated assumption",
-                        value=item.reason,
-                        state="unresolved",
-                        references=[f"invalidatedAssumptions.{item.event_id}"],
-                    )
-                    for item in snapshot.invalidated_assumptions
-                ],
-            )
-        )
-    if assessment.outcome:
-        workspace.cards.append(
-            WorkspaceCard(
-                id="outcome",
-                template="outcome",
-                section="outcome",
-                title="Qualified outlook"
-                if assessment.outcome.readiness == "qualified"
-                else "Reviewed outlook",
-                state="unresolved" if assessment.outcome.readiness == "qualified" else "known",
-                result_ids=["closing", "trough", "firstGap", "peakGap", "reserveShortfall"],
-                issue_ids=[item.id for item in assessment.uncertainties],
-                dependencies=["facts.coverage", "workspace.results", "accepted"],
-                rows=[
-                    WorkspaceRow(
-                        field="outcome",
-                        label="Current conclusion",
-                        value=assessment.outcome.model_dump(mode="json", by_alias=True),
-                        state="unresolved"
-                        if assessment.outcome.readiness == "qualified"
-                        else "known",
-                        references=[
-                            "accepted.plan.decisionAssessment.outcome"
-                            if snapshot.accepted
-                            else "plan.decisionAssessment.outcome"
-                        ],
+                        field=question.id,
+                        label=question.question,
+                        value=None,
+                        state="conflicting" if question.kind == "conflict" else "unresolved",
+                        references=[f"workspace.issues.{question.id}"],
                     )
                 ],
             )
         )
-    return workspace
+    return cards
 
 
 def evidence(
@@ -525,7 +456,11 @@ def evidence(
     for event in plan.events:
         record = records[event.record_id]
         amount_field = (
-            "target" if record.target and event.amount_basis != "requiredOnly" else "amount"
+            f"schedule.amounts.{event.schedule_index}"
+            if record.schedule.amounts
+            else "target"
+            if record.target and event.amount_basis != "requiredOnly"
+            else "amount"
         )
         contributions.append(
             Contribution(
@@ -543,33 +478,44 @@ def evidence(
                 if event.amount_paise is None
                 else "conditionalReceipt"
                 if not event.included and event.kind == "income"
+                else "monthlyBudget"
+                if event.amount_basis == "budget"
+                else "currencyConversion"
+                if event.source is not None
+                else "variableAmounts"
+                if record.schedule.amounts
                 else "approximateOutflowDate"
                 if record.schedule.certainty != "exact"
                 else event.amount_basis,
                 date=event.date,
-                references=[
-                    f"facts.records.{record.id}.{amount_field}",
-                    f"facts.records.{record.id}.schedule",
-                    f"facts.records.{record.id}.reliability",
-                    f"{projection_ref}.events.{event.id}",
-                ]
-                if record.kind == "income"
-                else [
-                    f"facts.records.{record.id}.{amount_field}",
-                    f"facts.records.{record.id}.schedule",
-                    f"{projection_ref}.events.{event.id}",
-                ],
+                references=([f"{projection_ref}.events.{event.id}.source"] if event.source else [])
+                + (
+                    [
+                        f"facts.records.{record.id}.{amount_field}",
+                        f"facts.records.{record.id}.schedule",
+                        f"facts.records.{record.id}.reliability",
+                        f"{projection_ref}.events.{event.id}",
+                    ]
+                    if record.kind == "income"
+                    else [
+                        f"facts.records.{record.id}.{amount_field}",
+                        f"facts.records.{record.id}.schedule",
+                        f"{projection_ref}.events.{event.id}",
+                    ]
+                ),
             )
         )
     event_records = {event.record_id for event in plan.events}
-    for record in facts.records:
+    for record in sorted(facts.records, key=lambda item: item.id):
         if record.id not in event_records:
             contributions.append(
                 Contribution(
                     id=f"{prefix}record:{record.id}",
                     record_id=record.id,
                     event_id=None,
-                    amount_paise=(record.target or record.amount).amount_paise,
+                    amount_paise=record.target.amount_paise
+                    if record.target is not None and record.target.amount_paise is not None
+                    else record.amount.amount_paise,
                     date=record.schedule.date,
                     included=False,
                     reason="unknownDate"
@@ -593,6 +539,10 @@ def evidence(
         assumptions.append(
             "proposedAdjustments" if projection_ref == "preview.plan" else "acceptedAdjustments"
         )
+    if any(event.amount_basis == "budget" for event in plan.events):
+        assumptions.append("monthlyBudgetEvenDailyForecastActualMonthLength")
+    if any(event.source is not None for event in plan.events):
+        assumptions.append("currencyConversionReportedRateAndFeeOnly")
     trough_date = (
         None
         if plan.trough_paise is None
@@ -649,6 +599,22 @@ def evidence(
                 and (records[item.record_id].kind == "income") == (identity != "datedOutflow")
             ]
         )
+        record_ids = list(dict.fromkeys(item.record_id for item in selected if item.record_id))
+        result_issues = (
+            [
+                item.id
+                for item in plan.decision_assessment.uncertainties
+                if set(item.record_ids).intersection(record_ids)
+                or item.kind == "coverage"
+                and any(
+                    status not in {"reviewed", "none"}
+                    and (kind == "income") == (identity != "datedOutflow")
+                    for kind, status in facts.coverage.model_dump().items()
+                )
+            ]
+            if identity in {"reliableIncome", "uncertainIncome", "datedOutflow"}
+            else issues
+        )
         included = [
             item
             for item in selected
@@ -690,18 +656,94 @@ def evidence(
             item.record_id is None for item in included
         )
         estimated = estimated or any(
-            item.record_id is not None
+            item.event_id is not None
             and (
-                (
-                    records[item.record_id].amount
-                    if item.event_id and events[item.event_id].amount_basis == "requiredOnly"
-                    else records[item.record_id].target or records[item.record_id].amount
-                ).status
-                == "estimate"
-                or records[item.record_id].schedule.certainty == "estimate"
+                events[item.event_id].amount_status == "estimate"
+                or records[events[item.event_id].record_id].schedule.certainty == "estimate"
             )
             for item in included
         )
+        excluded_reasons = {
+            item.id: "countedReliableIncome"
+            if identity == "uncertainIncome" and item.included
+            else "afterResultPoint"
+            if item.included
+            else item.reason
+            for item in excluded
+        }
+        qualifications = []
+        for item in selected:
+            source = records.get(item.record_id or "")
+            occurrence = events.get(item.event_id or "")
+            label = source.label if source else "opening cash"
+            amount_text = f" ({rupees(item.amount_paise)})" if item.amount_paise is not None else ""
+            if source and source.target is not None and source.target.amount_paise is None:
+                if item.amount_paise is not None:
+                    amount_text = f" (required/minimum {rupees(item.amount_paise)})"
+            if source and occurrence is None and source.schedule.recurrence != "once":
+                amount_text += (
+                    " per calendar month"
+                    if source.schedule.recurrence == "monthlyBudget"
+                    else " per occurrence"
+                )
+            reason = excluded_reasons.get(item.id)
+            if reason:
+                if (
+                    occurrence is not None and occurrence.amount_status == "estimate"
+                    or source is not None
+                    and occurrence is None
+                    and (
+                        source.target
+                        if source.target and source.target.amount_paise is not None
+                        else source.amount
+                    ).status == "estimate"
+                ):
+                    amount_text += " (estimate)"
+                description = {
+                    "unknownDate": "date unknown",
+                    "unknownAmount": "amount unknown",
+                    "unknownOpening": "amount unknown",
+                    "conditionalReceipt": "receipt not assured",
+                    "pastReceipt": "past receipt not confirmed in opening cash",
+                    "approximateDateOutsideWindow": "approximate date outside this period",
+                    "outsideHorizon": "outside this period",
+                    "afterResultPoint": "after this balance point",
+                    "countedReliableIncome": "counted as reliable income instead",
+                }.get(reason)
+                if description:
+                    qualifications.append(f"Excludes {label}{amount_text}: {description}.")
+                continue
+            if occurrence and occurrence.amount_basis == "requiredOnly":
+                qualifications.append(
+                    f"Includes only {label}'s required/minimum payment "
+                    f"({rupees(occurrence.amount_paise)}); intended payment amount unknown."
+                )
+            elif occurrence and source and source.kind == "debt":
+                if occurrence.required_paise is None:
+                    qualifications.append(
+                        f"Uses {label}'s intended payment{amount_text}; required/minimum unknown."
+                    )
+                elif occurrence.required_status == "estimate":
+                    qualifications.append(
+                        f"{label}'s required/minimum payment is estimated at "
+                        f"{rupees(occurrence.required_paise)}."
+                    )
+            if occurrence and occurrence.amount_basis == "budget":
+                qualifications.append(
+                    f"Uses {label}{amount_text} per day: estimated share of a monthly budget, "
+                    "not a bill."
+                )
+            elif occurrence and occurrence.amount_basis == "assumed":
+                qualifications.append(
+                    f"Uses {'proposed' if projection_ref == 'preview.plan' else 'accepted'} "
+                    f"{label}{amount_text} on {occurrence.date}: not a completed payment."
+                )
+            elif (occurrence and occurrence.amount_status == "estimate") or (
+                source is None and facts.opening.status == "estimate"
+            ):
+                qualifications.append(f"Uses estimated {label}{amount_text}.")
+            if occurrence and source and source.schedule.certainty == "estimate":
+                qualifications.append(f"Uses an approximate date for {label}: {occurrence.date}.")
         results.append(
             WorkspaceResult(
                 id=f"{prefix}{identity}",
@@ -717,27 +759,21 @@ def evidence(
                 else "estimated"
                 if estimated
                 else "uncertain"
-                if issues or plan.projection_partial
+                if result_issues
+                or plan.projection_partial
+                and identity not in {"reliableIncome", "uncertainIncome", "datedOutflow"}
                 else "known",
                 rule=rule,
                 contribution_ids=[item.id for item in included],
                 excluded_ids=[item.id for item in excluded],
-                excluded_reasons={
-                    item.id: "countedReliableIncome"
-                    if identity == "uncertainIncome" and item.included
-                    else "afterResultPoint"
-                    if item.included
-                    else item.reason
-                    for item in excluded
-                },
+                excluded_reasons=excluded_reasons,
+                qualifications=list(dict.fromkeys(qualifications)),
                 event_ids=[item.event_id for item in included if item.event_id],
                 witness_event_ids=[witness] if witness else [],
-                record_ids=list(
-                    dict.fromkeys(item.record_id for item in selected if item.record_id)
-                ),
+                record_ids=record_ids,
                 issue_ids=[item.id for item in facts.conflicts if item.field == "opening"]
                 if identity == "opening"
-                else issues,
+                else result_issues,
                 dependencies=[
                     "facts.opening",
                     "facts.coverage",
@@ -950,7 +986,27 @@ def change_set(
                 result_ids=[result_id],
             )
         )
+    change = (
+        WorkspaceChange(id=identity, revision=after.revision, items=items)
+        if items
+        else before.latest_change
+    )
+    # The store computes changes after results; publish relevance using this command's facts.
+    after.latest_change = change
+    plan = after.accepted.plan if after.accepted else after.plan
+    cards = timeline_cards(after, plan, after.workspace)
+    after.workspace.cards = (
+        [card for card in after.workspace.cards if card.id == "cash"]
+        + cards
+        + [card for card in after.workspace.cards if card.id == "proposal"]
+    )
     old_cards = {item.id: item for item in before.workspace.cards}
+    prior_events = {
+        item.id: item for item in (before.accepted.plan if before.accepted else before.plan).events
+    }
+    current_events = {
+        item.id: item for item in (after.accepted.plan if after.accepted else after.plan).events
+    }
     changed_records = {record_id for item in items for record_id in item.record_ids}
     card_ids = [
         item.id
@@ -958,6 +1014,12 @@ def change_set(
         if old_cards.get(item.id) != item
         or changed_records.intersection(item.record_ids)
         or set(result_ids).intersection(item.result_ids)
+        or any(
+            prior_events.get(identity) != current_events.get(identity)
+            for identity in item.event_ids
+        )
+        or item.id == "proposal"
+        and any(change.id in {"preview", "accepted", "invalidated_assumptions"} for change in items)
     ] + [
         item.id
         for item in before.workspace.cards
@@ -967,11 +1029,7 @@ def change_set(
         if not item.result_ids:
             item.result_ids = result_ids
         item.card_ids = card_ids
-    return (
-        WorkspaceChange(id=identity, revision=after.revision, items=items)
-        if items
-        else before.latest_change
-    )
+    return change
 
 
 def field_changes(reference: str, before: JsonValue, after: JsonValue) -> list[FieldChange]:

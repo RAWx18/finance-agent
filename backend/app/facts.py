@@ -6,6 +6,7 @@ import unicodedata
 from typing import Any
 from uuid import UUID, uuid5
 
+from .amounts import money_value
 from .models import (
     ConflictInput,
     ConflictValue,
@@ -23,6 +24,8 @@ from .models import (
 
 
 def money_input(value: Money) -> MoneyInput:
+    if value.source is not None:
+        return value.source.model_copy(deep=True)
     amount = value.amount_paise
     return MoneyInput(
         amount=None if amount is None else f"{amount // 100}.{amount % 100:02}",
@@ -62,11 +65,30 @@ def facts_input(facts: Facts) -> FactsInput:
 
 
 def conflict_value(value: ConflictValueInput) -> ConflictValue:
-    amount = None
-    if value.amount is not None:
-        whole, _, fraction = value.amount.partition(".")
-        amount = int(whole) * 100 + int(fraction.ljust(2, "0"))
-    return ConflictValue(id=value.id, amount_paise=amount, date=value.date, status=value.status)
+    source = (
+        MoneyInput(amount=value.amount, status=value.status, conversion=value.conversion)
+        if value.amount is not None
+        else None
+    )
+    return ConflictValue(
+        id=value.id,
+        amount_paise=money_value(source)[0] if source is not None else None,
+        date=value.date,
+        status=value.status,
+        source=source if value.conversion is not None else None,
+    )
+
+
+def merge_money(value: dict[str, Any], saved: dict[str, Any]) -> dict[str, Any]:
+    if "conversion" not in value and saved.get("conversion") is not None:
+        value["conversion"] = saved["conversion"]
+    elif (
+        isinstance(value.get("conversion"), dict)
+        and isinstance(saved.get("conversion"), dict)
+        and value["conversion"]["currency"] == saved["conversion"]["currency"]
+    ):
+        value["conversion"] = {**saved["conversion"], **value["conversion"]}
+    return value
 
 
 def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput:
@@ -86,6 +108,8 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                 change.id is None and value is not None and value.status == "unknown"
             ):
                 edits.add((record_id, field))
+        if change.schedule and "amounts" in change.schedule.model_fields_set:
+            edits.add((record_id, "amount"))
         if change.schedule and {"date", "certainty"} & change.schedule.model_fields_set:
             if change.id is not None or change.schedule.date is not None:
                 edits.add((record_id, "schedule.date"))
@@ -177,6 +201,30 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             },
         )
         if "schedule" in values and isinstance(values["schedule"], dict):
+            if "amounts" in values["schedule"]:
+                if values["schedule"]["amounts"]:
+                    for value in values["schedule"]["amounts"]:
+                        if "conversion" not in value or (
+                            isinstance(value["conversion"], dict)
+                            and not {
+                                "currency",
+                                "rate",
+                                "rate_status",
+                                "rate_date",
+                                "fee",
+                                "fee_status",
+                            }
+                            <= value["conversion"].keys()
+                        ):
+                            raise ValueError(
+                                "Each schedule amounts entry replaces a whole MoneyInput: "
+                                "supply conversion=null for INR or all foreign conversion fields "
+                                "with explicit null/unknown terms where needed"
+                            )
+                    if "amount" not in values:
+                        values["amount"] = {"amount": None, "status": "unknown", "conversion": None}
+                elif record.get("schedule", {}).get("amounts") and "amount" not in values:
+                    raise ValueError("Clearing variable amounts requires an explicit scalar amount")
             if "date" in values["schedule"] and "certainty" not in values["schedule"]:
                 values["schedule"]["certainty"] = (
                     "unknown"
@@ -186,6 +234,9 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                     else "exact"
                 )
             values["schedule"] = {**record.get("schedule", {}), **values["schedule"]}
+        for field in ("amount", "target", "outstanding"):
+            if isinstance(values.get(field), dict) and isinstance(record.get(field), dict):
+                values[field] = merge_money(values[field], record[field])
         if change.kind is not None and change.kind != record.get("kind"):
             incompatible = (
                 {"reliability"} if change.kind != "income" else {"auto_debit", "controllability"}
@@ -231,6 +282,18 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             and records[report.record_id]["kind"] != "debt"
         ):
             raise ValueError("Only debt has target or outstanding fields")
+        if report.record_id is not None and records[report.record_id]["schedule"].get("amounts"):
+            if report.field == "amount":
+                raise ValueError(
+                    "Correct variable amounts with a full schedule amounts replacement, "
+                    "not scalar conflicts"
+                )
+        if any(value.conversion is not None for value in report.values) and (
+            report.field != "amount"
+            or report.record_id is None
+            or records[report.record_id]["kind"] != "income"
+        ):
+            raise ValueError("Only income amount conflicts can use currency conversion")
         alternatives = list(prior.values) if prior else []
         if not prior:
             saved = (
@@ -250,6 +313,9 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                             id=saved_id,
                             date=saved if report.field == "schedule.date" else None,
                             amount=None if report.field == "schedule.date" else saved["amount"],
+                            conversion=None
+                            if report.field == "schedule.date"
+                            else saved.get("conversion"),
                             status=records[report.record_id]["schedule"]["certainty"]
                             if report.field == "schedule.date"
                             else saved["status"],
@@ -262,8 +328,7 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             if matching_id is not None and matching_id != value:
                 raise ValueError("Competing value ID already identifies another value")
             if not any(
-                (item.amount_paise, item.date, item.status)
-                == (value.amount_paise, value.date, value.status)
+                item.model_dump(exclude={"id"}) == value.model_dump(exclude={"id"})
                 for item in alternatives
             ):
                 alternatives.append(value)
@@ -293,9 +358,14 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
         if (value.date is not None) != (resolving.field == "schedule.date"):
             raise ValueError("Resolution must address the disputed field type")
         matching_id = next((item for item in resolving.values if item.id == value.id), None)
-        if matching_id is not None and (matching_id.amount_paise, matching_id.date) != (
+        if matching_id is not None and (
+            matching_id.amount_paise,
+            matching_id.date,
+            matching_id.source.model_dump(exclude={"status"}) if matching_id.source else None,
+        ) != (
             value.amount_paise,
             value.date,
+            value.source.model_dump(exclude={"status"}) if value.source else None,
         ):
             raise ValueError("Competing value ID already identifies another value")
         set_conflict_value(data, records, resolving, value)
@@ -318,6 +388,13 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
             raise ValueError("Only records of the same kind can be merged")
         if source["schedule"]["recurrence"] != target["schedule"]["recurrence"]:
             raise ValueError("Clarify differing recurrence before merging")
+        if (source["schedule"]["amounts"] or target["schedule"]["amounts"]) and any(
+            item["amount"]["amount"] is not None
+            or item["amount"].get("conversion") is not None
+            or item.get("target") is not None
+            for item in (source, target)
+        ):
+            raise ValueError("Clarify scalar and variable amounts before merging")
         for field in ("amount", "target", "outstanding"):
             left, right = source.get(field), target.get(field)
             if left is None or left["amount"] is None:
@@ -326,11 +403,25 @@ def merge_facts(facts: Facts, patch: FactsPatch, command_id: UUID) -> FactsInput
                 target[field] = left
             elif left != right:
                 raise ValueError("Clarify differing money values or certainty before merging")
+        for field in ("end_date", "count", "amounts"):
+            left, right = source["schedule"][field], target["schedule"][field]
+            if left is None or left == []:
+                continue
+            if right is None or right == []:
+                target["schedule"][field] = left
+            elif left != right:
+                raise ValueError(
+                    "Clarify differing finite or variable schedule terms before merging"
+                )
         if source["schedule"]["date"] is not None:
             if target["schedule"]["date"] is None:
-                target["schedule"] = source["schedule"]
-            elif source["schedule"] != target["schedule"]:
-                raise ValueError("Clarify differing dates or recurrence before merging")
+                for field in ("date", "certainty"):
+                    target["schedule"][field] = source["schedule"][field]
+            elif any(
+                source["schedule"][field] != target["schedule"][field]
+                for field in ("date", "certainty")
+            ):
+                raise ValueError("Clarify differing dates or certainty before merging")
         for field in ("reliability", "debt_type", "controllability", "auto_debit"):
             left, right = source.get(field), target.get(field)
             if left in (None, "unknown"):
@@ -374,6 +465,8 @@ def set_conflict_value(
         "amount": None if amount is None else f"{amount // 100}.{amount % 100:02}",
         "status": value.status if value else "unknown",
     }
+    if value is not None and value.source is not None:
+        money = value.source.model_dump()
     if conflict.field == "opening":
         data["opening"] = money
     else:

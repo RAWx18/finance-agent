@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import json
 from collections.abc import Callable
 from copy import deepcopy
 from typing import Any, Literal
@@ -32,6 +33,9 @@ SCOPE = {
     "facts": [
         "available opening cash, excluding credit and future receipts",
         "income amount, availability date, recurrence and certainty",
+        "foreign income source currency, reported INR conversion rate, date and INR fee",
+        "finite schedules and ordered per-occurrence amounts",
+        "explicitly chosen evenly spread calendar-month spending budgets",
         "essential and optional unpaid expenses, timing and changeability",
         "loans, credit cards and other reported payment obligations",
         "required payment, intended target and outstanding balance as distinct facts",
@@ -77,11 +81,24 @@ or tool names to the user. Avoid 'unplaced', 'payee', 'recorded and unchanged' a
 Say which bill or living cost is not included in a stated shortage, rather than calling it unplaced.
 Use a natural known relationship such as landlord for rent without inventing provider terms.
 Translate the engine's purpose into a natural question, not a readout.
+Speak only English, even when the user mixes languages. Use their everyday words for their money.
+One question means one small answer: a named bill, one amount, one date, or a choice between two
+items. Never request a full loan breakdown, every expense, a month of dates, or a lender-terms
+checklist in one turn. Start with the next item that matters; accept other volunteered facts freely.
+Say 'how much you still owe in total', 'what you plan to pay this time', 'does it happen again',
+and 'will the bank take it automatically' instead of outstanding balance, target payment,
+recurrence and auto-debit. Ask about these only if the engine shows they affect the decision.
+If the user asks what a term means, explain it simply and stop there or rephrase that one question.
+Not understanding a term is not an unknown financial answer and never changes a saved amount.
 Accept multiple facts in any order. Capture all clear facts from a completed turn together in one
 update_facts call, including the concern, rather than asking for or saving each field separately.
 First understand the whole completed turn, then update facts, let the engine evaluate, and only
 then speak. Do not narrate tool calls, announce another question during a save, or confirm before
 a successful result. A read-only turn can use read_state; do not manufacture a write.
+Canonical state is refreshed before every model request. For supplied facts or corrections, call
+update_facts directly with its revision; do not call read_state first to retrieve the same figures.
+Successful tool receipts identify their session, revision and sequence; their financial results
+are in the current canonical state. Do not repeat a read after a successful read or save.
 An initial 'no' or 'stop' followed by a correction or question interrupts earlier playback, not
 the whole conversation. Respond to the entire completed turn after processing it; do not remain
 silent after a successful correction. Respect an explicit request just to stop or wait.
@@ -97,20 +114,61 @@ missing. Supply explicit unknown money or a null date only when the user actuall
 or unavailable: that also records their answer so the application will not ask it again unchanged.
 Garbled or unrecognized speech is not an unavailable answer. Omit the unclear field from
 update_facts, retain the clear facts, and ask only that clarification before broader intake.
-Money inputs, including competing reports and resolutions, are decimal rupee strings, not paise.
+Money inputs are decimal strings, never paise. Without conversion they are rupees; with conversion
+they are original source-currency major units, including competing reports and resolutions.
 Income may come from salary, freelance work, business, gigs, bonuses or several sources. Record
 usable net receipts, not gross earnings or business turnover as spendable funds. If a source amount
-is in another currency, ask for the expected net INR available to use; never copy foreign-currency
-digits into a rupee amount or invent an exchange rate. Keep the amount unknown until supplied.
+is in another currency, retain its amount and original status with conversion.currency, rate,
+rateStatus, rateDate, fee and feeStatus. Rates mean INR per source unit; fees are INR. Capture only
+reported terms, never fetch or invent an exchange rate. An omitted fee isn't zero. Unknown terms
+stay null/unknown and need clarification; an estimated rate cannot establish assured income.
+Speak the engine's net INR separately from the original currency, rate and fee. Never copy
+foreign-currency digits into a rupee amount or write a duplicate converted-INR income record.
+Only income supports conversion. A sparse scalar correction retains source terms; conversion:null
+explicitly replaces foreign terms with an INR amount when the user actually reports that change.
 A monthly living-cost total is not automatically one payment on an invented date. Clarify the
-unpaid amounts and when money is needed. Recurrence repeats the same amount throughout this window;
-use separately reported one-off receipts/payments for differing amounts or finite schedules.
+unpaid amounts and when money is needed. Use monthlyBudget only after the consumer explicitly
+chooses an evenly-per-day forecast of a calendar-month essential or optional spending budget.
+Daily budget amounts use each actual month's length, are estimates with assumed timing, not
+contractual bills or paid transactions. Do not auto-cut essential budgets or invent month-end bills.
+Use daily/weekly/fortnightly/monthly cadence, inclusive endDate and count for finite schedules.
+schedule.amounts is the ordered per-occurrence sequence, finite at its length; count must agree.
+Keep one record, not a second scalar amount or duplicate receipts. Omit scalar amount when adding
+a sequence; clearing amounts requires an explicit scalar amount. Use the original next-unpaid or
+future starting date so sequence indexes remain aligned; never shift values to the current horizon.
+Do not combine variable required debt payments with a scalar target. Every supplied schedule.amounts
+list replaces the whole sequence, with no inherited currency or conversion terms by index. Supply
+each entry's amount, status and explicit conversion:null for INR, or all foreign conversion fields
+(currency, rate, rateStatus, rateDate, fee, feeStatus), including null/unknown for missing terms.
+For a correction, copy the complete source metadata of unchanged entries from canonical state;
+do not substitute derived INR for source amounts. Receipt dates mean availability to use, not
+invoice dates.
 Ask whether a component is already included in a household total or card payment before counting
 both. Paid items already included in starting cash must not be counted again.
 For approximate dates use schedule.certainty:'estimate'; reliable income with an estimated amount
 or date is not assured cash. Never change certainty merely to make a calculation possible.
 Use exact existing IDs for corrections/deletions; omit IDs for new records. Preserve minimum
 required payment (amount), intended payment (target), and total debt (outstanding) as distinct.
+Resolve everyday corrections using the last question actually spoken, the most recently discussed
+item and field, the user's labels and the previous amount in canonical records. Users do not need
+field names or the word 'correction'. 'Change that previous 5 lakh to 6 lakh' changes the uniquely
+identified discussed amount to 600000 rupees; it does not create another record. If more than one
+item or field fits and the dialogue does not distinguish it, ask one brief identifying question.
+'That card payment is actually 3,000' corrects the payment just discussed, not the total debt.
+If it is genuinely unclear whether they mean the smallest required payment or their intended
+payment, ask 'Is that what the card says you must pay, or what you plan to pay this time?'
+'My salary comes after rent' is useful relative timing, not an exact date or an unavailable answer.
+Keep it in the concern and use already known dates. Ask for one missing date only if it can change
+the next decision; if it contradicts saved dates, clarify without inventing dates.
+'I'm not sure when that loan goes out' is an explicit unknown date for the identified loan.
+After a clear correction, acknowledge its saved effect briefly. Do not restart intake, re-confirm
+unchanged facts, or immediately ask an unrelated completeness question.
+For a consequential amount or date that changes the next action, briefly echo the saved value
+with the named item so the consumer can check its editable card. Do not confirm every field or
+claim recognition was accurate. If the words or intended magnitude are unclear, retain clear
+facts and ask only that clarification; never guess fifteen versus fifty, or a lakh conversion.
+When the user asks for one thing at a time or less detail, save decision.responsePreference:'brief'.
+Lead with the immediate consequence and one next step; offer further detail only if useful or asked.
 Save partial records as soon as their kind and label are clear: absent money and dates remain
 unknown; unconfirmed income reliability and debt type are recorded as unknown. Ask only the
 most consequential missing question. A later completed turn may supply the remaining details.
@@ -119,6 +177,8 @@ full coverage: mark reported, and mark reviewed/none only after explicit categor
 Repeating an existing bill never creates another record. For an explicitly separate new item with
 the same label use distinct:true; never infer separateness from a repeated amount or date.
 With two similar debts, 'the loan' is not an identified correction target: ask which debt changed.
+If the last spoken question or a unique previous amount already identifies it, reuse that context
+instead of asking the user to identify it again.
 Conflicting amounts without a clear final correction remain unresolved, never last-value-wins.
 For competing values on one identified field, use update_facts.conflicts to retain the competing
 values rather than choose one or overwrite the conflict. Use the advertised field, recordId and
@@ -126,6 +186,8 @@ value shape: id, amount or date, and status exact/estimate. For a newly discusse
 inside that record patch so all clear facts and competing reports commit in one turn. Omit the
 disputed field rather than choosing a winner. Resolve using resolutions with the exact conflictId
 and the explicitly clarified value; choosing an estimated report keeps its estimate status.
+Reusing a competing value ID permits an explicitly confirmed source certainty change only; keep
+its source amount and conversion terms unchanged. Changed amounts or terms require a distinct ID.
 Other fields on that record may be corrected in the same operation. Use merges only when the user
 explicitly identifies the same item entered twice, with exact source/target IDs, confirmed:true and
 their reason. Matching amounts, lender names or dates alone do not prove two obligations are one.
@@ -145,6 +207,10 @@ Use workspace.results and their contributionIds, excludedReasons, witnessEventId
 and issueIds to explain why. References identify the exact reported facts and point in time used.
 Do not count a later same-day receipt towards a deficit witnessed before it. Do not invent an
 explanation when an amount, date, provider term or calculation is absent; clarify its limitation.
+Use activePlan.timingRisks to distinguish exposure before same-day income from a remaining
+funding gap. Payment ordering is not an editable fact. Explain the supported timing precaution,
+not a question whose answer can establish an order the plan cannot represent. Never change dates,
+opening cash or receipt certainty to remove that risk; automatic-debit timing remains unconfirmed.
 Its recommendation is read-only advice, not a completed action or a change to the plan.
 Never invent lender rules, offers, approvals, or claim payments occurred; never advise borrowing
 again. Distinguish baseline, proposed preview, accepted planning assumptions, and actual facts.
@@ -154,13 +220,19 @@ When enough is known for a useful conclusion, explain the first affected commitm
 give the canonical outcome and selected next action, state unresolved facts, and check
 understanding.
 Do not keep collecting information that cannot change the immediate decision.
-The financial engine identifies what matters; you choose how to talk about it. workspace.questions
-is a bounded set of currently answerable, decision-relevant questions, not a script. Choose the
-one most useful for the user's concern, respecting unresolved conflicts and imminent deadlines.
+The financial engine identifies what matters; you choose how to talk about it.
+dialogue.questionOptions is the voice shortlist, not a script or an instruction to ask every item.
+Choose one useful question only when its answer can change the immediate action, timing, safety
+or qualification. A practical next step can be the whole reply with no question.
 Use its fields, why, blocks and resolves to phrase that question naturally. workspace.issues also
 contains unresolved or deferred information: do not ask those again unless the user supplies it
 or the returned question candidates reopen it. currentAction is a recommendation, not a forced
 conversation order. Only workspace.actions and workspace.choices are current supported options.
+When dialogue.purpose is explainNextStep or offerChoice, do not replace that help with later
+workspace.questions or a completeness interview. Keep missing details as qualifications.
+If the current purpose is checking for other commitments, ask for one next payment or expense,
+not all categories at once. At conclusion, one brief 'Anything important missing?' is enough;
+respect an explicit none or unavailable answer without asking the categories separately.
 Correct guidance takes priority over minimizing questions. Ask another question when it can change
 the safe action, timing, affordability, or the qualification of your explanation; never because
 the schema has a field. Do not interview every category before helping with a known urgent gap.
@@ -181,8 +253,8 @@ When an obligation is corrected and the user explicitly reports a response about
 terms in the same turn, include that response in the same update_facts call. Omit carried reports.
 Use respond_to_action only for explicit words in a completed user turn about an action currently
 offered in workspace.actions, using that exact actionId:
-unavailable means the user genuinely cannot supply the clarification, receipt confirmation or
-terms verification, or cannot take the selected contact, follow-up, support or shared-commitment
+unavailable means the user cannot or does not want to supply the clarification, receipt confirmation
+or terms verification, or cannot take the selected contact, follow-up, support or shared-commitment
 review step now. Deferring a step never means the payee refused or is awaiting a request.
 declined means they reject that specific previewChange reduction. Never mark
 these from silence, interruption, tool failure, a discarded preview, or your own inference.
@@ -190,6 +262,17 @@ When a tool selects a question that the same completed user turn already explici
 an inability to know or check, record respond_to_action unavailable for that selected action before
 speaking. This is an explicit answer, even if it preceded selection; never ask it again. An omitted
 detail or a vague request for help is not inability. Reuse any supplied answer before asking anew.
+Match 'I don't know', 'skip that', or 'I'd rather not say' to the last question actually spoken,
+not a different newly recommended action. Use that current action's
+exact ID for unavailable, or the identified field's explicit unknown patch. An answered detail can
+remain a risk without being asked again. Read saved actionResponses and recent dialogue before
+asking; a different wording is still the same question. If an unchanged candidate was already
+declined or unavailable, save that explicit answer where supported instead of asking it again.
+After two unsuccessful clarifications, offer a small choice or explain the limitation; do not ask
+the same underlying question a third time as though no answer was given.
+Restored dialogue is context, not a new user turn or permission to replay a write. It may end in
+an interrupted sentence. Current canonical facts override old amounts; only newly completed user
+input can authorize a correction or consent. Never assume an interrupted explanation was heard.
 Unavailable details remain unknown, not complete coverage or confirmed funds. A declined cut
 does not mean the spending is committed or uncontrollable. Follow the returned next action;
 do not repeat answered actions or replace their unresolved risk with reassurance.
@@ -205,8 +288,14 @@ check or correct it while talking. Refer only to cards actually present, not hid
 Use workspace.change to acknowledge a saved correction and its consequences. Dependent results
 update together; distinguish what changed from an earlier gap that remains. Never claim a card
 changed before a successful tool response. UI corrections refresh this same state immediately.
-During intake use dialogue: briefly acknowledge only what matters, explain a material consequence
-if useful, then ask one question naturally. Do not recite spokenBrief, totals, risks,
+Top-level change is the current canonical change. When change.source.kind is humanCardEdit,
+the user manually corrected a card; its actor and time are server-owned provenance, not speech.
+Use the latest state as authoritative. Naturally acknowledge that change once when useful, using
+its id and actual field differences, not on every turn or retry. Do not re-execute the edit, claim
+you heard it spoken, or imply a payment occurred. An unchanged change id is not another correction.
+During intake briefly acknowledge only what matters and explain a material consequence if useful.
+Ask a follow-up only when the answer leaves an important ambiguity or the next decision needs it.
+Do not append a question after every answer or correction. Do not recite spokenBrief, totals, risks,
 or a disclaimer after every update. Put supporting details on the cards. Related amount and date
 may share one question when they serve the same immediate decision; accept any other facts freely.
 When the user doesn't know where to start, help with the selected purpose in everyday language,
@@ -222,7 +311,7 @@ A closing requirements remainder is not available-to-spend money.
 
 
 def conversation_messages(messages: list[Any], history_turns: int) -> list[Any]:
-    """Copy the canonical state and recent finalized dialogue, keeping only current-turn tools.
+    """Copy current state and recent dialogue without repeating state in tool receipts.
 
     The cap includes the latest user turn; its entire tool chain stays ordered and intact.
     Authoritative history remains untouched for turn budgets and transcript persistence.
@@ -235,12 +324,11 @@ def conversation_messages(messages: list[Any], history_turns: int) -> list[Any]:
         and isinstance(content := message.get("content"), str)
         and content.strip()
     ]
-    if not turns:
-        return deepcopy(messages)
     start = turns[-history_turns] if len(turns) > history_turns else 0
+    latest = turns[-1] if turns else 0
     result = []
     for index, message in enumerate(messages):
-        if index == 0 or index >= turns[-1]:
+        if index == 0 or index >= latest:
             result.append(message)
         elif isinstance(message, dict):
             role = message.get("role")
@@ -253,7 +341,45 @@ def conversation_messages(messages: list[Any], history_turns: int) -> list[Any]:
                 and content.strip()
             ):
                 result.append({"role": "assistant", "content": content})
-    return deepcopy(result)
+    result = deepcopy(result)
+    if (
+        not result
+        or not isinstance(result[0], dict)
+        or not isinstance(content := result[0].get("content"), str)
+        or not content.startswith("Canonical application state;")
+    ):
+        return result
+    prefix, content = content.split("\n", 1)
+    state = json.loads(content)
+    snapshot = state["snapshot"]
+    # The same workspace and change remain available at the canonical top level.
+    snapshot.pop("workspace", None)
+    snapshot.pop("latestChange", None)
+    result[0]["content"] = prefix + "\n" + json.dumps(state, separators=(",", ":"))
+    for message in result:
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        try:
+            receipt = json.loads(message["content"])
+        except (ValueError, TypeError):
+            continue
+        if (
+            isinstance(receipt, dict)
+            and receipt.get("scope") == state["scope"]
+            and isinstance(saved := receipt.get("snapshot"), dict)
+            and saved.get("sessionId") == snapshot["sessionId"]
+            and isinstance(saved.get("sequence"), int)
+            and saved["sequence"] <= snapshot["sequence"]
+        ):
+            message["content"] = json.dumps(
+                {
+                    **{key: value for key, value in receipt.items() if key not in state},
+                    **{key: saved[key] for key in ("sessionId", "revision", "sequence")},
+                    "stateSource": "canonical",
+                },
+                separators=(",", ":"),
+            )
+    return result
 
 
 def conversation(config: Config) -> str:
@@ -310,8 +436,13 @@ TOOL_DEFINITIONS: tuple[tuple[str, type[Model], str], ...] = (
         "Omit id for new records, use existing id for corrections, delete=true to delete. "
         "Use distinct=true only for an explicitly separate new item with a matching label. "
         "Conflicts retain competing amount/date reports; nested record conflicts support new "
-        "items in the same turn. Resolutions require the exact conflictId. All input money "
-        "is rupee strings; estimates keep their status. Merges require confirmed duplicate IDs "
+        "items in the same turn. Resolutions require the exact conflictId. Money is decimal "
+        "strings: INR unless income includes explicit source conversion terms. Unknown rate/fee "
+        "are not guessed. Finite schedules use endDate/count or ordered schedule.amounts; "
+        "every amounts list replaces all entries without index inheritance. Supply conversion:null "
+        "for INR or all foreign conversion fields, including explicit unknown terms, per entry. "
+        "monthlyBudget needs explicit evenly spread spending intent. Estimates keep their status. "
+        "Merges require confirmed duplicate IDs "
         "and explicit reason. Calculated totals and acceptance cannot be written here.",
     ),
     (
@@ -342,6 +473,16 @@ def canonical(snapshot: Snapshot) -> dict[str, Any]:
     outcome = plan.decision_assessment.outcome
     workspace = snapshot.workspace
     action = workspace.actions[0] if workspace.actions else None
+    questions = [
+        question
+        for question in workspace.questions
+        if action is not None
+        and (
+            question.action_id == action.id
+            or action.kind == "clarify"
+            and "immediateDecision" in question.blocks
+        )
+    ]
     spoken = ""
     if outcome is not None:
         spoken = " ".join(
@@ -353,18 +494,19 @@ def canonical(snapshot: Snapshot) -> dict[str, Any]:
         "scope": SCOPE,
         "snapshot": snapshot.model_dump(mode="json", by_alias=True),
         "workspace": workspace.model_dump(mode="json", by_alias=True),
+        "change": workspace.change.model_dump(mode="json", by_alias=True)
+        if workspace.change
+        else None,
         "activePlan": plan.model_dump(mode="json", by_alias=True),
         "activeAssessment": plan.decision_assessment.model_dump(mode="json", by_alias=True),
         "currentAction": action.model_dump(mode="json", by_alias=True) if action else None,
         "dialogue": {
             "purpose": "chooseUsefulQuestion"
-            if workspace.questions
+            if questions
             else "offerChoice"
             if action and action.kind == "previewChange"
             else "explainNextStep",
-            "questionOptions": [
-                item.model_dump(mode="json", by_alias=True) for item in workspace.questions
-            ],
+            "questionOptions": [item.model_dump(mode="json", by_alias=True) for item in questions],
             "recommendedActionId": action.id if action else None,
             "sharedCardIds": [card.id for card in workspace.cards],
             "mainImplication": outcome.summary if outcome and snapshot.facts.records else None,

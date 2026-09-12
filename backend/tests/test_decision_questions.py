@@ -180,6 +180,44 @@ def test_protection_depends_on_commitment_not_kind_or_label_inventory(reverse):
     plan = project(facts("100", items))
     assert next_action(plan).id == "clarify:required:schedule.date"
     assert next_action(plan).before_date is None
+    assert plan.events == [] and plan.first_gap is None
+    assert plan.reliable_income_paise == 0
+    assert any(
+        constraint.id == "required:undated"
+        and constraint.kind == "committed"
+        and constraint.amount_paise == 100000
+        for constraint in plan.decision_assessment.constraints
+    )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("basis", ["committed", "autoDebit", "essential", "debt"])
+def test_undated_protection_uses_required_amounts_not_targets(reverse, basis):
+    items = [
+        record(
+            "required",
+            basis if basis in {"essential", "debt"} else "optional",
+            "1000",
+            None,
+            label="Z requirement",
+            **({"controllability": "committed"} if basis == "committed" else {}),
+            **({"autoDebit": True} if basis == "autoDebit" else {}),
+        ),
+        record("small", "essential", "100", None, label="A need"),
+        record("card", "debt", "50", None, debtType="card", target=money("10000")),
+        record("purchase", "optional", "20000", None),
+        record("salary", "income", "30000", None),
+        record("bill", "essential", "25", "2026-09-12"),
+    ]
+    if reverse:
+        items.reverse()
+    plan = project(facts("100", items))
+    assert next_action(plan).id == "clarify:required:schedule.date"
+    assert next_action(plan).before_date is None
+    assert plan.first_gap is None and plan.outflow_paise == 2500
+    assert plan.closing_paise == 7500 and plan.reliable_income_paise == 0
+    assert not plan.budget_basis.dated_projection_complete
+    assert "affordability cannot yet be established" in plan.decision_assessment.outcome.summary
 
 
 @pytest.mark.parametrize("intent", ["plan30Days", "specificDecision"])

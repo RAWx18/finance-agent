@@ -83,8 +83,10 @@ def test_september_conclusion_and_provider_actions_not_late_cuts():
     for identity, day in [("rent", 14), ("emi", 18)]:
         action = actions[identity]
         assert action.before_date == date(2026, 9, day)
-        assert "confirmed" in action.question and "cost" in action.question
-        assert "auto-debit" in action.question and "without agreement" in action.question
+        assert "Ask whether a different payment date or amount is possible" in action.question
+        assert "what it costs" in action.question
+        assert "Original dues remain without agreement" in action.question
+        assert ("Check auto-debit timing with your bank" in action.question) == (identity == "emi")
         assert action.if_declined_consequence_ids == [f"cash:2026-09-{day}"]
     reductions = [item for item in assessment.choices if item.kind != "enquire"]
     assert len(reductions) == 2 and assessment.choices[0].kind == "enquire"

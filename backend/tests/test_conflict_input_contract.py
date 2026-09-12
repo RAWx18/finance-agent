@@ -22,6 +22,7 @@ def test_conflict_input_converts_rupees_and_preserves_certainty():
         "amountPaise": 750025,
         "date": None,
         "status": "estimate",
+        "source": None,
     }
     with pytest.raises(ValidationError) as error:
         ConflictValueInput.model_validate(

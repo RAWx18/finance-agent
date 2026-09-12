@@ -251,7 +251,7 @@ async def test_declined_card_minimum_reviews_target_shortfall_without_changing_o
     assert "required minimum of INR 500.00" in action.question
     assert "minimum fits" in action.question and "comparison" in action.question
     assert "declined" in action.question and "unchanged" in action.question
-    assert "No payment or payee agreement is assumed" in action.question
+    assert "No payment or agreement is assumed" in action.question
     assert action.choice_id is None
     assert current.plan.first_gap == baseline.plan.first_gap
     assert current.plan.first_gap.amount_paise == current.plan.peak_gap_paise == 100000
@@ -375,9 +375,9 @@ async def test_declined_card_cut_preserves_required_shortfall_action(
         ),
         pytest.param(
             money("1000"),
-            [record("salary", "income", "1000", "2026-09-12")],
-            "clarify:schedule:sameDayTiming:2026-09-12",
-            id="sameDayReceipt",
+            [record("salary", "income", "500", "2026-09-12")],
+            None,
+            id="partialSameDayReceipt",
         ),
     ],
 )
@@ -398,6 +398,8 @@ async def test_declined_card_cut_does_not_confirm_funding_with_unresolved_basis(
         assert next_action(baseline.plan).id == clarification
         baseline = await store.command("owner", response_command(baseline, "unavailable"))
     assert next_action(baseline.plan).id == "preview:card:2026-09-12"
+    if baseline.plan.timing_risks:
+        assert baseline.plan.timing_risks[0].remaining_gap_paise == 50000
     current = await store.command("owner", response_command(baseline, "declined"))
     assert current.plan.decision_assessment.uncertainties
     assert current.plan.decision_assessment.outcome.readiness == "qualified"
@@ -407,10 +409,55 @@ async def test_declined_card_cut_does_not_confirm_funding_with_unresolved_basis(
     )
     assert current.plan.first_gap == baseline.plan.first_gap
     assert current.plan.events == baseline.plan.events
+    assert current.plan.timing_risks == baseline.plan.timing_risks
     assert current.facts.records == baseline.facts.records
     assert current.facts.opening == baseline.facts.opening
     assert current.facts.decision.responses[-1].response == "declined"
     assert current.preview is None and current.accepted is None
+
+
+async def test_card_timing_deferral_does_not_push_or_apply_a_minimum_cut(store):
+    await store.create("owner")
+    baseline = await store.command(
+        "owner",
+        parsed_command(
+            facts(
+                "1000",
+                [
+                    record(
+                        "card", "debt", "500", "2026-09-12", debtType="card", target=money("2000")
+                    ),
+                    record("salary", "income", "1000", "2026-09-12"),
+                ],
+            )
+        ),
+    )
+    assert next_action(baseline.plan).id == "clarify:schedule:sameDayTiming:2026-09-12"
+    assert next_action(baseline.plan).kind == "confirmReceipt"
+    current = await store.command("owner", response_command(baseline, "unavailable"))
+    assert next_action(current.plan).kind == "reviewOutcome"
+    assert next_action(current.plan).choice_id is None
+    assert "Payment timing is still unconfirmed" in next_action(current.plan).question
+    assert current.plan.decision_assessment.next_question_id is None
+    assert current.plan.decision_assessment.outcome.readiness == "qualified"
+    assert current.plan.events == baseline.plan.events
+    assert current.plan.first_gap == baseline.plan.first_gap
+    assert current.plan.first_gap.amount_paise == 100000
+    assert current.plan.outflow_paise == 200000
+    assert current.plan.timing_risks == baseline.plan.timing_risks
+    assert current.plan.timing_risks[0].remaining_gap_paise == 0
+    assert current.facts.model_dump(exclude={"decision"}) == baseline.facts.model_dump(
+        exclude={"decision"}
+    )
+    assert current.facts.decision.responses[0].action_id == next_action(baseline.plan).id
+    assert current.facts.decision.responses[0].response == "unavailable"
+    assert len(current.facts.decision.responses) == 1
+    assert current.preview is current.accepted is None
+    assert not current.workspace.questions
+    assert not any(
+        "minimum fits" in action.question for action in current.plan.decision_assessment.actions
+    )
+    assert await store.get("owner") == current
 
 
 @pytest.mark.parametrize(

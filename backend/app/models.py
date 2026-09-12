@@ -3,11 +3,14 @@
 
 import re
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from pydantic.alias_generators import to_camel
+
+from .amounts import money_value
 
 
 class Model(BaseModel):
@@ -15,6 +18,7 @@ class Model(BaseModel):
 
 
 Status = Literal["exact", "estimate", "unknown"]
+Recurrence = Literal["once", "daily", "weekly", "fortnightly", "monthly", "monthlyBudget"]
 Kind = Literal["income", "essential", "optional", "debt"]
 CoverageStatus = Literal["notDiscussed", "reported", "reviewed", "none", "unknown"]
 Controllability = Literal["unknown", "controllable", "committed"]
@@ -23,9 +27,33 @@ RecordId = Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 Rupees = Annotated[str, Field(pattern=r"^(0|[1-9][0-9]{0,12})(\.[0-9]{1,2})?$", max_length=16)]
 
 
+class Conversion(Model):
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    rate: Annotated[
+        str | None,
+        Field(pattern=r"^(0|[1-9][0-9]{0,12})(\.[0-9]{1,8})?$", max_length=22),
+    ] = None
+    rate_status: Status = "unknown"
+    rate_date: date | None = None
+    fee: Rupees | None = None
+    fee_status: Status = "unknown"
+
+    @model_validator(mode="after")
+    def validate_terms(self) -> "Conversion":
+        if self.currency == "INR":
+            raise ValueError("Conversion requires a non-INR currency")
+        for value, status in ((self.rate, self.rate_status), (self.fee, self.fee_status)):
+            if (value is None) != (status == "unknown"):
+                raise ValueError("Unknown conversion terms must be null; known terms need status")
+        if self.rate is not None and Decimal(self.rate) <= 0:
+            raise ValueError("Conversion rate must be positive")
+        return self
+
+
 class MoneyInput(Model):
     amount: Rupees | None
     status: Status
+    conversion: Conversion | None = None
 
     @model_validator(mode="after")
     def validate_status(self) -> "MoneyInput":
@@ -37,12 +65,24 @@ class MoneyInput(Model):
 class Money(Model):
     amount_paise: int | None
     status: Status
+    source: MoneyInput | None = None
+
+    @model_validator(mode="after")
+    def derive_source(self) -> "Money":
+        if self.source is not None:
+            if self.source.conversion is None:
+                raise ValueError("Money source must contain foreign conversion terms")
+            self.amount_paise, self.status = money_value(self.source)
+        return self
 
 
 class Schedule(Model):
+    end_date: date | None = None
     date: date | None
-    recurrence: Literal["once", "weekly", "fortnightly", "monthly"] = "once"
+    recurrence: Recurrence = "once"
     certainty: Status = "exact"
+    count: int | None = Field(default=None, ge=1, le=1000, strict=True)
+    amounts: list[MoneyInput] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode="after")
     def validate_certainty(self) -> "Schedule":
@@ -50,6 +90,14 @@ class Schedule(Model):
             self.certainty = "unknown"
         elif self.certainty == "unknown":
             raise ValueError("A reported date needs exact or estimate certainty")
+        if self.date is not None and self.end_date is not None and self.end_date < self.date:
+            raise ValueError("Schedule endDate cannot precede its starting date")
+        if self.amounts and self.count is not None and self.count != len(self.amounts):
+            raise ValueError("Schedule count must agree with the per-occurrence amounts length")
+        if self.recurrence == "once" and ((self.count or 1) != 1 or len(self.amounts) > 1):
+            raise ValueError("A once schedule has only one occurrence")
+        if self.recurrence == "monthlyBudget" and self.amounts:
+            raise ValueError("A monthlyBudget cannot contain per-occurrence amounts")
         return self
 
 
@@ -77,6 +125,12 @@ class RecordBase(Model):
             raise ValueError("Controllability applies only to outflows")
         if self.kind != "income" and self.controllability is None:
             self.controllability = "unknown"
+        if self.kind != "income" and any(item.conversion for item in self.schedule.amounts):
+            raise ValueError("Only income can use currency conversion")
+        if self.schedule.recurrence == "monthlyBudget" and (
+            self.kind not in {"essential", "optional"} or self.auto_debit
+        ):
+            raise ValueError("monthlyBudget is only non-auto-debit essential or optional spending")
         return self
 
 
@@ -89,6 +143,15 @@ class RecordInput(RecordBase):
     def validate_debt_fields(self) -> "RecordInput":
         if self.kind != "debt" and (self.target is not None or self.outstanding is not None):
             raise ValueError("Target and outstanding apply only to debt")
+        if (self.amount.conversion and self.kind != "income") or any(
+            item is not None and item.conversion for item in (self.target, self.outstanding)
+        ):
+            raise ValueError("Only income can use currency conversion; debt and outflows stay INR")
+        if self.schedule.amounts:
+            if self.amount.amount is not None or self.amount.conversion is not None:
+                raise ValueError("Variable amounts cannot also have a scalar amount")
+            if self.target is not None:
+                raise ValueError("Variable required payments cannot have a scalar debt target")
         return self
 
 
@@ -116,6 +179,12 @@ class FactsInput(Model):
         default_factory=list, max_length=1000, json_schema_extra={"readOnly": True}
     )
 
+    @model_validator(mode="after")
+    def validate_opening(self) -> "FactsInput":
+        if self.opening.conversion is not None:
+            raise ValueError("Opening cash must be INR")
+        return self
+
 
 class Facts(Model):
     opening: Money
@@ -137,10 +206,20 @@ class ConflictValue(Model):
     amount_paise: int | None = Field(default=None, ge=0, strict=True)
     date: Annotated[date | None, Field(default=None)]
     status: Literal["exact", "estimate"]
+    source: MoneyInput | None = None
 
     @model_validator(mode="after")
     def validate_value(self) -> "ConflictValue":
-        if (self.amount_paise is None) == (self.date is None):
+        if self.source is not None:
+            if (
+                self.source.conversion is None
+                or self.source.amount is None
+                or self.source.status == "unknown"
+            ):
+                raise ValueError("A foreign competing value needs a concrete source amount")
+            self.amount_paise, _ = money_value(self.source)
+            self.status = self.source.status
+        if (self.amount_paise is None and self.source is None) == (self.date is None):
             raise ValueError("A competing value must contain exactly one concrete money or date")
         return self
 
@@ -150,11 +229,14 @@ class ConflictValueInput(Model):
     amount: Rupees | None = None
     date: Annotated[date | None, Field(default=None)]
     status: Literal["exact", "estimate"]
+    conversion: Conversion | None = None
 
     @model_validator(mode="after")
     def validate_value(self) -> "ConflictValueInput":
         if (self.amount is None) == (self.date is None):
             raise ValueError("A competing value must contain exactly one concrete money or date")
+        if self.conversion is not None and self.amount is None:
+            raise ValueError("Currency conversion applies only to competing money values")
         return self
 
 
@@ -226,9 +308,12 @@ class CoveragePatch(Model):
 
 
 class SchedulePatch(Model):
+    end_date: date | None = None
     date: Annotated[date | None, Field(default=None)]
-    recurrence: Literal["once", "weekly", "fortnightly", "monthly"] | None = None
+    recurrence: Recurrence | None = None
     certainty: Status | None = None
+    count: int | None = Field(default=None, ge=1, le=1000, strict=True)
+    amounts: list[MoneyInput] = Field(default_factory=list, max_length=200)
 
 
 class RecordPatch(Model):
@@ -323,6 +408,12 @@ class ProviderResponseInput(ProviderResponseBase):
     payment: MoneyInput | None = None
     cost: MoneyInput | None = None
 
+    @model_validator(mode="after")
+    def validate_currency(self) -> "ProviderResponseInput":
+        if any(item is not None and item.conversion for item in (self.payment, self.cost)):
+            raise ValueError("Provider payments and costs must be INR")
+        return self
+
 
 class ProviderResponse(ProviderResponseBase):
     payment: Money | None = None
@@ -338,6 +429,7 @@ class ReplaceFacts(Model):
 class UpdateFacts(Model):
     type: Literal["updateFacts"]
     changes: FactsPatch
+    source: Literal["humanCardEdit"] | None = None
 
 
 class AdjustmentInput(Model):
@@ -414,7 +506,12 @@ class Event(Model):
     original_due_date: date
     date: date
     amount_paise: int | None
-    amount_basis: Literal["reported", "requiredOnly", "assumed"] = "reported"
+    amount_basis: Literal["reported", "requiredOnly", "assumed", "budget"] = "reported"
+    amount_status: Status = "exact"
+    required_paise: int | None = None
+    required_status: Status = "unknown"
+    source: MoneyInput | None = None
+    schedule_index: int | None = None
     included: bool
     overdue: bool
     auto_debit: bool
@@ -424,6 +521,12 @@ class Event(Model):
 class Gap(Model):
     date: date
     amount_paise: int
+
+
+class TimingRisk(Model):
+    date: date
+    exposure_paise: int
+    remaining_gap_paise: int
 
 
 class ProjectionMetrics(Model):
@@ -436,13 +539,14 @@ class ProjectionMetrics(Model):
     peak_gap_paise: int | None
     reserve_shortfall_paise: int | None
     peak_gap_date: date | None = None
+    timing_risks: list[TimingRisk] = Field(default_factory=list)
 
 
 class UnresolvedAmount(Model):
     record_id: str
     reason: Literal["missingDate", "missingAmount", "unknownTarget"]
     amount: Money
-    recurrence: Literal["once", "weekly", "fortnightly", "monthly"]
+    recurrence: Recurrence
 
 
 class BudgetBasis(Model):
@@ -712,6 +816,7 @@ class WorkspaceResult(Model):
     contribution_ids: list[str]
     excluded_ids: list[str]
     excluded_reasons: dict[str, str] = Field(default_factory=dict)
+    qualifications: list[str] = Field(default_factory=list)
     event_ids: list[str]
     witness_event_ids: list[str] = Field(default_factory=list)
     record_ids: list[str]
@@ -746,10 +851,17 @@ class ChangeItem(Model):
     card_ids: list[str] = Field(default_factory=list)
 
 
+class ChangeSource(Model):
+    kind: Literal["humanCardEdit"]
+    actor_id: str
+    at: datetime
+
+
 class WorkspaceChange(Model):
     id: UUID
     revision: int
     items: list[ChangeItem]
+    source: ChangeSource | None = None
 
 
 class RejectedProposal(Model):
