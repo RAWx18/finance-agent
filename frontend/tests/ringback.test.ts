@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { startRingback } from '../src/ringback';
 
+/** Installs an in-memory AudioContext double for inspecting ringback samples and cleanup calls. */
 function audio() {
   const source = { buffer: null as AudioBuffer | null, loop: false, connect: vi.fn(), disconnect: vi.fn(), start: vi.fn(), stop: vi.fn() };
   const context = {
@@ -23,6 +24,7 @@ describe('connecting ringback audio', () => {
     const { context, source } = audio();
     const stop = startRingback();
     const samples = source.buffer!.getChannelData(0);
+    /** Measures peak absolute amplitude within a seconds-based window of the 8 kHz fixture. */
     const peak = (from: number, until: number) => samples.slice(from * 8000, until * 8000).reduce((value, sample) => Math.max(value, Math.abs(sample)), 0);
     expect(source.loop).toBe(true);
     expect(source.buffer!.duration).toBe(3);

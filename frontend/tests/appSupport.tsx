@@ -7,11 +7,13 @@ import { App as Product, RouteError } from '../src/App';
 import { api } from '../src/api';
 import type { AuthSession } from '../src/api';
 
+/** Creates a signed-in account fixture whose session expires one day after the test clock. */
 export function authSession(id = 'user-one'): AuthSession {
   return { user: { id, displayName: id === 'user-one' ? 'Sam' : 'Jo', googleName: 'Sam Google', email: `${id}@example.com` },
     expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() };
 }
 
+/** Stubs authentication endpoints for signed-in app tests without a Google exchange. */
 export function mockAuth() {
   vi.spyOn(api.auth, 'settings').mockResolvedValue({ googleAvailable: true, sessionHours: 168 });
   vi.spyOn(api.auth, 'session').mockImplementation(async () => authSession());
@@ -20,10 +22,12 @@ export function mockAuth() {
   vi.spyOn(api.auth, 'login').mockResolvedValue({ url: 'https://accounts.google.com/o/oauth2/v2/auth?state=test-only' });
 }
 
+/** Creates an in-memory app router at a test path with the app's route-error view. */
 export function appRouter(path = '/app') {
   return createMemoryRouter([{ path: '*', element: <Product />, errorElement: <RouteError /> }], { initialEntries: [path] });
 }
 
+/** Mounts the app with a memory router retained across test rerenders. */
 export function App() {
   const [router] = useState(appRouter);
   return <RouterProvider router={router} />;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 import type { SavedConversation } from '../src/api';
 
+/** Creates a saved rent-and-payday conversation fixture with four messages and relative expiry. */
 export function savedConversation(slug = 'conversation-2026-09-12-101500'): SavedConversation {
   return {
     slug, title: 'Can I cover rent before payday?', startedAt: '2026-09-12T04:45:00Z', endedAt: '2026-09-12T04:47:00Z',

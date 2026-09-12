@@ -9,10 +9,12 @@ import type { Notice } from '../src/Toast';
 
 const saved: Notice = { id: 'saved', title: 'Figures saved', message: 'Your plan includes these figures.', severity: 'success' };
 
+/** Advances fake time within React's update boundary for toast lifetime tests. */
 function advance(milliseconds: number) {
   act(() => vi.advanceTimersByTime(milliseconds));
 }
 
+/** Exposes promise settlement controls for asynchronous notification actions. */
 function deferred() {
   let resolve!: () => void;
   let reject!: (reason: unknown) => void;
@@ -400,6 +402,7 @@ describe('toast actions and focus', () => {
 
   it.each(['throw', 'reject'] as const)('handles an action %s with safe persistent copy without replacing critical state', async mode => {
     render(<ToastViewport />);
+    /** Publishes a critical notice before simulating synchronous or asynchronous action failure. */
     const retry = () => {
       notify({ id: 'cleanup', title: 'Microphone release is not confirmed', severity: 'critical', dismissible: false });
       const error = new Error('Private provider diagnostic and credentials');
@@ -460,6 +463,7 @@ describe('toast modal hosts', () => {
   });
 
   it('portals existing and arriving notices through nested dialogs without resetting time', () => {
+    /** Provides nested dialog controls for testing toast host changes and focus behavior. */
     function Dialogs() {
       const [figures, setFigures] = useState(false);
       const [help, setHelp] = useState(false);

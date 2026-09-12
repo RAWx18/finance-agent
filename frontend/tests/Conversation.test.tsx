@@ -33,14 +33,16 @@ const ringing = vi.hoisted(() => ({ start: vi.fn(), stops: [] as ReturnType<type
 vi.mock('../src/ringback', () => ({ startRingback: ringing.start }));
 vi.mock('../src/components/assistant-ui/elements/voice', async (original) => {
   const module = await original<typeof import('../src/components/assistant-ui/elements/voice')>();
-  return { ...module, VoiceOrb: (props: ComponentProps<typeof module.VoiceOrb>) => {
+  return { ...module, /** Records orb props while rendering the actual component in tests. */ VoiceOrb: (props: ComponentProps<typeof module.VoiceOrb>) => {
     orb(props);
     return <module.VoiceOrb {...props} />;
   } };
 });
 vi.mock('@pipecat-ai/client-js', async (original) => ({
   ...await original<typeof import('@pipecat-ai/client-js')>(),
+  /** Exposes client callbacks, track listeners and construction failures to conversation tests. */
   PipecatClient: class {
+    /** Captures options and the client instance unless a synthetic construction failure is set. */
     constructor(options: PipecatClientOptions) { if (sdk.constructionError) throw sdk.constructionError; sdk.options = options; sdk.enabled = options.enableMic ?? true; sdk.clients.push(this); }
     initDevices = sdk.initDevices;
     connect = sdk.connect;
@@ -49,14 +51,17 @@ vi.mock('@pipecat-ai/client-js', async (original) => ({
     sendClientMessage = sdk.sendClientMessage;
     tracks = sdk.tracks;
     get isMicEnabled() { return sdk.enabled; }
+    /** Retains a track listener for explicit SDK event delivery by tests. */
     on(name: string, callback: (track: MediaStreamTrack, participant?: Participant) => void) { sdk.listeners.set(name, callback); }
   },
 }));
-vi.mock('@pipecat-ai/daily-transport', () => ({ DailyTransport: class {
+vi.mock('@pipecat-ai/daily-transport', () => ({ /** Captures transport options and exposes call-client spies without a provider connection. */ DailyTransport: class {
+  /** Retains transport configuration for microphone startup assertions. */
   constructor(options: DailyTransportConstructorOptions) { sdk.transportOptions = options; }
   dailyCallClient = { destroy: sdk.destroy, on: sdk.dailyOn, off: sdk.dailyOff };
 } }));
 
+/** Exposes promise settlement controls for call startup, cleanup and response races. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -65,7 +70,9 @@ function deferred<T>() {
 }
 const join = { callId: '31272278-5d9e-4712-848b-e148ac8f47ba' as const, conversationSlug: 'conversation-2026-09-12-000000', url: 'https://room.daily.co/test', token: 'short-lived-test-token', expiresAt: '2026-09-11T05:00:00Z' };
 const remote: Participant = { id: 'bot', name: 'Assistant', local: false };
+/** Creates an event-capable media track double with controllable state and a stop spy. */
 function track(kind = 'audio', readyState = 'live') { return Object.assign(new EventTarget(), { kind, readyState, muted: false, enabled: true, stop: vi.fn() }) as unknown as MediaStreamTrack; }
+/** Renders the conversation and toast harness with callback spies and mutable test props. */
 function show(props: Partial<ComponentProps<typeof Conversation>> = {}) {
   const onStarted = vi.fn();
   const onBusyChange = vi.fn();
@@ -78,12 +85,14 @@ function show(props: Partial<ComponentProps<typeof Conversation>> = {}) {
   const view = render(<><Conversation {...options} /><ToastViewport /></>);
   return { ...view, onStarted, onBusyChange, onPhaseChange, onPrepare, onSettings, onTranscriptChange,
     get transcript() { return onTranscriptChange.mock.lastCall![0]; },
+    /** Applies prop overrides and rerenders the existing conversation harness. */
     change(changes: Partial<ComponentProps<typeof Conversation>>) {
       Object.assign(options, changes);
       view.rerender(<><Conversation {...options} /><ToastViewport /></>);
     } };
 }
 function panel() { return within(screen.getByRole('region', { name: 'Your conversation' })); }
+/** Checks both renderer props and visible orb attributes against the expected test state. */
 function expectOrb(state: VoiceOrbState, volume: number, runtime: string = state) {
   expect(orb).toHaveBeenLastCalledWith({ state, volume, variant: 'emerald' });
   const image = panel().getByRole('img');
@@ -93,11 +102,14 @@ function expectOrb(state: VoiceOrbState, volume: number, runtime: string = state
   expect(Number(image.getAttribute('data-volume'))).toEqual(volume);
   expect(image.querySelector('canvas.aui-voice-orb')).toHaveAttribute('data-state', state);
 }
+/** Clicks start or reconnect and waits for the SDK double's connection attempt. */
 async function start() {
   await userEvent.click(panel().getByRole('button', { name: /^(Start talking|Reconnect)$/ }));
   await waitFor(() => expect(sdk.connect).toHaveBeenCalled());
 }
+/** Delivers a synthetic BotReady callback within a React update. */
 function ready() { act(() => sdk.options!.callbacks!.onBotReady!({ version: '2.1.0' })); }
+/** Delivers a synthetic remote track and returns it for playback and cleanup assertions. */
 async function hear(bot = track()) { await act(async () => sdk.listeners.get(RTVIEvent.TrackStarted)!(bot, remote)); return bot; }
 
 beforeEach(() => {
@@ -569,11 +581,13 @@ describe('owned lifecycle deadlines and background cleanup', () => {
 });
 
 describe('Daily microphone acknowledgement', () => {
+  /** Builds a participant-update event from the microphone state controlled by the test. */
   const participant = (local = true): DailyEventObjectParticipant => ({ action: 'participant-updated',
     participant: { local, session_id: local ? 'consumer' : 'bot', audio: sdk.enabled } } as DailyEventObjectParticipant);
 
   it.each(['before acknowledgement', 'after acknowledgement', 'after unmute'] as const)('keeps the same live microphone when mute reports TrackStopped %s', async timing => {
     const microphone = track(); sdk.tracks.mockReturnValue({ local: { audio: microphone } });
+    /** Emits TrackStopped for the still-live microphone to model a mute notification. */
     const stopped = () => sdk.listeners.get(RTVIEvent.TrackStopped)!(microphone, { ...remote, local: true });
     const view = show(); await start(); ready();
     sdk.enableMic.mockClear();
@@ -696,6 +710,7 @@ describe('Daily microphone acknowledgement', () => {
 });
 
 describe('server-controlled conversation waiting', () => {
+  /** Delivers a sequenced conversation-state message through the SDK callback double. */
   function state(state: 'active' | 'waiting', sequence: number) {
     act(() => sdk.options!.callbacks!.onServerMessage!({ type: 'conversation-state', state, sequence }));
   }
@@ -1061,6 +1076,7 @@ describe('release recovery: owned audio and financial safety', () => {
 
 describe('real SDK integration boundary', () => {
   it('prepares without microphone access and keeps the audio element mounted across presentations', async () => {
+    /** Drives presentation changes from conversation callbacks to test component continuity. */
     function Journey() {
       const [presentation, setPresentation] = useState<'landing' | 'ready' | 'session'>('landing');
       return <><Conversation settings={{ ...settings, voiceAvailable: true }} disabled={false} presentation={presentation}

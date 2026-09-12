@@ -17,7 +17,9 @@ const sdk = vi.hoisted(() => ({ devices: vi.fn(), connect: vi.fn(), disconnect: 
   callbacks: [] as NonNullable<PipecatClientOptions['callbacks']>[] }));
 vi.mock('../src/ringback', () => ({ startRingback: () => vi.fn() }));
 vi.mock('@pipecat-ai/client-js', async original => ({ ...await original<typeof import('@pipecat-ai/client-js')>(),
+  /** Captures per-attempt callbacks and supplies a microphone double for continuation tests. */
   PipecatClient: class {
+    /** Retains callbacks so tests can deliver readiness to a specific connection attempt. */
     constructor(options: PipecatClientOptions) { sdk.callbacks.push(options.callbacks!); }
     initDevices = sdk.devices;
     connect = sdk.connect;
@@ -25,14 +27,17 @@ vi.mock('@pipecat-ai/client-js', async original => ({ ...await original<typeof i
     isMicEnabled = true;
     enableMic(enabled: boolean) { this.isMicEnabled = enabled; }
     on() {}
+    /** Supplies a live local audio track double with a shared stop spy. */
     tracks() { return { local: { audio: Object.assign(new EventTarget(), { kind: 'audio', readyState: 'live', enabled: true, muted: false, stop: sdk.stop }) } }; }
   },
 }));
 vi.mock('@pipecat-ai/daily-transport', () => ({ DailyTransport: class { dailyCallClient = { on: vi.fn(), off: vi.fn() }; } }));
 
+/** Creates a chat-specific snapshot fixture with matching revision and stream sequence. */
 function chat(slug: string, sequence: number): Snapshot {
   return { ...snapshot(), sessionId: `session-${slug}`, conversationSlug: slug, sequence, revision: sequence };
 }
+/** Exposes a promise resolver for ordering chat selection and call responses in tests. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -62,6 +67,7 @@ beforeEach(() => {
   vi.spyOn(api.history, 'continue').mockImplementation(async slug => { saved = chat(slug, saved.sequence + 1); return saved; });
 });
 
+/** Renders a route and delivers the current chat fixture through its first event stream. */
 async function show(path: string) {
   const router = appRouter(path);
   const view = render(<RouterProvider router={router} />);
@@ -69,6 +75,7 @@ async function show(path: string) {
   act(() => Stream.instances[0].emit('snapshot', saved));
   return { router, ...view };
 }
+/** Waits for the latest stream double to remain open and delivers the selected chat snapshot. */
 async function currentStream() {
   await waitFor(() => expect(Stream.instances.at(-1)?.closed).toBe(false));
   act(() => Stream.instances.at(-1)!.emit('snapshot', saved));

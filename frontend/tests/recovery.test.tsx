@@ -7,6 +7,7 @@ import { draftFacts } from '../src/money';
 import { useSession } from '../src/session';
 import { planningSnapshot, settings, snapshot, Stream } from './fixtures';
 
+/** Exposes promise settlement controls for testing request recovery and command ownership races. */
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;

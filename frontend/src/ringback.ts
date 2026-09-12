@@ -3,11 +3,13 @@
 
 const tone = { frequencies: [400, 450], volume: 0.018, pulse: 0.4, gap: 0.2, cycle: 3, fade: 0.02 };
 
+/** Play a local connecting tone and return its cleanup function. */
 export function startRingback(): () => void {
   let context: AudioContext | undefined;
   let source: AudioBufferSourceNode | undefined;
   let started = false;
   let stopped = false;
+  /** Silence the connecting tone and release its audio resources. */
   const stop = () => {
     if (stopped) return;
     stopped = true;

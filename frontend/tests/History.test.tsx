@@ -12,6 +12,7 @@ import { returnPath } from '../src/Login';
 import { savedConversation } from './history';
 import { settings } from './fixtures';
 
+/** Renders History at a test path with configurable identity and refresh revision. */
 function show(path = '/history', revision = '', assistantName = settings.assistantName) {
   const router = createMemoryRouter([{ path: '*', element: <History timezone="Asia/Kolkata" assistantName={assistantName} revision={revision} /> }], { initialEntries: [path] });
   return { ...render(<RouterProvider router={router} />), router };

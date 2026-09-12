@@ -7,6 +7,7 @@ import { signIn } from './authSupport';
 
 // Production assets and financial HTTP only; preparation must never start capture or a call.
 const test = base.extend<{ preparation: void }>({
+  /** Isolate preparation checks from provider traffic and financial mutations. */
   preparation: [async ({ page, context, baseURL }, use) => {
     const origin = new URL(baseURL!).origin;
     expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(origin).hostname);
@@ -41,6 +42,7 @@ const test = base.extend<{ preparation: void }>({
 
 test.use({ serviceWorkers: 'block', launchOptions: { args: ['--enable-unsafe-swiftshader'] } });
 
+/** Capture the conversation layout and page offsets for stability comparisons. */
 async function geometry(page: Page) {
   return page.evaluate(() => ({
     y: scrollY, gutter: innerWidth - document.documentElement.clientWidth,
@@ -53,6 +55,7 @@ async function geometry(page: Page) {
   }));
 }
 
+/** Verify a transition preserves conversation geometry and page positioning. */
 async function stable(page: Page, before: Awaited<ReturnType<typeof geometry>>) {
   const after = await geometry(page);
   expect(Math.abs(after.y - before.y), 'Page scroll position').toBeLessThanOrEqual(1);
@@ -65,6 +68,7 @@ async function stable(page: Page, before: Awaited<ReturnType<typeof geometry>>) 
   }
 }
 
+/** Verify preparation layouts keep essential content visible, usable and uncluttered. */
 async function fits(page: Page) {
   const size = await page.evaluate(() => ({
     width: innerWidth, height: innerHeight, scrollWidth: document.documentElement.scrollWidth,

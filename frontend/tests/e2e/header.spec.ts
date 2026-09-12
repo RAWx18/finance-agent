@@ -9,6 +9,7 @@ test('clean header hover, focus and responsive navigation', async ({ page }, inf
   const brand = header.getByRole('link', { name: 'Cash flow home' });
   const navigation = header.getByRole('navigation', { name: 'Main navigation' });
   const profile = header.getByRole('button', { name: 'Profile menu' });
+  /** Capture header geometry for responsive and interaction stability checks. */
   const bounds = () => page.locator('.site-header, .brand, .site-navigation, .site-navigation > a, .profile-trigger').evaluateAll(elements =>
     elements.map(element => {
       const { x, y, width, height } = element.getBoundingClientRect();
@@ -94,12 +95,14 @@ test('clean header hover, focus and responsive navigation', async ({ page }, inf
 
 test('header geometry stays stable across routes, preparation and modal scroll locking', async ({ page }) => {
   const navigation = page.getByRole('navigation', { name: 'Main navigation' });
+  /** Capture header geometry for route and modal stability comparisons. */
   const bounds = () => page.locator('.site-header, .site-header .brand, .site-navigation, .site-navigation > a, .profile-trigger').evaluateAll(elements =>
     elements.map(element => {
       const { x, y, width, height } = element.getBoundingClientRect();
       return { x, y, width, height };
     }));
   const initial = await bounds();
+  /** Verify the header retains its initial geometry without horizontal overflow. */
   const unchanged = async () => {
     const current = await bounds();
     expect(current).toHaveLength(initial.length);

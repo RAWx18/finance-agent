@@ -4,6 +4,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router';
 import { useAuth } from './Auth';
 
+/** Present account identity, settings, and sign-out in a keyboard-accessible menu. */
 export function ProfileMenu() {
   const auth = useAuth();
   const location = useLocation();

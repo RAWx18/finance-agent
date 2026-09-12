@@ -222,6 +222,7 @@ void main() {
   fragColor = vec4(col, circle);
 }`;
 
+/** Compile an orb shader, returning null when compilation is unavailable or fails. */
 function createShader(
   gl: WebGL2RenderingContext,
   type: number,
@@ -238,6 +239,7 @@ function createShader(
   return shader;
 }
 
+/** Prepare the orb's WebGL renderer, returning null when initialization fails. */
 function initWebGL(canvas: HTMLCanvasElement) {
   const gl = canvas.getContext("webgl2", {
     alpha: true,
@@ -298,6 +300,7 @@ export type VoiceOrbProps = {
   className?: string;
 };
 
+/** Display a voice-state orb that responds to volume and reduced-motion preferences. */
 export const VoiceOrb: FC<VoiceOrbProps> = memo(
   ({ state = "idle", volume = 0, variant = "default", className }) => {
     const volumeRef = useRef(0);
@@ -322,6 +325,7 @@ export const VoiceOrb: FC<VoiceOrbProps> = memo(
       };
     }, []);
 
+    /** Draw the orb's current state and continue animation when motion is permitted. */
     const render = useCallback(() => {
       const ctx = glRef.current;
       if (!ctx) return;
@@ -376,6 +380,7 @@ export const VoiceOrb: FC<VoiceOrbProps> = memo(
     useEffect(() => {
       targetParams.current = { ...STATE_PARAMS[state] };
       const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+      /** Refresh rendering after a viewport or reduced-motion preference change. */
       const update = () => {
         reducedMotion.current = media.matches;
         cancelAnimationFrame(animRef.current);

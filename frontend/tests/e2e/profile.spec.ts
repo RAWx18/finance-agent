@@ -30,6 +30,7 @@ test('profile menu and minimal settings', async ({ page, context, baseURL }, inf
     const state = window as typeof window & { profileCaptureRequests: number };
     state.profileCaptureRequests = 0;
     navigator.mediaDevices.getUserMedia = new Proxy(navigator.mediaDevices.getUserMedia, {
+      /** Count capture attempts while preserving native microphone behavior. */
       apply(target, receiver, args: Parameters<MediaDevices['getUserMedia']>) {
         state.profileCaptureRequests++;
         return Reflect.apply(target, receiver, args);
@@ -44,6 +45,7 @@ test('profile menu and minimal settings', async ({ page, context, baseURL }, inf
   const menu = page.getByRole('menu', { name: 'Profile', exact: true });
   const header = page.getByRole('banner');
   const name = page.getByRole('textbox', { name: 'Display name', exact: true });
+  /** Capture page geometry to detect movement when the profile menu opens. */
   const geometry = () => page.locator('.site-header, .brand, .profile-trigger, main, .site-footer').evaluateAll(elements =>
     elements.map(element => {
       const { x, y, width, height } = element.getBoundingClientRect();

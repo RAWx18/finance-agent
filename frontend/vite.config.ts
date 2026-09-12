@@ -11,6 +11,7 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,
+        /** Align proxied API requests with the backend's expected local origin. */
         configure(proxy) {
           proxy.on('proxyReq', (request) => {
             request.setHeader('Origin', 'http://localhost:8000');

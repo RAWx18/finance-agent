@@ -3,6 +3,7 @@
 import { expect, test as base } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
+/** Sign in through Google and verify arrival at the requested private route. */
 export async function signIn(page: Page, returnTo = '/app') {
   await page.goto(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`);
   await page.getByRole('button', { name: 'Continue with Google' }).click();
@@ -11,6 +12,7 @@ export async function signIn(page: Page, returnTo = '/app') {
 }
 
 export const test = base.extend<{ authenticated: void }>({
+  /** Authenticate each browser test against the isolated local application. */
   authenticated: [async ({ page, context, baseURL }, use) => {
     const origin = new URL(baseURL!).origin;
     expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(origin).hostname);

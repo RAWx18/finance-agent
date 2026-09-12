@@ -11,6 +11,7 @@ import license from '../src/components/assistant-ui/LICENSE.md?raw';
 
 const frames = new Map<number, FrameRequestCallback>();
 
+/** Flushes one scheduled animation frame inside React's test update boundary. */
 function frame() {
   expect(frames.size).toBe(1);
   const callbacks = [...frames.values()];

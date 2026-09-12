@@ -16,6 +16,7 @@ test('pre-login hero aligns content and keeps one clear sign-in action without s
   });
   await page.addInitScript(() => {
     window.landingCaptureRequests = 0;
+    /** Record and reject microphone requests before sign-in. */
     navigator.mediaDevices.getUserMedia = async () => {
       window.landingCaptureRequests++;
       throw new Error('The landing page must not request microphone access');
@@ -41,6 +42,7 @@ test('pre-login hero aligns content and keeps one clear sign-in action without s
     await expect(main.getByRole('figure').getByRole('button')).toHaveCount(0);
     await expect(cta).toBeInViewport({ ratio: 1 });
     const geometry = await page.evaluate(() => {
+      /** Capture a landing element's bounds for alignment checks. */
       const box = (selector: string) => {
         const { x, y, width, height } = document.querySelector(selector)!.getBoundingClientRect();
         return { x, y, width, height };

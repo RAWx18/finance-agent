@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { LiveCaption } from '../src/Captions';
 import type { Caption } from '../src/Captions';
 
+/** Builds a caption fixture with a predictable timestamp and optional presentation overrides. */
 function words(id: number, patch: Partial<Caption> = {}): Caption {
   return { id: String(id), speaker: 'You', text: `Words ${id}`, time: Date.parse('2026-09-11T04:00:00Z') + id * 1000, ...patch };
 }

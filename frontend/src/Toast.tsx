@@ -38,6 +38,7 @@ let focused = false;
 let returnFocus: HTMLElement | null = null;
 let generation = 0;
 
+/** Publish the current notification order and active display host to subscribers. */
 function publish() {
   snapshot = {
     notices: [...entries.values()].sort((a, b) => priority[a.notice.severity] - priority[b.notice.severity])
@@ -47,11 +48,13 @@ function publish() {
   for (const listener of listeners) listener();
 }
 
+/** Subscribe to notification state changes and return an unsubscribe function. */
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => { listeners.delete(listener); };
 }
 
+/** Pause a notice's dismissal timer while retaining its remaining display time. */
 function stopTimer(entry: Entry) {
   if (entry.timer === null) return;
   clearTimeout(entry.timer);
@@ -59,11 +62,13 @@ function stopTimer(entry: Entry) {
   if (entry.remaining !== null) entry.remaining = Math.max(0, entry.remaining - (Date.now() - entry.started));
 }
 
+/** Determine whether a notice should remain visible for reading or interaction. */
 function paused(entry: Entry) {
   return !viewport?.isConnected || !entry.element?.isConnected || hovered || focused || document.hidden
     || viewport.contains(document.activeElement);
 }
 
+/** Schedule automatic dismissal only while the notice can be read without interaction. */
 function schedule(entry: Entry) {
   if (entries.get(entry.notice.id) !== entry || entry.remaining === null || paused(entry)) {
     stopTimer(entry);
@@ -73,6 +78,7 @@ function schedule(entry: Entry) {
   const version = entry.version;
   entry.started = Date.now();
   const timer = setTimeout(() => {
+    // A stale timeout must not dismiss a replacement notice or bypass a restarted display interval.
     if (entries.get(entry.notice.id) !== entry || entry.version !== version || entry.timer !== timer) return;
     stopTimer(entry);
     if (!paused(entry)) dismiss(entry.notice.id);
@@ -80,16 +86,19 @@ function schedule(entry: Entry) {
   entry.timer = timer;
 }
 
+/** Reconcile notice timers with current visibility and interaction state. */
 function updateTimers() {
   for (const entry of entries.values()) schedule(entry);
 }
 
+/** Return keyboard focus to an available control outside the notifications. */
 function restoreFocus() {
   if (returnFocus?.isConnected && !returnFocus.matches(':disabled')
     && !returnFocus.closest('[hidden], [inert], dialog:not([open])')
     && (!snapshot.host || snapshot.host.contains(returnFocus))) returnFocus.focus({ preventScroll: true });
 }
 
+/** Show or refresh a keyed notification with its actions and dismissal policy. */
 export function notify(notice: Notice): void {
   if (typeof notice.title !== 'string' || (notice.message !== undefined && typeof notice.message !== 'string')) return;
   const duration = notice.dismissible === false ? null
@@ -116,6 +125,7 @@ export function notify(notice: Notice): void {
   publish();
 }
 
+/** Remove a keyed notification and restore focus when needed. */
 export function dismiss(id: string): void {
   const entry = entries.get(id);
   if (!entry) return;
@@ -125,6 +135,7 @@ export function dismiss(id: string): void {
   publish();
 }
 
+/** Clear all notifications and invalidate outstanding notification actions. */
 export function dismissAll(): void {
   generation++;
   if (!entries.size) return;
@@ -134,6 +145,7 @@ export function dismissAll(): void {
   publish();
 }
 
+/** Make an element the active notification host until its registration is released. */
 export function registerToastHost(element: HTMLElement): () => void {
   const host = { element };
   hosts.push(host);
@@ -146,8 +158,10 @@ export function registerToastHost(element: HTMLElement): () => void {
   };
 }
 
+/** Render one accessible notification with its available actions. */
 function ToastItem({ entry, notice }: { entry: Entry; notice: Notice }) {
   const id = useId();
+  /** Associate the notice with its rendered element for dismissal timing. */
   const attach = useCallback((element: HTMLElement | null) => {
     const owned = entries.get(entry.notice.id);
     if (owned !== entry) return;
@@ -185,12 +199,14 @@ function ToastItem({ entry, notice }: { entry: Entry; notice: Notice }) {
   </article></li>;
 }
 
+/** Display shared notifications with focus-aware timing and compact queue controls. */
 export function ToastViewport(): JSX.Element {
   const { notices, host } = useSyncExternalStore(subscribe, () => snapshot, () => emptySnapshot);
   const [expanded, setExpanded] = useState(false);
   const [minimized, setMinimized] = useState(false);
   if (!notices.length && minimized) setMinimized(false);
   const id = useId();
+  /** Associate the viewport with notification visibility and interaction tracking. */
   const attach = useCallback((element: HTMLElement | null) => {
     for (const entry of entries.values()) stopTimer(entry);
     viewport = element;
@@ -202,6 +218,7 @@ export function ToastViewport(): JSX.Element {
   useEffect(() => {
     const active = document.activeElement;
     if (active instanceof HTMLElement && active !== document.body && !active.closest('.toast-viewport')) returnFocus = active;
+    /** Track notification focus and remember the control to restore afterward. */
     const focus = (event: FocusEvent) => {
       const target = event.type === 'focusout' ? event.relatedTarget : event.target;
       focused = target instanceof Node && (viewport?.contains(target) ?? false);

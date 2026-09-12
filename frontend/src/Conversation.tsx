@@ -45,10 +45,12 @@ type Attempt = {
   stopRinging?: () => void;
 };
 
+/** Record a voice lifecycle milestone for latency measurement. */
 function mark(stage: string) {
   performance.mark(`voice:${stage}`);
 }
 
+/** Request owned call termination and report whether cleanup is confirmed. */
 async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> {
   if (owner.authEpoch !== authEpoch()) return 'unconfirmed';
   const controller = new AbortController();
@@ -78,6 +80,7 @@ async function releaseCall(owner: CallOwner, seconds: number): Promise<Release> 
   finally { clearTimeout(timer); }
 }
 
+/** Stop every media track retained by a call attempt. */
 function stopTracks(attempt: Attempt) {
   try {
     for (const track of Object.values(attempt.client.tracks().local)) if (track) attempt.tracks.add(track);
@@ -85,12 +88,14 @@ function stopTracks(attempt: Attempt) {
   for (const track of attempt.tracks) track.stop();
 }
 
+/** Release an attempt's media and disconnect its voice client. */
 async function disconnect(attempt: Attempt) {
   stopTracks(attempt);
   try { await attempt.client.disconnect(); } catch { /* Local teardown must not prevent owned room release. */ }
 }
 
 // Late device and transport work belongs only to this SDK instance, never the next attempt.
+/** End a call attempt and report whether its server cleanup is confirmed. */
 function dispose(attempt: Attempt): Promise<Release> {
   if (attempt.cleanup) return attempt.cleanup;
   attempt.cancelled = true;
@@ -115,6 +120,7 @@ function dispose(attempt: Attempt): Promise<Release> {
   return attempt.cleanup;
 }
 
+/** Translate microphone, network, and call failures into actionable notices. */
 function callError(error: unknown): Problem {
   if ((error instanceof DOMException && error.name === 'NotAllowedError') || (error instanceof DeviceError && error.type === 'permissions'))
     return { id: 'voice:problem', type: 'retry', title: 'Microphone access denied', severity: 'warning', duration: null,
@@ -152,6 +158,7 @@ function callError(error: unknown): Problem {
     message: 'Check your connection and microphone, then try again.' };
 }
 
+/** Identify the live speaking source eligible for voice-level visualization. */
 function audioSource(current: Attempt): 'local' | 'remote' | undefined {
   if (!current.ready || current.cancelled || current.activity.reconnecting || current.activity.waiting) return;
   const { activity, localTrack, remoteTrack } = current;
@@ -161,6 +168,7 @@ function audioSource(current: Attempt): 'local' | 'remote' | undefined {
     && remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false) return 'remote';
 }
 
+/** Manage voice calls, microphone and playback controls, and live captions. */
 export function Conversation({ settings, sessionId, conversationSlug, startRequest, onStartConsumed, onConversationChange, disabled, onStarted, onBusyChange, presentation, onPrepare, onPhaseChange, onSettings, onTranscriptChange, visible = true, sessionIssue, updatesLost = false, updatesReady = true }: {
   settings: Settings | null; sessionId?: string; disabled: boolean;
   conversationSlug?: string | null; startRequest?: string; onStartConsumed?: () => void;
@@ -252,6 +260,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     };
   }, []);
 
+  /** Stop voice activity when its financial session is no longer safe to use. */
   const stopUnavailable = useEffectEvent(() => {
     const current = attempt.current;
     availability.current?.abort(); availability.current = null;
@@ -319,12 +328,14 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     return () => { controller.abort(); clearTimeout(timer); };
   }, [sessionId, sessionIssue, settings]);
 
+  /** Clear residual audio energy from a call's voice indicator. */
   function resetLevel(current: Attempt) {
     clearTimeout(current.meter);
     current.level = 0; current.levelAt = undefined;
     if (mounted.current && attempt.current === current) setLevel(0);
   }
 
+  /** Apply current call activity and keep the voice indicator consistent. */
   function updateActivity(current: Attempt, patch: Partial<typeof quiet>) {
     if (!mounted.current || attempt.current !== current || current.cancelled) return;
     const source = audioSource(current);
@@ -333,6 +344,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     setActivity(current.activity);
   }
 
+  /** Reflect the current speaker's audio energy in the voice indicator. */
   function measure(current: Attempt, source: 'local' | 'remote', value: number) {
     if (!mounted.current || attempt.current !== current || actions.current.sessionBlocked || audioSource(current) !== source) return;
     value = Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 0;
@@ -347,6 +359,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     current.meter = setTimeout(() => resetLevel(current), 200);
   }
 
+  /** Stop the local conversation and surface any unconfirmed call cleanup. */
   async function finish(next: VoicePhase, issue?: Problem) {
     const current = attempt.current;
     if (!mounted.current || current?.cancelled || ending.current || !current && sessionBlocked) return;
@@ -381,6 +394,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       title: 'Conversation stopped', message: 'The conversation stopped with an error. Try a new conversation.' });
   }
 
+  /** Attempt assistant playback and surface any browser playback restriction. */
   async function playAudio(automatic = false) {
     if (!mounted.current || actions.current.sessionBlocked || !automatic && disabled) return;
     if (!automatic && (!visible || presentation === 'landing')) { onPrepare(); return; }
@@ -389,6 +403,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     const stream = player?.srcObject;
     if (!current || current.cancelled || current.remoteTrack?.readyState !== 'live' || !player || !stream) return;
     if (current.activity.waiting && !current.activity.continuing) return;
+    // Playback may settle after a pause or stream replacement and must not restore stale playback state.
     const sequence = current.sequence;
     try {
       await player.play();
@@ -401,6 +416,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     }
   }
 
+  /** Start a voice call after confirming its saved financial context is ready. */
   async function start() {
     if (!mounted.current || disabled || sessionBlocked || !settings) return;
     if (!visible || presentation === 'landing') { onPrepare(); return; }
@@ -422,8 +438,10 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       // Daily's script loader must respect the application's no-eval content security policy.
       const transport = new DailyTransport({ bufferLocalAudioUntilBotReady: false,
         dailyConfig: { avoidEval: true, alwaysIncludeMicInPermissionPrompt: false } });
+      /** Check that callbacks still belong to the active, authorized call. */
       const live = () => mounted.current && current !== null && attempt.current === current && !current.cancelled
         && current.authEpoch === authEpoch() && !actions.current.sessionBlocked;
+      /** Reflect SDK activity without reviving a paused conversation. */
       const update = (patch: Partial<typeof quiet>) => {
         if (live() && current) updateActivity(current, current.activity.waiting ? { ...patch,
           user: false, bot: false, generating: false, tool: false, paused: false, interrupted: false, capture: false, playing: false, blocked: false } : patch);
@@ -431,6 +449,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       const tools = new Set<string>();
       const unfinished = new Set<string>();
       let spokenId: string | undefined;
+      /** Synchronize microphone and assistant-audio availability with live media tracks. */
       const updateTracks = () => {
         if (!live() || !current) return;
         const { localTrack, remoteTrack } = current;
@@ -439,12 +458,14 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         update({ capture: localTrack?.readyState === 'live' && !localTrack.muted && localTrack.enabled !== false, muted: !client.isMicEnabled,
           remote: remoteTrack?.readyState === 'live' && !remoteTrack.muted && remoteTrack.enabled !== false });
       };
+      /** Keep call activity informed of media-track availability changes. */
       const observe = (track: MediaStreamTrack) => {
         if (!current || current.observers.has(track)) return;
         current.observers.set(track, updateTracks);
         for (const event of ['mute', 'unmute', 'ended']) track.addEventListener?.(event, updateTracks);
       };
       const fail = (issue: Problem) => { if (live()) void actions.current.finish('error', issue); };
+      /** Stop the call and explain how to recover a disconnected microphone. */
       const microphoneLost = () => fail({ id: 'voice:problem', type: 'retry', title: 'Microphone disconnected', severity: 'error', duration: null,
         message: 'Your microphone disconnected. The conversation has stopped. Reconnect your microphone, then retry.' });
       const disconnected = () => { if (live()) void actions.current.finish('disconnected', callError(new TypeError())); };
@@ -453,6 +474,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
           if (live() && current?.ready) clearTimeout(current.startupTimer);
           update({ connected: true, reconnecting: current?.ready ? false : current?.activity.reconnecting ?? false });
         },
+        /** Enable the microphone once the assistant is ready for this call. */
         onBotReady: () => {
           if (!live() || !current || current.ready) return;
           current.stopRinging?.();
@@ -462,6 +484,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
           catch { fail({ ...callError(undefined), title: 'Microphone unavailable',
             message: 'The microphone could not start. Check microphone access, then try again.' }); }
         },
+        /** Associate assistant audio with the current bot participant. */
         onBotConnected: (participant) => {
           if (!live() || !current || participant.local) return;
           current.botId = participant.id;
@@ -472,6 +495,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
             update({ remote: false, playing: false, blocked: false });
           }
         },
+        /** Reconcile transport readiness, reconnection, and disconnection. */
         onTransportStateChanged: (state) => {
           if (!live()) return;
           if (state === 'connecting' && current?.ready && !current.activity.reconnecting) {
@@ -487,6 +511,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         },
         onDisconnected: disconnected,
         onBotDisconnected: disconnected,
+        /** End fatal SDK failures or expose an unsuccessful continuation. */
         onError: (message) => {
           if (!message.data || typeof message.data !== 'object' || !('fatal' in message.data) || message.data.fatal !== false)
             fail({ ...callError(undefined), title: 'Conversation stopped', message: 'The assistant could not continue. Check your connection and try again.' });
@@ -495,6 +520,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
             update({ continuing: false, resumeFailed: true });
           }
         },
+        /** Apply server-authorized pause and resume transitions for the current call. */
         onServerMessage: (data: unknown) => {
           if (!live() || !current?.join || !data || typeof data !== 'object' || Array.isArray(data)) return;
           if (!('type' in data) || data.type !== 'conversation-state' || !('state' in data)
@@ -536,6 +562,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         onRemoteAudioLevel: (value, participant) => {
           if (current && !participant.local && participant.id === current.remoteId) measure(current, 'remote', value);
         },
+        /** Reflect user speech and preserve interrupted assistant captions. */
         onUserStartedSpeaking: () => {
           if (!live() || !current?.ready || current.activity.reconnecting || current.activity.waiting) return;
           update({ user: true, interrupted: current.activity.bot, generating: false });
@@ -548,6 +575,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         onBotStartedSpeaking: () => {
           if (current?.ready && !current.activity.reconnecting) update({ bot: true, interrupted: current.activity.user });
         },
+        /** Finish pending assistant captions when speech stops. */
         onBotStoppedSpeaking: () => {
           if (!live()) return;
           update({ bot: false });
@@ -560,6 +588,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         onLLMFunctionCallStopped: (data) => { tools.delete(data.tool_call_id); update({ tool: tools.size > 0 }); },
         onUserMuteStarted: () => update({ paused: true, user: false, interrupted: false }),
         onUserMuteStopped: () => update({ paused: false }),
+        /** Show interim speech and retain completed user captions. */
         onUserTranscript: (data) => {
           if (!live() || current?.activity.waiting) return;
           if (!data.final) {
@@ -578,6 +607,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
           setCaptions((items) => items.some(item => item.id === id) ? items.map(item => item.id === id ? { ...item, text: data.text } : item)
             : [...items, { id, speaker: 'You', text: data.text, time }]);
         },
+        /** Maintain assistant captions from reported spoken output. */
         onBotOutput: (data) => {
           if (!live() || current?.activity.waiting || data.will_be_spoken === false) return;
           if (data.spoken_status === 'new') { if (data.segment_id === undefined) spokenId = undefined; return; }
@@ -601,6 +631,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       attempt.current = current;
       current.stopRinging = startRingback();
       previousCall.current = null;
+      /** Limit how long the call waits for a ready connection. */
       const deadline = (seconds = settings.voiceStartupSeconds) => {
         if (!current) return;
         clearTimeout(current.startupTimer);
@@ -615,7 +646,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       };
       daily.on('participant-updated', onParticipantUpdated);
       current.removeParticipantListener = () => { daily.off('participant-updated', onParticipantUpdated); };
-      current.client.on(RTVIEvent.TrackStarted, (track, participant) => {
+      current.client.on(RTVIEvent.TrackStarted, /** Attach owned microphone or assistant audio to the current call. */(track, participant) => {
         if (!live()) { track.stop(); return; }
         if (!current) return;
         current.tracks.add(track);
@@ -635,7 +666,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
         audio.current.srcObject = new MediaStream([track]);
         void actions.current.playAudio(true);
       });
-      current.client.on(RTVIEvent.TrackStopped, (track, participant) => {
+      current.client.on(RTVIEvent.TrackStopped, /** Reconcile stopped media without treating intentional microphone suspension as loss. */(track, participant) => {
         if (!live()) return;
         if (track.readyState === 'ended') current?.tracks.delete(track);
         const suspended = current?.suspendedTrack === track;
@@ -671,6 +702,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       logicalChat.current = { sessionId: saved.sessionId, slug };
       current.sessionId = saved.sessionId;
       actions.current.onStarted(saved);
+      // Dispatching a snapshot does not synchronously make its session's live stream ready.
       if (actions.current.sessionId && actions.current.sessionId !== saved.sessionId || !actions.current.updatesReady)
         await new Promise<void>(resolve => { if (current) current.financialReady = resolve; });
       if (!live()) return;
@@ -682,6 +714,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
       let join: CallJoin;
       try { join = await current.join; }
       catch (error) {
+        // Expired credentials can arrive after room creation, so callExpired must retain its cleanup obligation.
         if (error instanceof ApiError && error.status < 500 && error.body.code !== 'callExpired') current.join = undefined;
         throw error;
       }
@@ -722,6 +755,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     }
   }
 
+  /** Toggle microphone capture during an active, unpaused call. */
   function toggleMic() {
     const current = attempt.current;
     if (!current || current.cancelled || phase !== 'active' || current.activity.waiting || sessionBlocked) return;
@@ -736,6 +770,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     }
   }
 
+  /** Request server-authorized continuation of the current paused conversation. */
   function continueConversation() {
     const current = attempt.current;
     if (!mounted.current || !current || current.cancelled || current.authEpoch !== authEpoch() || sessionBlocked || disabled
@@ -754,6 +789,7 @@ export function Conversation({ settings, sessionId, conversationSlug, startReque
     }
   }
 
+  /** Refresh voice availability and show whether another call can be attempted. */
   async function checkAvailability() {
     if (!mounted.current || disabled || sessionBlocked) return;
     if (!visible || presentation === 'landing') { onPrepare(); return; }

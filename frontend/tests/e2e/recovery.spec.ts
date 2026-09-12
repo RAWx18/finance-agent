@@ -5,6 +5,7 @@ import type { Page } from '@playwright/test';
 import { signIn } from './authSupport';
 
 const test = base.extend<{ recoverySafety: void }>({
+  /** Keep recovery checks free of provider traffic, financial writes and browser errors. */
   recoverySafety: [async ({ page, context, baseURL }, use) => {
     const origin = new URL(baseURL!).origin;
     expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(origin).hostname);
@@ -29,6 +30,7 @@ const test = base.extend<{ recoverySafety: void }>({
   }, { auto: true }],
 });
 
+/** Verify the recovery view stays centered and fits without nested scrolling. */
 async function fits(page: Page) {
   const size = await page.evaluate(() => ({ width: innerWidth, height: innerHeight,
     scrollWidth: document.documentElement.scrollWidth, scrollHeight: document.documentElement.scrollHeight,

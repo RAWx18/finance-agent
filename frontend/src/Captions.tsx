@@ -10,6 +10,7 @@ export type Caption = {
 
 export type Transcript = { captions: Caption[]; interim: { text: string; time: number } | null };
 
+/** Display a caption's clock time with its full date and timezone available accessibly. */
 export function CaptionTime({ time, timezone }: { time: number; timezone?: string }) {
   const stamp = new Date(time);
   if (!Number.isFinite(stamp.getTime())) return null;
@@ -19,6 +20,7 @@ export function CaptionTime({ time, timezone }: { time: number; timezone?: strin
   return <time dateTime={stamp.toISOString()} title={label} aria-label={label}>{clock.format(time)}</time>;
 }
 
+/** Present the latest spoken or interim caption with its speaker and timestamp. */
 export const LiveCaption = memo(function LiveCaption({ captions, interim, timezone, assistantName = 'Assistant' }: {
   captions: Caption[]; interim?: Transcript['interim']; timezone?: string; assistantName?: string;
 }) {

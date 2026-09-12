@@ -13,6 +13,7 @@ export interface DatedMessage {
   interrupted: boolean;
 }
 
+/** Render dated messages with day dividers, speaker labels and partial-caption notices. */
 export function DaySeparator({ messages, assistantName, className, ...props }: Omit<ComponentProps<'div'>, 'children'> & {
   messages: readonly DatedMessage[];
   assistantName: string;

@@ -11,6 +11,7 @@ export interface ThreadItem {
   href: string;
 }
 
+/** Render conversation links with timestamps and the active thread marked. */
 export function ThreadList({ threads, activeIndex, className, ...props }: Omit<ComponentProps<'div'>, 'children'> & {
   threads: readonly ThreadItem[];
   activeIndex: number;

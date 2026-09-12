@@ -4,6 +4,7 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 // Pagination bounds mobile page length; desktop lists also retain their own scroll region.
+/** Render a paginated list with an optional complete print view. */
 export function PagedList({ children, label, className, ordered = false, printable = true, pageSize = 20 }: {
   children: ReactNode[]; label: string; className: string; ordered?: boolean;
   printable?: boolean; pageSize?: number;

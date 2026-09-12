@@ -9,6 +9,7 @@ const paths = {
   audio: 'M11 5 6 9H3v6h3l5 4V5Z M15 8a6 6 0 0 1 0 8 M18 5a10 10 0 0 1 0 14',
 };
 
+/** Render a decorative call-control icon with an optional muted indicator. */
 export function CallIcon({ kind, muted = false }: { kind: keyof typeof paths; muted?: boolean }) {
   return <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
     <path d={paths[kind]} />{muted && <path d="m3 3 18 18" />}

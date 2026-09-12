@@ -3,6 +3,7 @@
 import { useEffect, useId, useRef } from 'react';
 import type { ReactNode } from 'react';
 
+/** Present recovery guidance and actions as a page or inline status. */
 export function Recovery({ title, message, children, busy = false, inline = false }: {
   title: string; message: string; children?: ReactNode; busy?: boolean; inline?: boolean;
 }) {

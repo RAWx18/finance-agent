@@ -5,6 +5,7 @@ import type { ReactNode } from 'react';
 import { registerToastHost } from './Toast';
 import { MoneyIcon } from './MoneyIcon';
 
+/** Present a modal with keyboard focus management and in-dialog notifications. */
 export function Dialog({ open, title, onClose, children, wide = false, actions }: {
   open: boolean; title: string; onClose: () => void; children: ReactNode; wide?: boolean; actions?: ReactNode;
 }) {
@@ -19,6 +20,7 @@ export function Dialog({ open, title, onClose, children, wide = false, actions }
     element.showModal();
     const unregister = registerToastHost(element);
     // Native bubbling includes controls portaled from outside the dialog's React tree.
+    /** Keep keyboard navigation within the active dialog. */
     const trapFocus = (event: KeyboardEvent) => {
       if (event.key !== 'Tab' || !(event.target instanceof HTMLElement) || event.target.closest('dialog') !== element) return;
       const controls = [...element.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex]')]
@@ -50,6 +52,7 @@ export function Dialog({ open, title, onClose, children, wide = false, actions }
   </dialog>;
 }
 
+/** Expose supplementary content through a labeled dialog trigger. */
 export function Details({ label, title = label, children, wide = false, compact = false }: {
   label: string; title?: string; children: ReactNode; wide?: boolean; compact?: boolean;
 }) {

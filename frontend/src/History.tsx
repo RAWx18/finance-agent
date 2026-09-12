@@ -13,10 +13,12 @@ import { CallIcon } from './CallIcon';
 import './history.css';
 import './components/assistant-ui/elements/history.css';
 
+/** Adapt a saved message for the read-only conversation runtime. */
 const convertMessage = (message: ConversationMessage): ThreadMessageLike => ({
   id: message.id, role: message.role, content: [{ type: 'text', text: message.text }], createdAt: new Date(message.createdAt),
 });
 
+/** Browse and search saved conversations with access to their captions and continuation. */
 export function History({ timezone, assistantName = 'Assistant', revision = '', ongoing = false, continueBlocked, onContinue }: {
   timezone?: string; assistantName?: string; revision?: string; ongoing?: boolean;
   continueBlocked?: string; onContinue?: (slug: string, signal: AbortSignal) => Promise<void>;
@@ -79,6 +81,7 @@ export function History({ timezone, assistantName = 'Assistant', revision = '', 
   </section>;
 }
 
+/** Present a saved conversation with caption download and continuation controls. */
 function SavedChat({ slug, timezone, assistantName, revision, continueBlocked, onContinue }: {
   slug: string; timezone?: string; assistantName: string; revision: string;
   continueBlocked?: string; onContinue?: (slug: string, signal: AbortSignal) => Promise<void>;
@@ -119,6 +122,7 @@ function SavedChat({ slug, timezone, assistantName, revision, continueBlocked, o
     return () => clearTimeout(timer);
   }, [conversation]);
 
+  /** Request continuation of the selected saved conversation. */
   async function continueTalking() {
     if (!onContinue || !conversation || continueBlocked || selection.current) return;
     const controller = new AbortController();
@@ -133,6 +137,7 @@ function SavedChat({ slug, timezone, assistantName, revision, continueBlocked, o
     }
   }
 
+  /** Download the selected conversation's saved captions as plain text. */
   async function downloadCaptions() {
     if (download.current || !conversation?.messages.length) return;
     const controller = new AbortController();
@@ -182,6 +187,7 @@ function SavedChat({ slug, timezone, assistantName, revision, continueBlocked, o
   </>;
 }
 
+/** Display read-only saved messages grouped by their local calendar day. */
 function ChatMessages({ conversation, timezone, assistantName }: { conversation: SavedConversation; timezone?: string; assistantName: string }) {
   const runtime = useExternalStoreRuntime({ messages: conversation.messages, convertMessage, isDisabled: true,
     onNew: async () => { throw new Error('Saved conversations are read-only.'); } });
