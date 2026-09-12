@@ -12,7 +12,7 @@ import pytest
 from app.auth import COOKIE
 from app.auth_models import Access
 from app.google import digest
-from app.history import CaptionHistory, History
+from app.history import CaptionHistory, History, transcript
 from app.models import CallState, Command
 from app.store import Problem
 from app.voice import Call
@@ -25,8 +25,14 @@ from .test_history import human, spoken
 from .test_voice import PipelineDouble, RoomsDouble
 from .test_voice import provider_doubles as provider_doubles
 
+INTERRUPTION_NOTE = (
+    "The preceding assistant message is only the portion heard before interruption. "
+    "Do not assume its explanation or question was completed."
+)
+
 
 async def begin(store, history, owner="owner"):
+    """Create an owner's session and start a conversation with a fresh call identifier."""
     snapshot = await store.create(owner)
     call_id = uuid4()
     slug = await history.start(owner, call_id, snapshot.session_id)
@@ -34,6 +40,7 @@ async def begin(store, history, owner="owner"):
 
 
 async def operation(store, values):
+    """Submit an operation against the owner's current financial revision."""
     snapshot = await store.get("owner")
     return await store.command(
         "owner",
@@ -44,6 +51,7 @@ async def operation(store, values):
 
 
 async def memory_rows(store):
+    """Read saved conversation snapshots keyed by call identifier."""
     async with store.connection().execute(
         "SELECT call_id, snapshot FROM conversation_memory ORDER BY call_id"
     ) as cursor:
@@ -51,23 +59,40 @@ async def memory_rows(store):
 
 
 async def test_switch_restores_only_selected_memory_consent_and_pending_preview(store):
+    """Verify chat selection restores isolated facts, consent, and previews with fresh revisions."""
     history = History(store)
     call_a, slug_a = await begin(store, history)
-    snapshot = await operation(store, {
-        "type": "replaceFacts",
-        "facts": facts("1000", [record("trip", "optional", "500", "2026-09-18")]),
-    })
+    snapshot = await operation(
+        store,
+        {
+            "type": "replaceFacts",
+            "facts": facts("1000", [record("trip", "optional", "500", "2026-09-18")]),
+        },
+    )
     event = (await store.options("owner")).options[0].event_id
-    snapshot = await operation(store, {
-        "type": "previewAdjustments", "adjustments": [{"eventId": event, "amount": "100"}],
-    })
-    await operation(store, {
-        "type": "acceptPreview", "previewId": str(snapshot.preview.id),
-        "confirmed": True, "consentScope": "unconditional",
-    })
-    saved_a = await operation(store, {
-        "type": "previewAdjustments", "adjustments": [{"eventId": event, "amount": "50"}],
-    })
+    snapshot = await operation(
+        store,
+        {
+            "type": "previewAdjustments",
+            "adjustments": [{"eventId": event, "amount": "100"}],
+        },
+    )
+    await operation(
+        store,
+        {
+            "type": "acceptPreview",
+            "previewId": str(snapshot.preview.id),
+            "confirmed": True,
+            "consentScope": "unconditional",
+        },
+    )
+    saved_a = await operation(
+        store,
+        {
+            "type": "previewAdjustments",
+            "adjustments": [{"eventId": event, "amount": "50"}],
+        },
+    )
     await history.finish("owner", call_a)
     call_b, slug_b = await begin(store, history)
     command_b = parsed_command(facts("9000"), (await store.get("owner")).revision)
@@ -99,10 +124,15 @@ async def test_switch_restores_only_selected_memory_consent_and_pending_preview(
         await store.command("owner", parsed_command(facts("777"), saved_a.revision))
     assert error.value.body.code == "staleRevision"
     assert await store.get("owner") == restored
-    await operation(store, {
-        "type": "acceptPreview", "previewId": str(restored.preview.id),
-        "confirmed": True, "consentScope": "unconditional",
-    })
+    await operation(
+        store,
+        {
+            "type": "acceptPreview",
+            "previewId": str(restored.preview.id),
+            "confirmed": True,
+            "consentScope": "unconditional",
+        },
+    )
     assert (await store.get("owner")).accepted.adjustments[0].amount_paise == 5000
     assert (await memory_rows(store))[str(call_b)] == memory[str(call_b)]
     store.unsubscribe("owner", queue)
@@ -117,11 +147,17 @@ async def test_switch_restores_only_selected_memory_consent_and_pending_preview(
 
 
 async def test_unavailable_response_ledger_is_chat_local_without_replay(store):
+    """Verify selecting a chat restores its unavailable responses without replaying commands."""
     history = History(store)
     call_a, slug_a = await begin(store, history)
-    saved_a = await operation(store, {
-        "type": "respondToAction", "actionId": "clarify:opening", "response": "unavailable",
-    })
+    saved_a = await operation(
+        store,
+        {
+            "type": "respondToAction",
+            "actionId": "clarify:opening",
+            "response": "unavailable",
+        },
+    )
     await history.finish("owner", call_a)
     call_b, _ = await begin(store, history)
     await operation(store, {"type": "replaceFacts", "facts": facts("456")})
@@ -136,6 +172,7 @@ async def test_unavailable_response_ledger_is_chat_local_without_replay(store):
 
 
 async def test_reconnect_appends_segment_collisions_and_rejects_old_callbacks(store):
+    """Verify reconnects isolate reused caption segments and reject callbacks from prior calls."""
     history = History(store)
     first, slug = await begin(store, history)
     captions = CaptionHistory(history, "owner", first)
@@ -150,6 +187,7 @@ async def test_reconnect_appends_segment_collisions_and_rejects_old_callbacks(st
     assert await history.recent("owner", second) == [
         {"role": "user", "content": "A's actual question"},
         {"role": "assistant", "content": "Only heard"},
+        {"role": "developer", "content": INTERRUPTION_NOTE},
     ]
     captions = CaptionHistory(history, "owner", second)
     await captions.capture(human("Another question", timestamp="2026-09-11T06:00:00Z"))
@@ -165,34 +203,118 @@ async def test_reconnect_appends_segment_collisions_and_rejects_old_callbacks(st
     assert conversation.ended_at is None
     assert conversation.messages[:2] == saved.messages
     assert [message.text for message in conversation.messages] == [
-        "A's actual question", "Only heard", "Another question", "Fresh answer",
+        "A's actual question",
+        "Only heard",
+        "Another question",
+        "Fresh answer",
     ]
     assert len({message.id for message in conversation.messages}) == 4
     assert len((await history.list("owner")).conversations) == 1
 
 
 async def test_recent_context_is_bounded_by_actual_user_turns(store):
-    store.config = store.config.model_copy(update={
-        "voice": store.config.voice.model_copy(update={"history_turns": 2}),
-    })
+    """Verify recent context retains only the configured user turns and marks interrupted speech."""
+    store.config = store.config.model_copy(
+        update={
+            "voice": store.config.voice.model_copy(update={"history_turns": 2}),
+        }
+    )
     history = History(store)
     call_id, _ = await begin(store, history)
+    await history.append(
+        "owner", call_id, "greeting", "assistant", "An interrupted greeting", completed=False
+    )
     for index in range(4):
         await history.append(
             "owner", call_id, f"u{index}", "user", f"question {index}", completed=True
         )
         await history.append(
-            "owner", call_id, f"a{index}", "assistant", f"heard {index}", completed=index != 3
+            "owner", call_id, f"a{index}", "assistant", f"heard {index}", completed=index == 2
         )
     assert await history.recent("owner", call_id) == [
         {"role": "user", "content": "question 2"},
         {"role": "assistant", "content": "heard 2"},
         {"role": "user", "content": "question 3"},
         {"role": "assistant", "content": "heard 3"},
+        {"role": "developer", "content": INTERRUPTION_NOTE},
     ]
 
 
+@pytest.mark.parametrize("role", ["user", "assistant"])
+@pytest.mark.parametrize("completed", [False, True])
+async def test_recent_context_only_annotates_interrupted_assistant(store, role, completed):
+    """Verify interruption notes annotate only assistant context without changing saved messages."""
+    history = History(store)
+    call_id, slug = await begin(store, history)
+    text = "  Only this…\nwas heard  "
+    await history.append("owner", call_id, "segment", role, text, completed=completed)
+    saved = await history.get("owner", slug)
+    exported = transcript(saved)
+    assert saved.messages[0].text == text
+    assert saved.messages[0].interrupted is not completed
+    expected = [{"role": role, "content": text}]
+    if role == "assistant" and not completed:
+        expected.append({"role": "developer", "content": INTERRUPTION_NOTE})
+    assert await history.recent("owner", call_id) == expected
+    assert await history.recent("owner", call_id) == expected
+    assert await history.get("owner", slug) == saved
+    assert transcript(await history.get("owner", slug)) == exported
+    assert INTERRUPTION_NOTE not in exported
+
+
+@pytest.mark.parametrize("turns", [0, 1, 2])
+async def test_recent_context_retains_interrupted_greeting_within_turn_limit(store, turns):
+    """Verify an interrupted greeting remains in recent context while within the user turn limit."""
+    store.config = store.config.model_copy(
+        update={"voice": store.config.voice.model_copy(update={"history_turns": 2})}
+    )
+    history = History(store)
+    call_id, _ = await begin(store, history)
+    await history.append(
+        "owner", call_id, "greeting", "assistant", "Before we start", completed=False
+    )
+    for index in range(turns):
+        await history.append(
+            "owner", call_id, f"u{index}", "user", f"question {index}", completed=True
+        )
+    assert await history.recent("owner", call_id) == [
+        {"role": "assistant", "content": "Before we start"},
+        {"role": "developer", "content": INTERRUPTION_NOTE},
+        *[{"role": "user", "content": f"question {index}"} for index in range(turns)],
+    ]
+
+
+@pytest.mark.parametrize("owner", ["owner", "other"])
+async def test_recent_context_interruption_is_scoped_to_selected_chat(store, owner):
+    """Verify resumed context and interruption notes remain isolated to the selected chat."""
+    history = History(store)
+    first, slug_a = await begin(store, history)
+    await history.append("owner", first, "a", "assistant", "A's heard prefix", completed=False)
+    await history.finish("owner", first)
+    second, slug_b = await begin(store, history, owner)
+    await history.append(owner, second, "a", "assistant", "B's heard prefix", completed=False)
+    await history.append(owner, second, "u", "user", "B's correction", completed=False)
+    assert await history.recent(owner, second) == [
+        {"role": "assistant", "content": "B's heard prefix"},
+        {"role": "developer", "content": INTERRUPTION_NOTE},
+        {"role": "user", "content": "B's correction"},
+    ]
+    await history.finish(owner, second)
+    saved_a = await history.get("owner", slug_a)
+    saved_b = await history.get(owner, slug_b)
+    snapshot = await history.select("owner", slug_a)
+    resumed = uuid4()
+    await history.start("owner", resumed, snapshot.session_id, slug_a)
+    assert await history.recent("owner", resumed) == [
+        {"role": "assistant", "content": "A's heard prefix"},
+        {"role": "developer", "content": INTERRUPTION_NOTE},
+    ]
+    assert (await history.get("owner", slug_a)).messages == saved_a.messages
+    assert await history.get(owner, slug_b) == saved_b
+
+
 async def test_same_chat_media_reconnect_supplies_context_before_start(manager, store, monkeypatch):
+    """Verify reconnect supplies saved dialogue before startup without duplicating history."""
     first = await manager.start("owner", uuid4())
     assert PipelineDouble.instances[-1].resume_messages == []
     assert PipelineDouble.instances[-1].resume_slug is None
@@ -206,10 +328,12 @@ async def test_same_chat_media_reconnect_supplies_context_before_start(manager, 
     start = PipelineDouble.start
 
     async def observed(pipeline, *args):
+        """Assert resume context and unchanged finances before starting the pipeline double."""
         assert pipeline.resume_slug == first.conversation_slug
         assert pipeline.resume_messages == [
             {"role": "user", "content": "Remember my rent question."},
             {"role": "assistant", "content": "We were discussing"},
+            {"role": "developer", "content": INTERRUPTION_NOTE},
         ]
         assert await store.get("owner") == snapshot
         await start(pipeline, *args)
@@ -226,6 +350,7 @@ async def test_same_chat_media_reconnect_supplies_context_before_start(manager, 
 
 
 async def test_selected_a_pipeline_receives_neither_b_dialogue_nor_b_finances(manager, store):
+    """Verify resuming a selected chat supplies only its saved dialogue and financial snapshot."""
     first = await manager.start("owner", uuid4())
     await manager.call.pipeline.history.capture(human("A's rent question"))
     saved_a = await store.command(
@@ -234,9 +359,7 @@ async def test_selected_a_pipeline_receives_neither_b_dialogue_nor_b_finances(ma
     await manager.end("owner", first.call_id)
     second = await manager.start("owner", uuid4())
     await manager.call.pipeline.history.capture(human("B's unrelated question"))
-    await store.command(
-        "owner", parsed_command(facts("999"), (await store.get("owner")).revision)
-    )
+    await store.command("owner", parsed_command(facts("999"), (await store.get("owner")).revision))
     await manager.end("owner", second.call_id)
     selected = await manager.select("owner", first.conversation_slug)
     third = await manager.start("owner", uuid4(), first.conversation_slug)
@@ -251,12 +374,15 @@ async def test_selected_a_pipeline_receives_neither_b_dialogue_nor_b_finances(ma
 @pytest.mark.parametrize("owner", ["owner", "other"])
 @pytest.mark.parametrize("status", ["connecting", "active", "ending", "error"])
 async def test_selection_blocked_by_any_live_or_unclean_call(manager, store, owner, status):
+    """Verify any live or unclean call blocks chat selection without changing the snapshot."""
     history = History(store)
     call_id, slug = await begin(store, history)
     await history.finish("owner", call_id)
     snapshot = await store.get("owner")
     manager.call = Call(
-        owner, uuid4(), CallState(status=status, cleanup_confirmed=status != "error"),
+        owner,
+        uuid4(),
+        CallState(status=status, cleanup_confirmed=status != "error"),
         asyncio.get_running_loop().create_future(),
     )
     try:
@@ -269,6 +395,7 @@ async def test_selection_blocked_by_any_live_or_unclean_call(manager, store, own
 
 
 async def test_cross_chat_start_is_rejected_before_any_provider_setup(manager, store):
+    """Verify starting an unselected chat fails before creating provider resources."""
     history = History(store)
     first, slug_a = await begin(store, history)
     await history.finish("owner", first)
@@ -285,6 +412,7 @@ async def test_cross_chat_start_is_rejected_before_any_provider_setup(manager, s
 async def test_delayed_start_cannot_borrow_a_different_selected_workspace(
     manager, store, monkeypatch
 ):
+    """Verify a delayed call start fails if another chat becomes selected before setup."""
     history = History(store)
     first, slug_a = await begin(store, history)
     await history.finish("owner", first)
@@ -295,6 +423,7 @@ async def test_delayed_start_cannot_borrow_a_different_selected_workspace(
     get = store.get
 
     async def paused(owner):
+        """Hold a fetched snapshot while the selected conversation changes."""
         snapshot = await get(owner)
         reached.set()
         await release.wait()
@@ -315,6 +444,7 @@ async def test_delayed_start_cannot_borrow_a_different_selected_workspace(
 async def test_date_rebuild_updates_only_selected_memory_and_command_failure_rolls_back(
     store, monkeypatch
 ):
+    """Verify date rebuilds stay chat-local and failed commands or selections roll back memory."""
     history = History(store)
     first, slug_a = await begin(store, history)
     await history.finish("owner", first)
@@ -331,6 +461,7 @@ async def test_date_rebuild_updates_only_selected_memory_and_command_failure_rol
 
     @asynccontextmanager
     async def failed():
+        """Raise before commit to exercise atomic rollback of snapshot and conversation memory."""
         async with transaction():
             yield
             raise OSError("write failure")
@@ -353,6 +484,7 @@ async def test_date_rebuild_updates_only_selected_memory_and_command_failure_rol
 
 
 async def test_continue_api_ownership_selection_sse_and_revocation(auth_server, monkeypatch):
+    """Verify continuation publishes selected state once and enforces ownership and revocation."""
     application, client, _ = auth_server
     store = application.state.store
     await client.post("/api/session", json={})
@@ -383,6 +515,7 @@ async def test_continue_api_ownership_selection_sse_and_revocation(auth_server, 
     check = store.check
 
     async def paused(owner):
+        """Hold continuation after access validation until logout revokes the session."""
         await check(owner)
         reached.set()
         await release.wait()
@@ -402,12 +535,15 @@ async def test_continue_api_ownership_selection_sse_and_revocation(auth_server, 
 
 
 async def test_expired_memory_and_capacity_cannot_create_duplicate_reconnect(store):
+    """Verify reconnect reuses history capacity while expiry prevents selecting saved memory."""
     history = History(store)
     first, slug = await begin(store, history)
     await history.finish("owner", first)
-    store.config = store.config.model_copy(update={
-        "history": store.config.history.model_copy(update={"max_conversations": 1}),
-    })
+    store.config = store.config.model_copy(
+        update={
+            "history": store.config.history.model_copy(update={"max_conversations": 1}),
+        }
+    )
     snapshot = await store.get("owner")
     await history.start("owner", uuid4(), snapshot.session_id, slug)
     assert len((await history.list("owner")).conversations) == 1
@@ -422,6 +558,7 @@ async def test_expired_memory_and_capacity_cannot_create_duplicate_reconnect(sto
 
 @pytest.mark.parametrize("edited", [False, True])
 async def test_uncaptured_history_restores_only_provable_initial_state(store, edited):
+    """Verify history without captured memory restores only a provable unedited initial state."""
     snapshot = await store.create("owner")
     if edited:
         snapshot = await store.command("owner", parsed_command(facts("111")))
@@ -429,8 +566,17 @@ async def test_uncaptured_history_restores_only_provable_initial_state(store, ed
     async with store.lock, store.transaction():
         await store.connection().execute(
             "INSERT INTO conversations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (str(uuid4()), "owner", str(snapshot.session_id), slug, "Earlier chat",
-             NOW.isoformat(), NOW.isoformat(), snapshot.expires_at.isoformat(), ""),
+            (
+                str(uuid4()),
+                "owner",
+                str(snapshot.session_id),
+                slug,
+                "Earlier chat",
+                NOW.isoformat(),
+                NOW.isoformat(),
+                snapshot.expires_at.isoformat(),
+                "",
+            ),
         )
     if edited:
         snapshot = await store.command("owner", parsed_command(facts("999"), snapshot.revision))
@@ -447,6 +593,7 @@ async def test_uncaptured_history_restores_only_provable_initial_state(store, ed
 
 
 async def test_join_route_passes_slug_and_delete_ignores_it(auth_server, monkeypatch):
+    """Verify call start forwards the chat slug while deletion uses only the call ID."""
     application, client, _ = auth_server
     calls = application.state.calls
     end = AsyncMock(return_value=CallState(status="ended"))

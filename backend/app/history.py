@@ -16,6 +16,8 @@ from .workspace import project
 
 
 class ConversationSummary(Model):
+    """Saved conversation metadata and message count."""
+
     slug: str
     title: str
     started_at: datetime
@@ -25,6 +27,8 @@ class ConversationSummary(Model):
 
 
 class ConversationMessage(Model):
+    """A timestamped conversation message with interruption status."""
+
     id: str
     role: Literal["user", "assistant"]
     text: str
@@ -33,18 +37,26 @@ class ConversationMessage(Model):
 
 
 class SavedConversation(ConversationSummary):
+    """A saved conversation with its ordered transcript messages."""
+
     messages: list[ConversationMessage]
 
 
 class ConversationList(Model):
+    """A collection of saved conversation summaries."""
+
     conversations: list[ConversationSummary]
 
 
 class History:
+    """Persistent conversations, transcripts, and restorable financial snapshots."""
+
     def __init__(self, store: Store):
+        """Bind conversation history to the shared session store."""
         self.store = store
 
     def selection(self, snapshot: Snapshot, current: Snapshot, slug: str) -> Snapshot:
+        """Prepare a conversation snapshot for selection with fresh session identity."""
         revision = snapshot.revision
         snapshot.session_id = uuid4()
         snapshot.conversation_slug = slug
@@ -57,6 +69,7 @@ class History:
         return snapshot
 
     async def memory(self, key: str, slug: str, current: Snapshot) -> tuple[str, Snapshot]:
+        """Load a conversation's attributable financial snapshot or reject unsafe recovery."""
         # Only a captured snapshot or a provably untouched original session can be restored.
         store = self.store
         db = store.connection()
@@ -79,9 +92,7 @@ class History:
             if snapshot.expires_at <= store.clock():
                 raise Problem(410, "expired", "Conversation expired.")
             return str(row[0]), snapshot
-        async with db.execute(
-            "SELECT 1 FROM commands WHERE owner = ? LIMIT 1", (key,)
-        ) as cursor:
+        async with db.execute("SELECT 1 FROM commands WHERE owner = ? LIMIT 1", (key,)) as cursor:
             receipt = await cursor.fetchone()
         if (
             receipt is not None
@@ -91,7 +102,8 @@ class History:
             or current.created_at > datetime.fromisoformat(row[2])
             or current.as_of != current.created_at
             or current.expires_at != datetime.fromisoformat(row[3])
-            or current.facts != Facts(
+            or current.facts
+            != Facts(
                 opening=Money(amount_paise=None, status="unknown"),
                 reserve_paise=0,
                 coverage=Coverage(),
@@ -115,6 +127,7 @@ class History:
         return str(row[0]), snapshot
 
     async def select(self, owner: Owner, slug: str) -> Snapshot:
+        """Restore a saved conversation as the owner's current financial session."""
         store = self.store
         await store.check(owner)
         async with store.lock:
@@ -136,6 +149,7 @@ class History:
     async def start(
         self, owner: Owner, call_id: UUID, session_id: UUID, slug: str | None = None
     ) -> str:
+        """Start or resume saved conversation history for an active voice call."""
         store = self.store
         await store.check(owner)
         async with store.lock, store.transaction():
@@ -224,6 +238,7 @@ class History:
         return slug
 
     async def active(self, owner: Owner, call_id: UUID) -> str:
+        """Resolve an active call's conversation under the shared lock and transaction."""
         # Called only under the shared lock and transaction, including the Access recheck.
         key = await self.store.owner_key(owner)
         async with self.store.connection().execute(
@@ -240,20 +255,38 @@ class History:
             return str(row[0])
 
     async def recent(self, owner: Owner, call_id: UUID) -> list[dict[str, str]]:
+        """Return recent conversation turns with context for interrupted assistant speech."""
         store = self.store
         await store.check(owner)
         async with store.lock, store.transaction():
             logical_id = await self.active(owner, call_id)
             async with store.connection().execute(
-                "SELECT role, text FROM conversation_messages WHERE call_id = ? "
-                "ORDER BY sequence", (logical_id,)
+                "SELECT role, text, interrupted FROM conversation_messages "
+                "WHERE call_id = ? ORDER BY sequence",
+                (logical_id,),
             ) as cursor:
-                messages = [{"role": row[0], "content": row[1]} for row in await cursor.fetchall()]
-            turns = [index for index, item in enumerate(messages) if item["role"] == "user"]
-            start = turns[-store.config.voice.history_turns] if (
-                len(turns) > store.config.voice.history_turns
-            ) else 0
-            return messages[start:]
+                rows = list(await cursor.fetchall())
+            turns = [index for index, row in enumerate(rows) if row[0] == "user"]
+            start = (
+                turns[-store.config.voice.history_turns]
+                if (len(turns) > store.config.voice.history_turns)
+                else 0
+            )
+            messages: list[dict[str, str]] = []
+            for role, text, interrupted in rows[start:]:
+                messages.append({"role": role, "content": text})
+                if role == "assistant" and interrupted:
+                    messages.append(
+                        {
+                            "role": "developer",
+                            "content": (
+                                "The preceding assistant message is only the portion heard "
+                                "before interruption. Do not assume its explanation or question "
+                                "was completed."
+                            ),
+                        }
+                    )
+            return messages
 
     async def append(
         self,
@@ -266,6 +299,7 @@ class History:
         completed: bool,
         created_at: datetime | None = None,
     ) -> None:
+        """Save caption progress while preserving finalized or interrupted speech."""
         if not text.strip():
             return
         store = self.store
@@ -328,6 +362,7 @@ class History:
             )
 
     async def finish(self, owner: Owner, call_id: UUID, *, end: bool = True) -> None:
+        """Finalize stored captions and optionally mark the conversation as ended."""
         store = self.store
         await store.check(owner)
         async with store.lock, store.transaction():
@@ -343,6 +378,7 @@ class History:
                 )
 
     async def list(self, owner: Owner, search: str = "") -> ConversationList:
+        """List unexpired conversations matching optional title, date, or transcript text."""
         store = self.store
         if len(search) > store.config.history.max_search_chars:
             raise Problem(422, "invalidSearch", "Search is too long.")
@@ -379,6 +415,7 @@ class History:
             )
 
     async def get(self, owner: Owner, slug: str) -> SavedConversation:
+        """Retrieve an owner's unexpired conversation and its ordered messages."""
         store = self.store
         await store.check(owner)
         async with store.lock:
@@ -418,6 +455,7 @@ class History:
 
 
 def transcript(conversation: SavedConversation) -> str:
+    """Render a plain-text transcript with speakers, timestamps, and interruptions."""
     return "\n\n".join(
         f"[{message.created_at.isoformat()}] {'You' if message.role == 'user' else 'Isha'}\n"
         + message.text
@@ -427,7 +465,10 @@ def transcript(conversation: SavedConversation) -> str:
 
 
 class CaptionHistory:
+    """Voice caption capture for one call, preserving only speech heard by the user."""
+
     def __init__(self, history: History, owner: Owner, call_id: UUID):
+        """Bind caption capture to a call and initialize speech-segment tracking."""
         self.history = history
         self.owner = owner
         self.call_id = call_id
@@ -436,6 +477,7 @@ class CaptionHistory:
         self.frozen: set[int] = set()
 
     async def capture(self, event: dict[str, Any]) -> None:
+        """Persist final user transcripts and heard assistant speech from voice events."""
         async with self.lock:
             kind = event.get("type")
             data = event.get("data", {})
