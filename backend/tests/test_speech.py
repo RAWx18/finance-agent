@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -154,6 +156,142 @@ async def test_recognizer_failure_is_sanitized(config, monkeypatch):
     stt.push_error.assert_awaited_once_with(
         error_msg="Azure speech recognition could not start.", fatal=True
     )
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_native_start_settles_before_stop_after_cancellation(config, monkeypatch, queued):
+    stt = SpeechRecognition(
+        api_key="test-only", region="centralindia", phrases=[],
+        config=config.voice.model_copy(update={"shutdown_seconds": 0.02}),
+    )
+    recognizer = Mock()
+    stream = Mock()
+    monkeypatch.setattr("app.speech.SpeechRecognizer", Mock(return_value=recognizer))
+    monkeypatch.setattr("app.speech.PhraseListGrammar.from_recognizer", Mock())
+    monkeypatch.setattr("app.speech.PushAudioInputStream", Mock(return_value=stream))
+    monkeypatch.setattr("app.speech.AudioConfig", Mock())
+    loop = asyncio.get_running_loop()
+    release = Event()
+    entered = asyncio.Event()
+    submitted = asyncio.Event()
+    calls = []
+
+    def blocked():
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+
+    def start():
+        if not queued:
+            blocked()
+        calls.append("start")
+
+    recognizer.start_continuous_recognition_async.return_value.get.side_effect = start
+    recognizer.stop_continuous_recognition_async.return_value.get.side_effect = (
+        lambda: calls.append("stop")
+    )
+    # A single occupied executor proves cancellation cannot skip a queued native start.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        run_in_executor = loop.run_in_executor
+
+        def submit(pool, function, *args):
+            future = run_in_executor(executor, function, *args)
+            submitted.set()
+            return future
+
+        monkeypatch.setattr(loop, "run_in_executor", submit)
+        blocker = executor.submit(blocked) if queued else None
+        connect = asyncio.create_task(stt._connect())
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            await asyncio.wait_for(submitted.wait(), 2)
+            connect.cancel()
+            with pytest.raises(TimeoutError):
+                await connect
+            task = stt._native_stop
+            assert stt._recognition_id is None and not stt._native_start.done()
+            with pytest.raises(TimeoutError):
+                await stt._disconnect()
+            assert stt._native_stop is task and not task.done()
+            recognizer.stop_continuous_recognition_async.assert_not_called()
+            stream.close.assert_not_called()
+            release.set()
+            await asyncio.wait_for(asyncio.shield(task), 2)
+            await stt._disconnect()
+            assert calls == ["start", "stop"]
+            stream.close.assert_called_once()
+            assert stt._speech_recognizer is None and stt._audio_stream is None
+        finally:
+            release.set()
+            await asyncio.gather(connect, return_exceptions=True)
+            if stt._native_stop is not None:
+                await asyncio.wait_for(asyncio.shield(stt._native_stop), 2)
+            if blocker is not None:
+                blocker.result()
+
+
+async def test_native_start_timeout_cannot_leave_a_late_recognizer(config, monkeypatch):
+    stt = SpeechRecognition(
+        api_key="test-only", region="centralindia", phrases=[],
+        config=config.voice.model_copy(update={"startup_seconds": 0.02, "shutdown_seconds": 0.02}),
+    )
+    recognizer = Mock()
+    monkeypatch.setattr("app.speech.SpeechRecognizer", Mock(return_value=recognizer))
+    monkeypatch.setattr("app.speech.PhraseListGrammar.from_recognizer", Mock())
+    monkeypatch.setattr("app.speech.PushAudioInputStream", Mock())
+    monkeypatch.setattr("app.speech.AudioConfig", Mock())
+    release = Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def start():
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+
+    recognizer.start_continuous_recognition_async.return_value.get.side_effect = start
+    try:
+        with pytest.raises(TimeoutError):
+            await stt._connect()
+        await asyncio.wait_for(entered.wait(), 2)
+        task = stt._native_start
+        assert not task.done()
+        with pytest.raises(TimeoutError):
+            await stt.cleanup()
+        recognizer.stop_continuous_recognition_async.assert_not_called()
+        assert stt._native_start is task and stt._speech_recognizer is recognizer
+    finally:
+        release.set()
+        if stt._native_stop is not None:
+            await asyncio.wait_for(asyncio.shield(stt._native_stop), 2)
+    await stt.cleanup()
+    recognizer.start_continuous_recognition_async.assert_called_once()
+    recognizer.stop_continuous_recognition_async.assert_called_once()
+
+
+@pytest.mark.parametrize("service", ["recognition", "synthesis"])
+async def test_failed_native_stop_remains_unconfirmed(config, monkeypatch, service):
+    provider = Mock()
+    if service == "recognition":
+        adapter = SpeechRecognition(api_key="test-only", region="centralindia", phrases=[])
+        adapter._speech_recognizer = provider
+        adapter._audio_stream = Mock()
+        stop = provider.stop_continuous_recognition_async
+        operation = adapter._disconnect
+    else:
+        adapter = SpeechSynthesis(api_key="test-only", region="centralindia")
+        adapter._speech_synthesizer = provider
+        adapter._retire_synthesis = Mock()
+        stop = provider.stop_speaking_async
+        operation = adapter._stop_synthesis
+    stop.return_value.get.side_effect = RuntimeError("native stop failed")
+    with pytest.raises(RuntimeError, match="native stop failed"):
+        await operation()
+    task = adapter._native_stop
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="native stop failed"):
+            await adapter.cleanup()
+        assert adapter._native_stop is task
+    stop.assert_called_once()
+    stop.return_value.get.assert_called_once()
 
 
 @pytest.mark.parametrize("region", ["https://centralindia", "a.b", "a/b", "a@b", "-a", "a-", "a\n"])

@@ -278,7 +278,8 @@ def test_http_preflight_failure_keeps_only_safe_operator_diagnostics(
         assert state.status == "error" and state.message == reason
         for method in ("GET", "DELETE", "GET"):
             result = client.request(
-                method, "/api/session/call",
+                method,
+                "/api/session/call",
                 **({"json": {"callId": str(call.id)}} if method == "DELETE" else {}),
             )
             assert result.status_code == 200
@@ -519,9 +520,12 @@ def test_http_enabled_ownership_shutdown(config, tmp_path, provider_doubles):
         sign_in(client, "google-user-two")
         client.post("/api/session", json={})
         assert client.get("/api/session/call").json()["status"] == "idle"
-        assert client.request(
-            "DELETE", "/api/session/call", json={"callId": str(uuid4())}
-        ).json()["status"] == "ended"
+        assert (
+            client.request("DELETE", "/api/session/call", json={"callId": str(uuid4())}).json()[
+                "status"
+            ]
+            == "ended"
+        )
         client.cookies.clear()
         client.cookies.set(COOKIE, cookie)
         assert client.delete("/api/session").status_code == 200
@@ -687,12 +691,24 @@ async def test_installed_pipecat_construction_and_azure_tool_schema(
         await pipeline.close()
 
 
-async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(store, monkeypatch):
+@pytest.mark.parametrize("stage", ["begin", "body"])
+async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(
+    store, monkeypatch, stage
+):
     await store.create("owner")
     tools = VoiceTools(store, "owner", uuid4(), lambda snapshot: None)
     transaction = store.transaction
+    db = store.connection()
+    execute = db._execute
     reached = asyncio.Event()
     release = asyncio.Event()
+
+    async def paused_execute(function, *args, **kwargs):
+        result = await execute(function, *args, **kwargs)
+        if args and args[0] == "BEGIN IMMEDIATE":
+            reached.set()
+            await release.wait()
+        return result
 
     @asynccontextmanager
     async def paused_transaction():
@@ -701,16 +717,35 @@ async def test_cancelled_voice_write_rolls_back_and_same_id_can_be_retried(store
             reached.set()
             await release.wait()
 
-    monkeypatch.setattr(store, "transaction", paused_transaction)
-    patch = {"expectedRevision": 0, "opening": money("100")}
+    if stage == "begin":
+        monkeypatch.setattr(db, "_execute", paused_execute)
+    else:
+        monkeypatch.setattr(store, "transaction", paused_transaction)
+    patch = {
+        "expectedRevision": 0,
+        "opening": money("100"),
+        "records": [
+            {
+                "kind": "essential",
+                "label": "Bill",
+                "amount": money("40"),
+                "schedule": {"date": "2026-09-15"},
+            }
+        ],
+    }
     task = asyncio.create_task(tools.update_facts(patch, "cancelled"))
     await asyncio.wait_for(reached.wait(), 2)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    monkeypatch.setattr(db, "_execute", execute)
     monkeypatch.setattr(store, "transaction", transaction)
     assert (await store.get("owner")).revision == 0
-    assert (await tools.update_facts(patch, "cancelled"))["snapshot"]["revision"] == 1
+    result = await tools.update_facts(patch, "cancelled")
+    assert result["snapshot"]["revision"] == 1
+    assert len(result["snapshot"]["facts"]["records"]) == 1
+    assert await tools.update_facts(patch, "cancelled") == result
+    assert not db.in_transaction
 
 
 @pytest.mark.parametrize("terminal", ["readiness", "expiry", "shutdown", "provider"])

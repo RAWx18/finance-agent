@@ -4,6 +4,7 @@
 import asyncio
 import json
 from datetime import timedelta
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -44,7 +45,7 @@ pytestmark = pytest.mark.parametrize(
 
 
 @pytest.mark.parametrize("committed", [False, True])
-@pytest.mark.parametrize("cause", ["timeout", "connection", "throttle"])
+@pytest.mark.parametrize("cause", ["timeout", "connection", "throttle", "service"])
 async def test_response_failure_continues_once_without_replaying_writes(
     voice, synthesis, store, committed, cause
 ):
@@ -76,7 +77,10 @@ async def test_response_failure_continues_once_without_replaying_writes(
                 )
             if cause == "connection":
                 raise httpx.ConnectError("secret-provider-body", request=request)
-            return httpx.Response(429, json={"error": {"message": "secret-provider-body"}})
+            return httpx.Response(
+                503 if cause == "service" else 429,
+                json={"error": {"message": "secret-provider-body"}},
+            )
         assert body["tool_choice"] == "none"
         assert len(requests) == int(committed) + 2
         assert not any(message.get("role") == "tool" for message in body["messages"])
@@ -235,18 +239,38 @@ async def test_unexpected_framework_failures_revoke_output(voice, store, monkeyp
     assert await store.get("owner") == baseline
 
 
-async def test_native_shutdown_deadline_retires_recognizer_first(voice, monkeypatch):
+async def test_native_shutdown_deadline_retires_recognizer_first(voice):
     recognizer = voice.stt._speech_recognizer
     voice.stt.config = voice.stt.config.model_copy(update={"shutdown_seconds": 0.02})
+    release = Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
 
-    async def blocked(*args):
-        await asyncio.Event().wait()
+    def blocked():
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
 
-    monkeypatch.setattr("app.speech.asyncio.to_thread", blocked)
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(voice.stt._disconnect(), 0.2)
-    assert voice.stt._recognition_id is None and voice.stt._speech_recognizer is None
-    recognizer.session_stopped.disconnect_all.assert_called_once()
+    recognizer.stop_continuous_recognition_async.return_value.get.side_effect = blocked
+    try:
+        with pytest.raises(TimeoutError):
+            await voice.stt._disconnect()
+        await asyncio.wait_for(entered.wait(), 2)
+        task = voice.stt._native_stop
+        assert not task.done()
+        assert voice.stt._recognition_id is None
+        assert voice.stt._speech_recognizer is recognizer
+        for _ in range(2):
+            with pytest.raises(TimeoutError):
+                await voice.stt._disconnect()
+            assert voice.stt._native_stop is task and not task.done()
+        recognizer.session_stopped.disconnect_all.assert_called_once()
+        recognizer.stop_continuous_recognition_async.return_value.get.assert_called_once()
+    finally:
+        release.set()
+        if voice.stt._native_stop is not None:
+            await asyncio.wait_for(asyncio.shield(voice.stt._native_stop), 2)
+    await voice.stt._disconnect()
+    assert voice.stt._speech_recognizer is None and voice.stt._audio_stream is None
 
 
 async def test_overall_synthesis_deadline_is_independent_of_audio_progress(voice, synthesis):
@@ -273,7 +297,7 @@ async def test_overall_synthesis_deadline_is_independent_of_audio_progress(voice
     instance.stop_speaking_async.assert_called_once()
 
 
-@pytest.mark.parametrize("status", [400, 401, 403, 404, 500])
+@pytest.mark.parametrize("status", [400, 401, 403, 404])
 async def test_nontransient_model_failures_are_terminal(voice, store, status):
     voice.expect_failure = True
     failed = asyncio.Event()

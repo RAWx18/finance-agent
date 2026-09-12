@@ -100,6 +100,7 @@ async function hear(bot = track()) { await act(async () => sdk.listeners.get(RTV
 
 beforeEach(() => {
   orb.mockClear();
+  join.expiresAt = new Date(Date.now() + 3600000).toISOString();
   vi.spyOn(crypto, 'randomUUID').mockReturnValue(join.callId);
   vi.spyOn(performance, 'mark').mockImplementation(() => ({} as PerformanceMark));
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
@@ -121,6 +122,36 @@ beforeEach(() => {
 });
 
 describe('owned lifecycle deadlines and background cleanup', () => {
+  it.each(['response', 'before connect'] as const)('ends expired media credentials at %s without discarding the plan', async stage => {
+    if (stage === 'response') vi.mocked(api.startCall).mockRejectedValueOnce(new ApiError(410, { code: 'callExpired', message: 'Call expired.' }));
+    else vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() - 1).toISOString() });
+    const view = show();
+    await userEvent.click(panel().getByRole('button', { name: 'Start talking' }));
+    expect(await screen.findByRole('status', { name: 'Call expired' })).toHaveTextContent('saved figures');
+    expect(sdk.connect).not.toHaveBeenCalled();
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+    expect(view.onStarted).toHaveBeenCalledWith(snapshot());
+    expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    expect(screen.queryByText('Conversation unavailable')).not.toBeInTheDocument();
+  });
+
+  it('stops an expired active call without automatic token renewal or a replacement room', async () => {
+    vi.useFakeTimers();
+    const view = show();
+    try {
+      vi.mocked(api.startCall).mockResolvedValueOnce({ ...join, expiresAt: new Date(Date.now() + 30000).toISOString() });
+      await act(async () => fireEvent.click(panel().getByRole('button', { name: 'Start talking' })));
+      ready();
+      const microphone = sdk.tracks().local.audio as MediaStreamTrack;
+      await act(async () => vi.advanceTimersByTimeAsync(30000));
+      expect(screen.getByRole('status', { name: 'Call expired' })).toBeVisible();
+      expect(microphone.stop).toHaveBeenCalled();
+      expect(api.startCall).toHaveBeenCalledOnce();
+      expect(api.endCall).toHaveBeenCalledExactlyOnceWith(join.callId, expect.any(AbortSignal));
+      expect(panel().getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+    } finally { view.unmount(); vi.useRealTimers(); }
+  });
+
   it.each(['resolve', 'reject'] as const)('allows reconnect before permission settles and isolates its late %s', async settlement => {
     const devices = deferred<void>(); sdk.initDevices.mockReturnValueOnce(devices.promise);
     const view = show();

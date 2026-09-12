@@ -47,7 +47,7 @@ describe('release recovery: financial freshness and command ownership', () => {
     const { result } = renderHook(useSession);
     await waitFor(() => expect(Stream.instances).toHaveLength(1));
     act(() => Stream.instances[0].emit('snapshot', snapshot()));
-    let saving!: Promise<void>;
+    let saving!: ReturnType<typeof result.current.perform>;
     act(() => { saving = result.current.perform('save', { type: 'updateFacts', changes: {
       expectedRevision: 0, opening: { amount: '20.10', status: 'exact' },
     } }); });
@@ -116,7 +116,7 @@ describe('release recovery: financial freshness and command ownership', () => {
       const { result, unmount } = renderHook(useSession);
       await waitFor(() => expect(result.current.state.phase).toBe('ready'));
       act(() => Stream.instances.at(-1)!.emit('snapshot', snapshot()));
-      let pending!: Promise<void>;
+      let pending!: ReturnType<typeof result.current.perform>;
       act(() => { pending = result.current.perform(action, action === 'save'
         ? { type: 'updateFacts', changes: { expectedRevision: 0, opening: { amount: '20', status: 'exact' } } } : undefined); });
       expect(action === 'delete' ? api.delete : action === 'start' ? api.start : api.save).toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('release recovery: financial freshness and command ownership', () => {
     const { result } = renderHook(useSession);
     await waitFor(() => expect(result.current.state.phase).toBe('ready'));
     act(() => result.current.dispatch({ type: 'terminal', phase: 'expired', message: 'Expired' }));
-    let pending!: Promise<void>;
+    let pending!: ReturnType<typeof result.current.perform>;
     act(() => { pending = result.current.perform('start'); });
     const state = result.current.state;
     act(() => invalidateRequests());
@@ -180,7 +180,7 @@ describe('release recovery: financial freshness and command ownership', () => {
     await waitFor(() => expect(Stream.instances).toHaveLength(1));
     const stream = Stream.instances[0];
     act(() => stream.emit('snapshot', snapshot()));
-    let pending!: Promise<void>;
+    let pending!: ReturnType<typeof result.current.perform>;
     act(() => { pending = result.current.perform('delete'); });
     act(() => stream.emit('deleted', {}));
     expect(stream.closed).toBe(true);

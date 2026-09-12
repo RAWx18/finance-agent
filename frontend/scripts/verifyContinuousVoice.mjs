@@ -495,12 +495,16 @@ async function run(values) {
     if (context) {
       await context.setOffline(false).catch(() => undefined);
       if (signedIn) {
-        for (const [method, path, accepted] of [
-          ['delete', '/api/session/call', [200, 404]], ['delete', '/api/session', [200, 404]],
-        ]) {
-          const response = await context.request[method](path, { data: method === 'post' ? {} : undefined,
-            timeout: 6000 }).catch(() => null);
-          cleaned &&= !!response && accepted.includes(response.status());
+        const current = await context.request.get('/api/session/call', { timeout: 6000 }).catch(() => null);
+        let call = current?.ok() ? await current.json() : null;
+        if (call?.callId) {
+          const end = await context.request.delete('/api/session/call', { data: { callId: call.callId }, timeout: 30000 }).catch(() => null);
+          call = end?.ok() ? await end.json() : null;
+        }
+        cleaned = current?.status() === 404 || (call?.cleanupConfirmed === true && ['idle', 'ended', 'error'].includes(call.status));
+        if (cleaned) {
+          const response = await context.request.delete('/api/session', { timeout: 6000 }).catch(() => null);
+          cleaned &&= !!response && [200, 404].includes(response.status());
         }
       }
       const logout = await context.request.post('/api/auth/logout', { data: {}, timeout: 6000 }).catch(() => null);

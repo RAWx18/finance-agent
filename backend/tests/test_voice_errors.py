@@ -5,6 +5,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -21,6 +22,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from app.models import CallState
+from app.speech import SpeechRecognition, SpeechSynthesis
 from app.store import Problem
 from app.voice import Call, CallManager
 from app.voice_tools import VoiceTools
@@ -323,6 +325,123 @@ async def test_real_runner_terminal_paths_release_the_owned_room(lifecycle, stor
     assert not store.listeners
 
 
+@pytest.mark.parametrize("service", [SpeechRecognition, SpeechSynthesis])
+async def test_native_stop_blocks_replacement_until_reobserved(
+    lifecycle, voice_boundaries, service
+):
+    manager = lifecycle.manager
+    manager.config = manager.config.model_copy(update={
+        "voice": manager.config.voice.model_copy(update={"shutdown_seconds": 0.1})
+    })
+    await manager.start("owner", uuid4())
+    call = manager.call
+    pipeline = call.pipeline
+    await asyncio.wait_for(pipeline.started.wait(), 2)
+    adapter = next(item for item in pipeline.processors if isinstance(item, service))
+    adapter.config = adapter.config.model_copy(update={"shutdown_seconds": 0.02})
+    release = Event()
+    entered = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def stop():
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+
+    if service is SpeechRecognition:
+        provider = adapter._speech_recognizer
+        native_stop = provider.stop_continuous_recognition_async
+    else:
+        provider = voice_boundaries.synthesizer
+        native_stop = provider.stop_speaking_async
+        requested = asyncio.Event()
+        provider.speak_ssml_async.side_effect = lambda _: requested.set()
+        voice_boundaries.responses.put_nowait(text_reply("What payment is due next?"))
+        await pipeline.llm._client._client.aclose()
+        pipeline.llm._client._client = httpx.AsyncClient(
+            transport=httpx.MockTransport(voice_boundaries.respond)
+        )
+        pipeline.client_ready.set()
+        pipeline.initiative = "opening"
+        await pipeline.worker.queue_frame(LLMRunFrame())
+        await asyncio.wait_for(requested.wait(), 2)
+    native_stop.return_value.get.side_effect = stop
+    end = asyncio.create_task(manager.end("owner", call.id))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await end
+        await asyncio.wait_for(asyncio.shield(call.task), 2)
+        task = adapter._native_stop
+        assert task is not None and not task.done()
+        for _ in range(2):
+            state = await manager.end("owner", call.id)
+            assert not state.cleanup_confirmed
+            assert not manager.state("owner").model_dump(by_alias=True)["cleanupConfirmed"]
+            if call.teardown is not None:
+                await asyncio.wait_for(asyncio.shield(call.teardown), 2)
+            assert not manager.state("owner").cleanup_confirmed
+            assert adapter._native_stop is task and not task.done()
+            assert call.pipeline is pipeline
+            with pytest.raises(Problem) as error:
+                await manager.start("owner", uuid4())
+            assert error.value.body.code == "callBusy"
+        native_stop.assert_called_once()
+        native_stop.return_value.get.assert_called_once()
+        voice_boundaries.transport_factory.assert_called_once()
+        lifecycle.rooms.create.assert_awaited_once()
+        release.set()
+        await asyncio.wait_for(asyncio.shield(task), 2)
+        await asyncio.wait_for(asyncio.shield(call.operations["pipeline"]), 2)
+        await manager.end("owner", call.id)
+        await asyncio.wait_for(asyncio.shield(call.teardown), 2)
+        assert manager.state("owner").cleanup_confirmed
+        assert call.pipeline is None
+        native_stop.assert_called_once()
+        assert pipeline.task.done()
+        lifecycle.rooms.delete.assert_awaited_once()
+        lifecycle.rooms.close.assert_awaited_once()
+    finally:
+        release.set()
+        await asyncio.gather(end, return_exceptions=True)
+        if adapter._native_stop is not None:
+            await asyncio.wait_for(asyncio.shield(adapter._native_stop), 2)
+        await manager.end("owner", call.id)
+
+
+async def test_supervised_system_exit_is_sanitized_without_escaping_event_loop(voice, capsys):
+    voice.expect_failure = True
+
+    async def exit_worker():
+        raise SystemExit("private-worker-body")
+
+    task = voice.pipeline.worker.task_manager.create_task(exit_worker(), "exiting-worker")
+    await asyncio.wait_for(task, 2)
+    assert voice.pipeline.revoked
+    voice.failed.assert_called_once()
+    assert voice.pipeline.metrics["worker_crashes"] == 1
+    assert "private-worker-body" not in str(capsys.readouterr())
+
+
+@pytest.mark.parametrize("queued", [False, True])
+async def test_supervised_cancellation_is_silent_and_closes_queued_coroutines(voice, queued):
+    entered = asyncio.Event()
+
+    async def pending():
+        entered.set()
+        await asyncio.Event().wait()
+
+    coroutine = pending()
+    task = voice.pipeline.worker.task_manager.create_task(coroutine, "cancelled-worker")
+    if not queued:
+        await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert coroutine.cr_frame is None
+    assert "worker_crashes" not in voice.pipeline.metrics
+    assert not voice.pipeline.revoked
+    voice.failed.assert_not_called()
+
+
 async def test_end_during_provider_startup_never_returns_a_join(lifecycle, monkeypatch):
     reached = asyncio.Event()
     closing = asyncio.Event()
@@ -375,6 +494,7 @@ async def test_room_cleanup_deadline_preserves_primary_setup_failure(lifecycle, 
     )
     lifecycle.rooms.delete.assert_awaited_once()
     lifecycle.rooms.close.assert_awaited_once()
+    await asyncio.wait_for(asyncio.shield(manager.call.task), 1)
     assert manager.call.task.done()
 
 

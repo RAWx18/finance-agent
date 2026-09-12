@@ -48,15 +48,55 @@ describe('same-origin API contract', () => {
     expect(errorMessage(new ApiError(422, { code: 'validationError', message: 'private input' }), 'replaceFacts')).toContain('Check amounts, dates');
   });
   it('uses cookie-owned call endpoints and allows termination during page teardown', async () => {
-    const fetch = vi.fn().mockImplementation(() => Promise.resolve(new Response('{}')));
-    vi.stubGlobal('fetch', fetch);
     const callId = crypto.randomUUID();
+    const state = { callId, status: 'ended', cleanupConfirmed: true, message: null };
+    const join = { callId, url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString() };
+    const fetch = vi.fn().mockImplementation((_path, init: RequestInit) => Promise.resolve(new Response(JSON.stringify(init.method === 'POST' ? join : state))));
+    vi.stubGlobal('fetch', fetch);
     const body = JSON.stringify({ callId });
     const controller = new AbortController();
     await api.call(); await api.startCall(callId); await api.endCall(callId, controller.signal);
     expect(fetch).toHaveBeenNthCalledWith(1, '/api/session/call', { credentials: 'same-origin', signal: undefined });
     expect(fetch).toHaveBeenNthCalledWith(2, '/api/session/call', { credentials: 'same-origin', method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
     expect(fetch).toHaveBeenNthCalledWith(3, '/api/session/call', { credentials: 'same-origin', method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body, keepalive: true, signal: controller.signal });
+  });
+
+  it.each([null, [], {}, { callId: 'invalid' }, { callId: null, status: 'active', cleanupConfirmed: true, message: null },
+    { callId: null, status: 'ended', message: null }, { callId: null, status: 'unknown', cleanupConfirmed: true, message: null },
+  ])('rejects malformed call state without claiming termination: %j', async value => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(value))));
+    await expect(api.call()).rejects.toThrow();
+  });
+
+  it.each([{ token: '' }, { token: null }, { expiresAt: 'invalid' }, { url: 'https://evil.example/room' },
+    { url: 'https://test.daily.co.evil.example/room' }, { url: 'https://user:secret@test.daily.co/room' },
+    { url: 'https://test.daily.co/room?token=secret' }, { url: 'http://test.daily.co/room' },
+  ])('rejects malformed credentials before provider connection: %j', async fields => {
+    const callId = crypto.randomUUID();
+    const join = { callId, url: 'https://test.daily.co/room', token: 'test-token', expiresAt: new Date(Date.now() + 60000).toISOString(), ...fields };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(join))));
+    await expect(api.startCall(callId)).rejects.toThrow();
+  });
+
+  it('rejects expired media credentials without treating the financial session as expired', async () => {
+    const callId = crypto.randomUUID();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ callId, url: 'https://test.daily.co/room',
+      token: 'test-token', expiresAt: new Date(Date.now() - 1).toISOString() }))));
+    await expect(api.startCall(callId)).rejects.toMatchObject({ status: 410, body: { code: 'callExpired' } });
+  });
+
+  it('rejects a termination response for another call', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ callId: crypto.randomUUID(), status: 'ended', cleanupConfirmed: true, message: null }))));
+    await expect(api.endCall(crypto.randomUUID())).rejects.toThrow('Call ownership could not be confirmed.');
+  });
+
+  it.each([null, [], {}, { message: 'private provider detail' }])('retains authentication-loss handling for malformed errors: %j', async body => {
+    const lost = vi.fn(); window.addEventListener('auth:loss', lost);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 401 })));
+    try {
+      await expect(api.call()).rejects.toMatchObject({ status: 401, body: { code: 'unavailable' } });
+      expect(lost).toHaveBeenCalledOnce();
+    } finally { window.removeEventListener('auth:loss', lost); }
   });
   it('establishes ownership only through explicit JSON POST with same-origin credentials', async () => {
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify(snapshot())));

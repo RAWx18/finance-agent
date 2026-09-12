@@ -238,7 +238,7 @@ async def test_failed_or_blocked_response_is_never_regenerated(voice, store, cau
         tool_reply("update_facts", {"expectedRevision": 0, "opening": money("200")}, "saved")
     )
     if cause == "http":
-        reply = httpx.Response(500, json={"error": {"message": "Provider unavailable"}})
+        reply = httpx.Response(401, json={"error": {"message": "Provider unavailable"}})
     elif cause == "unfinished":
         reply = httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content="data: [DONE]\n\n"

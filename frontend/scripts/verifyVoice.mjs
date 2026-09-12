@@ -139,9 +139,13 @@ try {
   process.exitCode = 1;
 } finally {
   if (session) {
-    const end = await context.request.delete('/api/session/call', { timeout: 30000 }).catch(() => null);
-    const result = end?.ok() ? await end.json() : null;
-    let cleaned = end?.status() === 404 || (result && ['ended', 'idle', 'error'].includes(result.status));
+    const current = await context.request.get('/api/session/call', { timeout: 10000 }).catch(() => null);
+    let result = current?.ok() ? await current.json() : null;
+    if (result?.callId) {
+      const end = await context.request.delete('/api/session/call', { data: { callId: result.callId }, timeout: 30000 }).catch(() => null);
+      result = end?.ok() ? await end.json() : null;
+    }
+    let cleaned = current?.status() === 404 || (result?.cleanupConfirmed === true && ['ended', 'idle', 'error'].includes(result.status));
     if (cleaned) cleaned = (await context.request.delete('/api/session', { timeout: 10000 })).ok();
     console.log(JSON.stringify({ check: 'synthetic_session_cleanup', passed: !!cleaned, room }));
     if (!cleaned) process.exitCode = 1;

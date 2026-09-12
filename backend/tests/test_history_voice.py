@@ -151,10 +151,10 @@ async def test_caption_storage_failure_uses_real_pipeline_fail_safe(voice, store
 
 async def test_two_actual_calls_have_distinct_durable_chats(lifecycle, store):
     manager = lifecycle.manager
-    first = await manager.start("owner")
-    await manager.end("owner")
-    second = await manager.start("owner")
-    await manager.end("owner")
+    first = await manager.start("owner", uuid4())
+    await manager.end("owner", first.call_id)
+    second = await manager.start("owner", uuid4())
+    await manager.end("owner", second.call_id)
     assert first.call_id != second.call_id
     history = History(store)
     conversations = (await history.list("owner")).conversations

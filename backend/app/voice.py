@@ -7,6 +7,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from time import monotonic
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
@@ -219,6 +220,18 @@ class Call:
     history: History | None = None
     operations: dict[str, asyncio.Task[bool]] = field(default_factory=dict)
     watchers: list[asyncio.Task[Any]] = field(default_factory=list)
+    admitted_at: float = field(default_factory=monotonic)
+    timings: dict[str, float] = field(default_factory=dict)
+
+    def mark(self, stage: str) -> None:
+        # Monotonic seconds since admission; repeated stages record the latest attempt.
+        self.timings[stage] = monotonic() - self.admitted_at
+        logger.info(
+            "Voice lifecycle call=%s stage=%s elapsed_seconds=%.6f",
+            self.id,
+            stage,
+            self.timings[stage],
+        )
 
 
 class CallManager:
@@ -233,6 +246,15 @@ class CallManager:
         self.lock = asyncio.Lock()
         self.closed = False
         self.attempts: dict[tuple[Owner, UUID], datetime | None] = {}
+        self.voice_checked = False
+        self.voice_lock = asyncio.Lock()
+
+    async def prepare_voice(self) -> None:
+        async with self.voice_lock:
+            if not self.voice_checked:
+                # Configuration is immutable for the manager's lifetime; failures remain retryable.
+                await check_voice(self.config, self.environment)
+                self.voice_checked = True
 
     def remember(self, owner: Owner, call_id: UUID) -> None:
         now = self.store.clock()
@@ -244,7 +266,11 @@ class CallManager:
         if (owner, call_id) in self.attempts:
             return
         # Retain identities beyond the login's maximum lifetime; never evict a live tombstone.
-        if len(self.attempts) >= self.config.max_commands:
+        user = owner.user_id if isinstance(owner, Access) else owner
+        if sum(
+            (access.user_id if isinstance(access, Access) else access) == user
+            for access, _ in self.attempts
+        ) >= self.config.max_commands:
             raise Problem(
                 409, "callLimit", "Call identity capacity reached; try after sign-in expiry."
             )
@@ -325,6 +351,8 @@ class CallManager:
             raise
 
     def stop(self, call: Call) -> None:
+        if "shutdownRequested" not in call.timings:
+            call.mark("shutdownRequested")
         call.stop.set()
         if call.pipeline is not None:
             call.pipeline.invalidate()
@@ -362,6 +390,15 @@ class CallManager:
         return state
 
     def invalidate(self, user_id: str, session_hash: str | None = None) -> None:
+        self.attempts = {
+            key: expires
+            for key, expires in self.attempts.items()
+            if not (
+                isinstance(key[0], Access)
+                and key[0].user_id == user_id
+                and (session_hash is None or key[0].session_hash == session_hash)
+            )
+        }
         call = self.call
         if (
             call is not None
@@ -408,6 +445,7 @@ class CallManager:
 
     async def run(self, call: Call) -> None:
         call.running.set()
+        call.mark("setupStarted")
         voice = self.config.voice
         queue: asyncio.Queue[Snapshot | Error] | None = None
         setup_error: Problem | None = None
@@ -447,31 +485,49 @@ class CallManager:
                     if self.auth is None:
                         raise AuthProblem(401, "unauthenticated")
                     expires = min(expires, (await self.auth.session(call.owner)).expires_at)
-                await check_voice(self.config, self.environment)
+                call.mark("voiceCheckStarted")
+                await self.prepare_voice()
+                call.mark("voiceCheckComplete")
                 if call.stop.is_set():
                     raise asyncio.CancelledError
                 rooms = DailyRooms(self.environment, voice.startup_seconds)
                 call.rooms = rooms
+                call.mark("roomCreateStarted")
                 url = await rooms.create(call.room_name, int(expires.timestamp()))
+                call.mark("roomCreateComplete")
                 if call.stop.is_set():
                     raise asyncio.CancelledError
-                browser_token = await rooms.token(call.room_name, int(expires.timestamp()), uuid4())
-                if call.stop.is_set():
-                    raise asyncio.CancelledError
-                bot_token = await rooms.token(call.room_name, int(expires.timestamp()), uuid4())
+                call.mark("tokensStarted")
+                try:
+                    # Settle both requests before teardown can delete their room.
+                    async with asyncio.TaskGroup() as tokens:
+                        browser_token = tokens.create_task(
+                            rooms.token(call.room_name, int(expires.timestamp()), uuid4())
+                        )
+                        bot_token = tokens.create_task(
+                            rooms.token(call.room_name, int(expires.timestamp()), uuid4())
+                        )
+                except ExceptionGroup as error:
+                    for cause in error.exceptions:
+                        if isinstance(cause, Problem):
+                            raise cause from None
+                    raise
+                call.mark("tokensComplete")
                 if call.stop.is_set():
                     raise asyncio.CancelledError
                 queue = await self.store.subscribe(call.owner)
+                call.mark("pipelineConstructionStarted")
                 await pipeline.start(
                     self.store,
                     call.owner,
                     call.id,
                     url,
-                    bot_token,
+                    bot_token.result(),
                     self.environment,
                     fail,
                     call.stop.set,
                 )
+                call.mark("pipelineConstructionComplete")
                 await self.store.check(call.owner)
                 async with self.store.lock:
                     await self.store.owner_key(call.owner)
@@ -487,10 +543,11 @@ class CallManager:
                         CallJoin(
                             call_id=call.id,
                             url=url,
-                            token=browser_token,
+                            token=browser_token.result(),
                             expires_at=expires,
                         )
                     )
+                    call.mark("joinSupplied")
             watcher = asyncio.create_task(self.watch(call, pipeline, queue))
 
             def watch_finished(task: asyncio.Task[None]) -> None:
@@ -499,6 +556,7 @@ class CallManager:
 
             watcher.add_done_callback(watch_finished)
             call.watchers.append(watcher)
+            call.mark("readinessStarted")
             readiness = asyncio.create_task(pipeline.ready())
             stopped = asyncio.create_task(call.stop.wait())
             call.watchers.extend([readiness, stopped])
@@ -512,6 +570,7 @@ class CallManager:
                     raise TimeoutError
                 readiness.result()
                 call.state = CallState(call_id=call.id, status="active", cleanup_confirmed=False)
+                call.mark("ready")
                 remaining = max(0.0, (expires - self.store.clock()).total_seconds())
                 try:
                     await asyncio.wait_for(call.stop.wait(), remaining)
@@ -558,14 +617,17 @@ class CallManager:
 
     async def cleanup(self, call: Call) -> None:
         call.stopping = True
+        if "shutdownRequested" not in call.timings:
+            call.mark("shutdownRequested")
+        call.mark("shutdownStarted")
         call.stop.set()
         if call.state.status != "error":
             call.state.status = "ending"
         if call.pipeline is not None:
             call.pipeline.invalidate()
-        for task in call.watchers:
-            if not task.done():
-                task.cancel()
+        for watcher in call.watchers:
+            if not watcher.done():
+                watcher.cancel()
         deadline = asyncio.get_running_loop().time() + self.config.voice.shutdown_seconds
 
         def completed(name: str) -> bool:
@@ -578,8 +640,10 @@ class CallManager:
                 return
 
             async def execute() -> bool:
+                call.mark(name + "Started")
                 try:
                     await operation()
+                    call.mark(name + "Complete")
                     return True
                 except (Exception, asyncio.CancelledError, SystemExit) as error:
                     if (
@@ -587,7 +651,9 @@ class CallManager:
                         and isinstance(error, Problem)
                         and error.status in {401, 404, 410}
                     ):
+                        call.mark(name + "Complete")
                         return True
+                    call.mark(name + "Failed")
                     logger.warning("Voice cleanup %s failed (%s)", name, type(error).__name__)
                     return False
 
@@ -597,17 +663,11 @@ class CallManager:
             launch("pipeline", call.pipeline.close)
         if call.history is not None:
             history = call.history
-
-            async def finish_history() -> None:
-                task = call.operations.get("pipeline")
-                if task is not None:
-                    await asyncio.shield(task)
-                await history.finish(call.owner, call.id)
-
-            launch("history", finish_history)
+            # Revocation blocks further captions; history closure need not await native media.
+            launch("history", lambda: history.finish(call.owner, call.id))
         # A failed DELETE needs a fresh HTTP client, not a replacement room or worker.
-        if call.rooms is None and "roomDelete" in call.operations and not completed("roomDelete"):
-            task = call.operations["roomDelete"]
+        task = call.operations.get("roomDelete")
+        if call.rooms is None and task is not None and not completed("roomDelete"):
             if task.done():
                 call.rooms = DailyRooms(self.environment, self.config.voice.shutdown_seconds)
                 call.operations.pop("roomClose", None)
@@ -643,5 +703,6 @@ class CallManager:
                 call.state.message = "Call termination is unconfirmed; retry ending this call."
         elif call.state.status != "error":
             call.state.status = "ended"
+        call.mark("shutdownComplete" if call.state.cleanup_confirmed else "shutdownUnconfirmed")
         if call.revoked and call.state.cleanup_confirmed and self.call is call:
             self.call = None

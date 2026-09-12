@@ -162,8 +162,8 @@ class Store:
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
         db = self.connection()
-        await db.execute("BEGIN IMMEDIATE")
         try:
+            await db.execute("BEGIN IMMEDIATE")
             yield
             await db.commit()
         except BaseException:

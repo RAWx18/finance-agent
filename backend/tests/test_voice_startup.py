@@ -1,0 +1,281 @@
+# SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com)
+# SPDX-License-Identifier: AGPL-3.0-only
+
+import asyncio
+import logging
+from datetime import timedelta
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+
+from app.store import Problem
+from app.voice import Call, CallManager
+
+from .test_voice import PipelineDouble, RoomsDouble, environment
+from .test_voice import provider_doubles as provider_doubles
+
+
+@pytest.fixture
+async def manager(store, config, tmp_path, provider_doubles):
+    await store.create("owner")
+    manager = CallManager(store, config, environment(tmp_path))
+    try:
+        yield manager
+    finally:
+        await manager.close()
+
+
+async def test_successful_catalog_check_is_cached_per_manager(manager, monkeypatch):
+    check = AsyncMock()
+    monkeypatch.setattr("app.voice.check_voice", check)
+    first = await manager.start("owner", uuid4())
+    assert (await manager.end("owner", first.call_id)).cleanup_confirmed
+    second = await manager.start("owner", uuid4())
+    check.assert_awaited_once_with(manager.config, manager.environment)
+    assert len(RoomsDouble.instances) == 2
+    assert (await manager.end("owner", second.call_id)).cleanup_confirmed
+    other = CallManager(manager.store, manager.config, manager.environment)
+    try:
+        await other.start("owner", uuid4())
+        assert check.await_count == 2
+    finally:
+        await other.close()
+
+
+async def test_concurrent_preparation_shares_successful_check(manager, monkeypatch):
+    reached, release = asyncio.Event(), asyncio.Event()
+
+    async def check(*args):
+        reached.set()
+        await release.wait()
+
+    check = AsyncMock(side_effect=check)
+    monkeypatch.setattr("app.voice.check_voice", check)
+    preparing = asyncio.gather(manager.prepare_voice(), manager.prepare_voice())
+    try:
+        await asyncio.wait_for(reached.wait(), 1)
+        release.set()
+        await asyncio.wait_for(preparing, 1)
+        await manager.start("owner", uuid4())
+        check.assert_awaited_once_with(manager.config, manager.environment)
+    finally:
+        release.set()
+        await preparing
+
+
+async def test_cancelled_catalog_check_is_not_cached(manager, monkeypatch):
+    reached = asyncio.Event()
+
+    async def check(*args):
+        reached.set()
+        await asyncio.Event().wait()
+
+    check = AsyncMock(side_effect=check)
+    monkeypatch.setattr("app.voice.check_voice", check)
+    call_id = uuid4()
+    starting = asyncio.create_task(manager.start("owner", call_id))
+    try:
+        await asyncio.wait_for(reached.wait(), 1)
+        assert (await manager.end("owner", call_id)).cleanup_confirmed
+        with pytest.raises(Problem):
+            await starting
+        assert not RoomsDouble.instances and not manager.voice_checked
+        check.side_effect = None
+        await manager.start("owner", uuid4())
+        assert check.await_count == 2
+    finally:
+        await manager.close()
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+async def test_failed_catalog_check_is_retried_before_room_creation(manager, monkeypatch):
+    check = AsyncMock(side_effect=[Problem(503, "voiceUnavailable", "Invalid voice."), None])
+    monkeypatch.setattr("app.voice.check_voice", check)
+    with pytest.raises(Problem, match="Invalid voice"):
+        await manager.start("owner", uuid4())
+    assert not RoomsDouble.instances
+    assert manager.call.state.cleanup_confirmed
+    await manager.start("owner", uuid4())
+    assert check.await_count == 2 and len(RoomsDouble.instances) == 1
+
+
+async def test_tokens_overlap_and_join_waits_for_construction_not_readiness(manager, monkeypatch):
+    both, release, constructing, constructed = (asyncio.Event() for _ in range(4))
+    tokens = []
+    start = PipelineDouble.start
+
+    async def token(self, name, expires, user):
+        index = len(tokens)
+        tokens.append((name, expires, user))
+        if len(tokens) == 2:
+            both.set()
+        await release.wait()
+        return f"credential-{index}"
+
+    async def construct(self, *args):
+        assert args[4] == "credential-1"
+        constructing.set()
+        await constructed.wait()
+        await start(self, *args)
+
+    monkeypatch.setattr(RoomsDouble, "token", token)
+    monkeypatch.setattr(PipelineDouble, "start", construct)
+    starting = asyncio.create_task(manager.start("owner", uuid4()))
+    try:
+        await asyncio.wait_for(both.wait(), 1)
+        assert tokens[0][:2] == tokens[1][:2] and tokens[0][2] != tokens[1][2]
+        assert not starting.done() and not manager.call.join.done()
+        release.set()
+        await asyncio.wait_for(constructing.wait(), 1)
+        assert not manager.call.join.done()
+        constructed.set()
+        join = await asyncio.wait_for(starting, 1)
+        assert join.token == "credential-0"
+        assert manager.state("owner").status == "connecting"
+        assert not PipelineDouble.instances[0].ready_event.is_set()
+    finally:
+        release.set()
+        constructed.set()
+        await manager.close()
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+@pytest.mark.parametrize("failure", ["provider", "end", "request", "timeout"])
+async def test_token_requests_settle_before_room_deletion(manager, monkeypatch, failure):
+    both, cancelled, release, settled = (asyncio.Event() for _ in range(4))
+    requests = []
+    delete = RoomsDouble.delete
+    if failure == "timeout":
+        manager.config = manager.config.model_copy(
+            update={"voice": manager.config.voice.model_copy(update={"startup_seconds": 0.05})}
+        )
+
+    async def token(self, *args):
+        index = len(requests)
+        requests.append(asyncio.current_task())
+        if len(requests) == 2:
+            both.set()
+        await both.wait()
+        if index == 0 and failure == "provider":
+            raise Problem(503, "voiceUnavailable", "Daily returned an invalid token.")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+            await release.wait()
+            settled.set()
+
+    async def delete_room(self, name):
+        assert settled.is_set() and all(task.done() for task in requests)
+        await delete(self, name)
+
+    monkeypatch.setattr(RoomsDouble, "token", token)
+    monkeypatch.setattr(RoomsDouble, "delete", delete_room)
+    call_id = uuid4()
+    starting = asyncio.create_task(manager.start("owner", call_id))
+    ending = None
+    try:
+        await asyncio.wait_for(both.wait(), 1)
+        if failure == "end":
+            ending = asyncio.create_task(manager.end("owner", call_id))
+        elif failure == "request":
+            starting.cancel()
+        await asyncio.wait_for(cancelled.wait(), 1)
+        assert not RoomsDouble.instances[0].deleted
+        release.set()
+        if failure == "request":
+            with pytest.raises(asyncio.CancelledError):
+                await starting
+        else:
+            with pytest.raises(Problem) as error:
+                await asyncio.wait_for(starting, 1)
+            if failure == "provider":
+                assert error.value.body.message == "Daily returned an invalid token."
+        await asyncio.wait_for(manager.call.task, 1)
+        assert manager.call.state.cleanup_confirmed
+        assert RoomsDouble.instances[0].deleted == [manager.call.room_name]
+        assert RoomsDouble.instances[0].closed and PipelineDouble.instances[0].closed
+        assert not manager.store.listeners
+    finally:
+        release.set()
+        if ending is not None:
+            await ending
+        await manager.close()
+        await asyncio.gather(starting, return_exceptions=True)
+
+
+async def test_lifecycle_timings_are_monotonic_and_logs_are_safe(manager, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="app.voice")
+    active = asyncio.Event()
+    mark = Call.mark
+
+    def measured(self, stage):
+        mark(self, stage)
+        if stage == "ready":
+            active.set()
+
+    async def watch(*args):
+        await active.wait()
+        assert manager.call.state.status == "active"
+        manager.stop(manager.call)
+
+    monkeypatch.setattr(Call, "mark", measured)
+    monkeypatch.setattr(manager, "watch", watch)
+    join = await manager.start("owner", uuid4())
+    call = manager.call
+    assert "ready" not in call.timings
+    manager.store.clock = lambda: join.expires_at - timedelta(seconds=1)
+    PipelineDouble.instances[0].ready_event.set()
+    await asyncio.wait_for(call.task, 1)
+    stages = [
+        "setupStarted",
+        "voiceCheckStarted",
+        "voiceCheckComplete",
+        "roomCreateStarted",
+        "roomCreateComplete",
+        "tokensStarted",
+        "tokensComplete",
+        "pipelineConstructionStarted",
+        "pipelineConstructionComplete",
+        "joinSupplied",
+        "readinessStarted",
+        "ready",
+        "shutdownRequested",
+        "shutdownStarted",
+        "shutdownComplete",
+    ]
+    values = [call.timings[stage] for stage in stages]
+    assert values == sorted(values) and values[0] >= 0
+    for operation in ("pipeline", "history", "roomDelete", "roomClose"):
+        assert call.timings[f"{operation}Started"] <= call.timings[f"{operation}Complete"]
+        assert call.timings[f"{operation}Complete"] <= call.timings["shutdownComplete"]
+    assert call.state.cleanup_confirmed
+    messages = [record for record in caplog.records if record.name == "app.voice"]
+    assert len(messages) == len(call.timings)
+    assert all(record.exc_info is None and record.stack_info is None for record in messages)
+    assert all(str(call.id) in record.message for record in messages)
+    for private in ("owner", "test-only", "test-token", "https://", call.room_name):
+        assert private not in caplog.text
+    assert set(join.model_dump(by_alias=True)) == {"callId", "url", "token", "expiresAt"}
+
+
+async def test_shutdown_timings_distinguish_failure_from_confirmed_retry(manager, monkeypatch):
+    join = await manager.start("owner", uuid4())
+    call = manager.call
+    close = PipelineDouble.close
+    monkeypatch.setattr(PipelineDouble, "close", AsyncMock(side_effect=RuntimeError("private")))
+    await manager.end("owner", join.call_id)
+    await asyncio.wait_for(call.task, 1)
+    assert not call.state.cleanup_confirmed
+    assert "shutdownComplete" not in call.timings and "pipelineComplete" not in call.timings
+    assert call.timings["pipelineStarted"] <= call.timings["pipelineFailed"]
+    assert call.timings["pipelineFailed"] <= call.timings["shutdownUnconfirmed"]
+    requested = call.timings["shutdownRequested"]
+    monkeypatch.setattr(PipelineDouble, "close", close)
+    await manager.end("owner", join.call_id)
+    await asyncio.wait_for(call.teardown, 1)
+    assert call.state.cleanup_confirmed and call.timings["shutdownRequested"] == requested
+    assert call.timings["shutdownUnconfirmed"] <= call.timings["shutdownStarted"]
+    assert call.timings["pipelineStarted"] <= call.timings["pipelineComplete"]
+    assert call.timings["pipelineComplete"] <= call.timings["shutdownComplete"]

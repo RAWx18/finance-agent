@@ -135,7 +135,7 @@ async def test_missing_azure_setup_blocks_call_and_pipeline_before_provider_cons
     pipeline = VoicePipeline()
     try:
         with pytest.raises(Problem, match=f"Missing setup: {name.upper()}."):
-            await manager.start("owner")
+            await manager.start("owner", uuid4())
         with pytest.raises(Problem, match=f"Missing setup: {name.upper()}."):
             await pipeline.start(
                 store,

@@ -140,7 +140,10 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
   if (protectedRequest && epoch !== generation) throw new DOMException('Request no longer current', 'AbortError');
   if (!response.ok) {
     let body: ApiEnvelope;
-    try { body = JSON.parse(content, exactNumbers) as ApiEnvelope; }
+    try {
+      body = JSON.parse(content, exactNumbers) as ApiEnvelope;
+      if (!body || typeof body.code !== 'string' || typeof body.message !== 'string') throw new Error('Invalid error response');
+    }
     catch { body = { code: 'unavailable', message: 'The request could not be completed.' }; }
     if (protectedRequest && (response.status === 401 || body.code === 'authUnavailable'))
       reportAuthLoss(response.status === 401 ? body.code === 'sessionExpired' ? 'sessionExpired' : 'unauthenticated' : 'authUnavailable', epoch);
@@ -149,7 +152,28 @@ async function request<T>(path: string, init?: RequestInit, text = false): Promi
   const value = response.status === 204 ? undefined : text ? content : JSON.parse(content, exactNumbers);
   if (!text && (path === 'history' || path.startsWith('history?') || path.startsWith('history/')))
     readHistory(value, path.startsWith('history/'));
-  if (path === 'auth/session' || path === 'auth/refresh') {
+  if (path === 'session/call') {
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.callId !== null && (typeof value.callId !== 'string' || !uuid.test(value.callId)))
+      throw new Error('Call ownership could not be confirmed.');
+    if (init?.method && value.callId !== JSON.parse(String(init.body)).callId)
+      throw new Error('Call ownership could not be confirmed.');
+    if (init?.method === 'POST') {
+      if (typeof value.url !== 'string' || typeof value.token !== 'string' || !value.token.trim()
+        || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt)))
+        throw new Error('Call credentials could not be confirmed.');
+      const url = new URL(value.url);
+      if (url.protocol !== 'https:' || !url.hostname.endsWith('.daily.co') || url.hostname === '.daily.co'
+        || url.username || url.password || url.port && url.port !== '443' || url.search || url.hash)
+        throw new Error('Call destination could not be confirmed.');
+      if (Date.parse(value.expiresAt) <= Date.now())
+        throw new ApiError(410, { code: 'callExpired', message: 'This call expired. Reconnect to continue with your saved figures.' });
+    } else if (!['idle', 'connecting', 'active', 'ending', 'ended', 'error'].includes(value.status)
+      || typeof value.cleanupConfirmed !== 'boolean' || value.message !== null && typeof value.message !== 'string'
+      || ['connecting', 'active', 'ending'].includes(value.status) && !value.callId)
+      throw new Error('Call state could not be confirmed.');
+  } else if (path === 'auth/session' || path === 'auth/refresh') {
     if (!value || typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt))
       || Date.parse(value.expiresAt) <= Date.now()) throw new Error('The sign-in could not be confirmed.');
     readUser(value.user);

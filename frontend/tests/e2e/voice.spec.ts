@@ -21,7 +21,8 @@ const test = base.extend<{ voice: Voice }>({
     expect(['localhost', '127.0.0.1', '[::1]']).toContain(new URL(origin).hostname);
     await context.setExtraHTTPHeaders({ Origin: origin });
     const voice: Voice = { calls: [], blocked: [], errors: [] };
-    let call: CallState = { callId: null, status: 'idle', message: null };
+    let call: CallState = { callId: null, status: 'idle', cleanupConfirmed: true, message: null };
+    const ended = new Set<string>();
     let delivered = 0;
     const index = await context.request.get(`${origin}/login`, { maxRedirects: 0 });
     expect(index.status()).toBe(200);
@@ -44,15 +45,26 @@ const test = base.extend<{ voice: Voice }>({
       } else if (url.pathname === '/api/session/call') {
         // All methods terminate here, including pagehide/keepalive cleanup; never forward to the server.
         voice.calls.push(request.method());
-        if (request.method() === 'POST') {
-          call = { callId: randomUUID(), status: 'connecting', message: null };
-          const join: CallJoin = { callId: call.callId!, url: 'https://voice-fixture.invalid/room',
-            token: 'synthetic-provider-double', expiresAt: new Date(Date.now() + 60000).toISOString() };
-          await route.fulfill({ json: join });
-        } else if (request.method() === 'GET' || request.method() === 'DELETE') {
-          if (request.method() === 'DELETE') call = { ...call, status: 'ended' };
-          await route.fulfill({ json: call });
-        } else await route.fulfill({ status: 405, json: { code: 'testMethod', message: 'Unsupported test method' } });
+        if (request.method() === 'POST' || request.method() === 'DELETE') {
+          expect(request.headers()['content-type']).toBe('application/json');
+          expect(request.postDataJSON()).toEqual({ callId: expect.stringMatching(/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i) });
+          const { callId } = request.postDataJSON() as { callId: string };
+          if (request.method() === 'DELETE') {
+            ended.add(callId);
+            if (call.callId === callId) call = { ...call, status: 'ended', cleanupConfirmed: true };
+            await route.fulfill({ json: { callId, status: 'ended', cleanupConfirmed: true, message: null } satisfies CallState });
+          } else if (ended.has(callId)) {
+            await route.fulfill({ status: 409, json: { code: 'callEnded', message: 'This call has ended; use a fresh call ID.' } });
+          } else if (!call.cleanupConfirmed && call.callId !== callId) {
+            await route.fulfill({ status: 409, json: { code: 'callBusy', message: 'A voice call is already running or ending.' } });
+          } else {
+            call = { callId, status: 'connecting', cleanupConfirmed: false, message: null };
+            const join: CallJoin = { callId, url: 'https://voice-fixture.daily.co/room',
+              token: 'synthetic-provider-double', expiresAt: new Date(Date.now() + 1800000).toISOString() };
+            await route.fulfill({ json: join });
+          }
+        } else if (request.method() === 'GET') await route.fulfill({ json: call });
+        else await route.fulfill({ status: 405, json: { code: 'testMethod', message: 'Unsupported test method' } });
       } else if (url.pathname === '/api/settings' && request.method() === 'GET') {
         const response = await route.fetch({ maxRedirects: 0 });
         expect(response.status()).toBe(200);
@@ -224,6 +236,66 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     expect(await page.locator('audio').evaluate(element => (element as HTMLAudioElement).srcObject)).toBeNull();
     await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[0].disconnects)).toBe(1);
   }
+
+  test('browser refresh sends owned End despite a hung SDK disconnect and restores the saved plan', async ({ page, voice }) => {
+    const started = page.waitForRequest(request => new URL(request.url()).pathname === '/api/session/call' && request.method() === 'POST');
+    await speaking(page);
+    const { callId } = (await started).postDataJSON() as { callId: string };
+    const initial = await current(page);
+    const saved = await submit(page, initial, { type: 'replaceFacts', facts: { ...draftFacts(initial), opening: { amount: '321.09', status: 'exact' } } });
+    const cash = page.getByRole('article', { name: saved.workspace!.cards!.find(card => card.template === 'cash')!.title, exact: true });
+    await expect(cash).toContainText('₹321.09');
+    await page.evaluate(() => {
+      window.voiceFixture.clients[0].disconnect = () => new Promise<void>(() => undefined);
+      const fetch = window.fetch;
+      window.fetch = (input, init) => {
+        if (String(input).endsWith('/api/session/call') && init?.method === 'DELETE')
+          sessionStorage.setItem('voice-unload-request', JSON.stringify({ keepalive: init.keepalive, body: init.body, aborted: init.signal?.aborted }));
+        return fetch(input, init);
+      };
+      window.addEventListener('pagehide', () => sessionStorage.setItem('voice-unload-state', JSON.stringify({
+        marks: performance.getEntriesByType('mark').map(mark => mark.name),
+        stopped: window.voiceFixture.tracks.every(track => track.readyState === 'ended'),
+      })), { once: true });
+    });
+    await page.reload();
+    const unload = await page.evaluate(() => ({ request: sessionStorage.getItem('voice-unload-request'), state: sessionStorage.getItem('voice-unload-state') }));
+    expect(unload, 'Real pagehide must synchronously start keepalive End before its context disappears').toMatchObject({
+      request: JSON.stringify({ keepalive: true, body: JSON.stringify({ callId }), aborted: false }),
+    });
+    await expect.poll(() => voice.calls.filter(method => method === 'DELETE').length).toBe(1);
+    expect(await current(page)).toEqual(saved);
+    expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
+    expect(await page.evaluate(() => window.voiceFixture.clients.length)).toBe(0);
+    await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    await expect(page.getByRole('button', { name: 'Retry ending call', exact: true })).toHaveCount(0);
+  });
+
+  test('expired room credentials require explicit reconnect without losing committed figures', async ({ page, voice }) => {
+    let expire = true;
+    await page.route('**/api/session/call', async route => {
+      if (route.request().method() !== 'POST' || !expire) { await route.fallback(); return; }
+      expire = false;
+      voice.calls.push('POST');
+      await route.fulfill({ json: { callId: route.request().postDataJSON().callId, url: 'https://voice-fixture.daily.co/room',
+        token: 'synthetic-provider-double', expiresAt: new Date(Date.now() - 1).toISOString() } satisfies CallJoin });
+    });
+    const created = await page.request.post('/api/session', { data: {} });
+    expect(created.status()).toBe(200);
+    const initial: Snapshot = await created.json();
+    const saved = await submit(page, initial, { type: 'replaceFacts', facts: { ...draftFacts(initial), opening: { amount: '321.09', status: 'exact' } } });
+    await page.getByRole('button', { name: 'Start conversation', exact: true }).click();
+    await page.getByRole('button', { name: 'Start talking', exact: true }).click();
+    await expect(page.getByRole('status', { name: 'Call expired', exact: true })).toContainText('saved figures');
+    await stopped(page);
+    expect(await current(page)).toEqual(saved);
+    expect(voice.calls.filter(method => method === 'POST')).toHaveLength(1);
+    expect(await page.evaluate(() => window.voiceFixture.clients[0].connections.length)).toBe(0);
+    await page.locator('.conversation-controls').getByRole('button', { name: 'Reconnect', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.voiceFixture.clients[1]?.connections.length ?? 0)).toBe(1);
+    expect(await current(page)).toEqual(saved);
+    await page.getByRole('button', { name: 'End conversation', exact: true }).click();
+  });
 
   test('local participant acknowledgement refreshes toggle and Continue on the persistent microphone', async ({ page, voice }, info) => {
     await speaking(page);
@@ -652,6 +724,7 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
   for (const stage of ['device', 'room', 'ready'] as const) test(`ending before ${stage} completes stops late capture and never overlaps a room`, async ({ page, voice }) => {
     let release!: () => void;
     let requested = false;
+    const started = stage === 'device' ? null : page.waitForRequest(request => new URL(request.url()).pathname === '/api/session/call' && request.method() === 'POST');
     if (stage === 'device') await page.evaluate(() => {
       const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
       navigator.mediaDevices.getUserMedia = async constraints => {
@@ -674,15 +747,31 @@ test.describe('release recovery with authenticated financial HTTP/SSE', () => {
     await expect(page.locator('canvas.aui-voice-orb')).toHaveAttribute('data-state', 'connecting');
     await expect(page.locator('.call-orb')).toHaveAttribute('data-volume', '0');
     await expect(page.locator('.voice-status-panel')).toHaveAttribute('data-capturing', 'false');
+    const ending = stage === 'device' ? null : page.waitForResponse(response => new URL(response.url()).pathname === '/api/session/call' && response.request().method() === 'DELETE');
     await page.getByRole('button', { name: 'End conversation', exact: true }).click();
     if (stage === 'device') await page.evaluate(() => window.releaseCapture!());
-    if (stage === 'room') release();
+    if (ending) {
+      const response = await ending;
+      const { callId } = (await started!).postDataJSON() as { callId: string };
+      expect(response.request().postDataJSON()).toEqual({ callId });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ callId, status: 'ended', cleanupConfirmed: true, message: null });
+    }
+    if (stage === 'room') {
+      const pending = page.waitForResponse(response => new URL(response.url()).pathname === '/api/session/call' && response.request().method() === 'POST');
+      release();
+      expect((await pending).status()).toBe(409);
+    }
     await expect(page.locator('main')).toHaveAttribute('data-view', 'review');
     await stopped(page);
     await page.evaluate(() => window.voiceFixture.clients[0].callbacks.onBotReady!({ version: '2.1.0' }));
     await expect(page.getByRole('button', { name: 'Mute microphone', exact: true })).toHaveCount(0);
     expect(voice.calls.filter(method => method === 'POST')).toHaveLength(stage === 'device' ? 0 : 1);
     expect(voice.calls.filter(method => method === 'DELETE')).toHaveLength(stage === 'device' ? 0 : 1);
+    expect(await page.evaluate(() => window.voiceFixture.clients[0].connections.length)).toBe(stage === 'ready' ? 1 : 0);
+    const state: CallState = await page.evaluate(async () => (await fetch('/api/session/call')).json());
+    expect(state.cleanupConfirmed).toBe(true);
+    expect(state.status).toBe(stage === 'ready' ? 'ended' : 'idle');
     expect(await page.evaluate(() => window.voiceFixture.destroyed)).toBe(0);
   });
 });
@@ -1743,7 +1832,7 @@ test('provider double: previous-call information auto-dismisses without starting
   const response = await page.request.post('/api/session', { data: {}, maxRedirects: 0 });
   expect(response.status()).toBe(200);
   await page.route('**/api/session/call', async route => {
-    if (route.request().method() === 'GET') await route.fulfill({ json: { callId: null, status: 'error', message: 'private previous-call diagnostic' } satisfies CallState });
+    if (route.request().method() === 'GET') await route.fulfill({ json: { callId: null, status: 'error', cleanupConfirmed: true, message: 'private previous-call diagnostic' } satisfies CallState });
     else await route.fallback();
   });
   await page.goto('/app');

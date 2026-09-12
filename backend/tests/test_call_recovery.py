@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.auth_models import Access
 from app.history import History
 from app.store import Problem
 from app.voice import CallManager, DailyRooms
@@ -244,6 +245,10 @@ async def test_noncooperative_close_is_not_duplicated_or_misreported(manager, mo
         await asyncio.wait_for(call.task, 1)
         assert not call.state.cleanup_confirmed
         assert RoomsDouble.instances[0].deleted == [call.room_name]
+        assert all(
+            item.ended_at is not None
+            for item in (await History(manager.store).list("owner")).conversations
+        )
         await asyncio.wait_for(manager.end("owner", join.call_id), 1)
         await asyncio.wait_for(call.teardown, 1)
         assert not call.state.cleanup_confirmed and entered == 1
@@ -339,6 +344,28 @@ async def test_attempt_capacity_never_evicts_live_cancellation(manager):
     with pytest.raises(Problem) as error:
         await manager.start("owner", call_id)
     assert error.value.body.code == "callEnded" and not RoomsDouble.instances
+    other = await manager.start("other", uuid4())
+    assert other.call_id != call_id
+    assert ("owner", call_id) in manager.attempts
+
+
+async def test_attempt_budget_is_user_scoped_and_reclaimed_on_login_revocation(manager):
+    manager.config = manager.config.model_copy(update={"max_commands": 1})
+    first, second = Access("user", "first-login"), Access("user", "second-login")
+    other = Access("other", "other-login")
+    first_id, other_id = uuid4(), uuid4()
+    await manager.end(first, first_id)
+    with pytest.raises(Problem, match="Call identity capacity"):
+        await manager.end(second, uuid4())
+    await manager.end(other, other_id)
+    manager.invalidate(first.user_id, first.session_hash)
+    assert (first, first_id) not in manager.attempts
+    assert (other, other_id) in manager.attempts
+    second_id = uuid4()
+    await manager.end(second, second_id)
+    manager.invalidate(second.user_id)
+    assert (second, second_id) not in manager.attempts
+    assert (other, other_id) in manager.attempts
 
 
 @pytest.mark.parametrize("body", [None, [], "private token", {}, {"url": 12}])

@@ -29,7 +29,7 @@ beforeEach(() => {
   vi.mocked(DailyTransport).mockClear();
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
   vi.spyOn(api, 'current').mockResolvedValue(saved);
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'options').mockResolvedValue(adjustmentOptions);
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace({ ...saved, sequence: 1, preview: null }));
   vi.spyOn(api, 'delete').mockResolvedValue({ deleted: true });

@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.spyOn(api, 'current').mockResolvedValue(planningSnapshot());
   vi.spyOn(api, 'start').mockResolvedValue(planningSnapshot());
   vi.spyOn(api, 'startCall').mockRejectedValue(new Error('Voice must not start'));
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'save').mockResolvedValue(planningSnapshot());
   vi.spyOn(api.account, 'update').mockImplementation(async displayName => ({ ...authSession().user, displayName }));
   vi.spyOn(api.account, 'delete').mockResolvedValue({ deleted: true });

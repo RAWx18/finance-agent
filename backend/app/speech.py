@@ -30,6 +30,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.azure.stt import AzureSTTService
 from pipecat.services.azure.tts import AzureTTSService
+from pipecat.services.stt_service import STTService
 from pipecat.services.tts_service import TTSService
 from pipecat.utils.time import time_now_iso8601
 from pipecat.utils.types import assert_given
@@ -52,6 +53,8 @@ class SpeechRecognition(AzureSTTService):
         self.phrases = phrases
         self.config = config or load_config().voice
         self._recognition_id: object | None = None
+        self._native_start: asyncio.Task[Any] | None = None
+        self._native_stop: asyncio.Task[None] | None = None
 
     def _receive(self, event: Any, kind: str, identity: object | None) -> None:
         loop = self.get_event_loop()
@@ -107,8 +110,11 @@ class SpeechRecognition(AzureSTTService):
         self._receive(event, "recognizing", self._recognition_id)
 
     async def _connect(self) -> None:
+        if self._native_stop is not None:
+            await self._disconnect()
         if self._audio_stream:
             return
+        self._native_start = self._native_stop = None
         try:
             self._audio_stream = PushAudioInputStream(
                 AudioStreamFormat(samples_per_second=self.sample_rate, channels=1)
@@ -133,10 +139,11 @@ class SpeechRecognition(AzureSTTService):
                 grammar.addPhrase(phrase)
             grammar.setWeight(1.0)
             recognizer = self._speech_recognizer
+            self._native_start = asyncio.create_task(asyncio.to_thread(
+                lambda: recognizer.start_continuous_recognition_async().get()
+            ))
             async with asyncio.timeout(self.config.startup_seconds):
-                await asyncio.to_thread(
-                    lambda: recognizer.start_continuous_recognition_async().get()
-                )
+                await asyncio.shield(self._native_start)
         except asyncio.CancelledError:
             await self._disconnect()
             raise
@@ -147,22 +154,44 @@ class SpeechRecognition(AzureSTTService):
     async def _disconnect(self) -> None:
         self._recognition_id = None
         recognizer, stream = self._speech_recognizer, self._audio_stream
-        self._speech_recognizer = self._audio_stream = None
-        if recognizer is not None:
-            for name in ("recognizing", "recognized", "canceled", "session_stopped"):
-                getattr(recognizer, name).disconnect_all()
-        try:
+        if self._native_stop is None and (recognizer is not None or stream is not None):
+            if recognizer is not None:
+                for name in ("recognizing", "recognized", "canceled", "session_stopped"):
+                    getattr(recognizer, name).disconnect_all()
+
+            async def stop() -> None:
+                try:
+                    if self._native_start is not None:
+                        await asyncio.shield(self._native_start)
+                finally:
+                    # Stop cannot overtake a start still queued or running in the executor.
+                    if recognizer is not None:
+                        await asyncio.to_thread(
+                            lambda: recognizer.stop_continuous_recognition_async().get()
+                        )
+                    if stream is not None:
+                        stream.close()
+
+            self._native_stop = asyncio.create_task(stop())
+            self._native_stop.add_done_callback(
+                lambda task: None if task.cancelled() else task.exception()
+            )
+        if self._native_stop is not None:
             async with asyncio.timeout(self.config.shutdown_seconds):
-                if recognizer is not None:
-                    await asyncio.to_thread(
-                        lambda: recognizer.stop_continuous_recognition_async().get()
-                    )
+                await asyncio.shield(self._native_stop)
+            self._speech_recognizer = self._audio_stream = None
+
+    async def cleanup(self) -> None:
+        self._recognition_id = None
+        try:
+            await STTService.cleanup(self)  # type: ignore[no-untyped-call]
         finally:
-            if stream is not None:
-                stream.close()
+            await self._disconnect()
 
 
 class SpeechSynthesis(AzureTTSService):
+    _speech_synthesizer: Any
+
     def __init__(self, *, config: VoiceConfig | None = None, **kwargs: Any) -> None:
         self.config = config or load_config().voice
         # Provider deadlines must expire before Pipecat can retire a pending context.
@@ -174,6 +203,8 @@ class SpeechSynthesis(AzureTTSService):
         self._native_stop: asyncio.Task[None] | None = None
 
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+        await self._stop_synthesis()
+        self._native_stop = None
         # Each SDK request owns its callbacks; late events cannot enter another utterance.
         synthesizer = SpeechSynthesizer(speech_config=self._speech_config, audio_config=None)
         self._speech_synthesizer = synthesizer
@@ -203,6 +234,8 @@ class SpeechSynthesis(AzureTTSService):
 
         def retire() -> None:
             nonlocal active
+            if not active:
+                return
             active = False
             for signal, _ in signals:
                 signal.disconnect_all()
@@ -277,16 +310,30 @@ class SpeechSynthesis(AzureTTSService):
         finally:
             if active:
                 retire()
-            if self._speech_synthesizer is synthesizer:
+            if not complete:
+                await self._stop_synthesis()
+            elif self._speech_synthesizer is synthesizer:
                 self._speech_synthesizer = None
                 self._retire_synthesis = None
-            if not complete:
-                async def stop() -> None:
-                    async with asyncio.timeout(self.config.shutdown_seconds):
-                        await asyncio.to_thread(lambda: synthesizer.stop_speaking_async().get())
 
-                self._native_stop = asyncio.create_task(stop())
-                await asyncio.shield(self._native_stop)
+    async def _stop_synthesis(self) -> None:
+        if self._retire_synthesis is not None:
+            self._retire_synthesis()
+            if self._native_stop is None:
+                synthesizer = self._speech_synthesizer
+                self._native_stop = asyncio.create_task(asyncio.to_thread(
+                    lambda: synthesizer.stop_speaking_async().get()
+                ))
+                self._native_stop.add_done_callback(
+                    lambda task: None if task.cancelled() else task.exception()
+                )
+        task = self._native_stop
+        if task is not None:
+            async with asyncio.timeout(self.config.shutdown_seconds):
+                await asyncio.shield(task)
+            if task is self._native_stop:
+                self._speech_synthesizer = None
+                self._retire_synthesis = None
 
     async def _handle_interruption(
         self, frame: InterruptionFrame, direction: FrameDirection
@@ -294,17 +341,27 @@ class SpeechSynthesis(AzureTTSService):
         if self._retire_synthesis is not None:
             self._retire_synthesis()
         # run_tts owns native shutdown; do not stop the same request twice.
-        await TTSService._handle_interruption(self, frame, direction)
-        if self._native_stop is not None:
-            await asyncio.shield(self._native_stop)
+        try:
+            await TTSService._handle_interruption(self, frame, direction)
+        finally:
+            await self._stop_synthesis()
         self._reset_state()  # type: ignore[no-untyped-call]
 
     async def cancel(self, frame: CancelFrame) -> None:
         if self._retire_synthesis is not None:
             self._retire_synthesis()
-        await super().cancel(frame)
-        if self._native_stop is not None:
-            await asyncio.shield(self._native_stop)
+        try:
+            await super().cancel(frame)
+        finally:
+            await self._stop_synthesis()
+
+    async def cleanup(self) -> None:
+        if self._retire_synthesis is not None:
+            self._retire_synthesis()
+        try:
+            await super().cleanup()  # type: ignore[no-untyped-call]
+        finally:
+            await self._stop_synthesis()
 
     def _construct_ssml(self, text: str) -> str:
         locale = quoteattr(str(assert_given(self._settings.language)))

@@ -20,7 +20,7 @@ beforeEach(() => {
   Stream.instances = [];
   vi.stubGlobal('EventSource', Stream);
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'current').mockResolvedValue(planningSnapshot());
   vi.spyOn(api, 'options').mockResolvedValue(adjustmentOptions);
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace({ ...planningSnapshot(), sequence: 1, preview: scenario() }));

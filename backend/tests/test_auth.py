@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -890,8 +890,8 @@ def test_voice_start_attempts_and_command_conflicts_are_rate_limited(auth_client
     client.post("/api/session", json={})
     auth = client.app.state.auth
     for _ in range(auth.config.voice_limit):
-        assert client.post("/api/session/call", json={}).status_code == 503
-    assert client.post("/api/session/call", json={}).status_code == 429
+        assert client.post("/api/session/call", json={"callId": str(uuid4())}).status_code == 503
+    assert client.post("/api/session/call", json={"callId": str(uuid4())}).status_code == 429
     submitted = command(facts("1"))
     assert client.post("/api/session/commands", json=submitted).status_code == 200
     submitted["operation"]["facts"]["opening"]["amount"] = "2"

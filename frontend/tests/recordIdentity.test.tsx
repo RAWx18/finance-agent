@@ -22,7 +22,7 @@ it.each([true, false])('requires a fresh correction without overwriting the late
   corrected.facts.records[1].schedule.date = '2026-09-19';
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
   vi.spyOn(api, 'current').mockResolvedValue(projectWorkspace(saved));
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   const confirmed = structuredClone(corrected);
   confirmed.sequence = 2; confirmed.revision = 2;
   confirmed.facts.opening.amountPaise = 12345;
@@ -89,7 +89,7 @@ it('keeps an SSE identity conflict through an unrelated manual save and clears i
   edited.facts.opening.amountPaise = 10000;
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
   vi.spyOn(api, 'current').mockResolvedValue(projectWorkspace(saved));
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'save').mockResolvedValue(projectWorkspace(edited));
   const user = userEvent.setup();
   render(<App />);

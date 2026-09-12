@@ -12,7 +12,7 @@ import { planningSnapshot, settings, snapshot, Stream, unconfirmedSnapshot } fro
 beforeEach(() => {
   mockAuth(); Stream.instances = []; vi.stubGlobal('EventSource', Stream);
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'current').mockResolvedValue(snapshot());
   vi.spyOn(api, 'start').mockResolvedValue(snapshot());
   vi.spyOn(api, 'delete').mockResolvedValue({ deleted: true });

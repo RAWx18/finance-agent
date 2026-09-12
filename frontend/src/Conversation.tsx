@@ -29,7 +29,7 @@ const quiet = { user: false, bot: false, generating: false, tool: false, muted: 
 type Attempt = {
   client: PipecatClient; cancelled: boolean; ready: boolean; activity: typeof quiet;
   authEpoch: number; callId: string; shutdownSeconds: number;
-  startupTimer?: ReturnType<typeof setTimeout>;
+  startupTimer?: ReturnType<typeof setTimeout>; expiryTimer?: ReturnType<typeof setTimeout>;
   devicesPending?: boolean; connectionPending?: boolean; connection?: Promise<unknown>;
   sequence: number; resumeSequence?: number; resumeTimer?: ReturnType<typeof setTimeout>;
   sessionId?: string; parentSession?: string;
@@ -94,6 +94,7 @@ function dispose(attempt: Attempt): Promise<Release> {
   clearTimeout(attempt.meter);
   clearTimeout(attempt.resumeTimer);
   clearTimeout(attempt.startupTimer);
+  clearTimeout(attempt.expiryTimer);
   window.removeEventListener('pagehide', attempt.onPageHide);
   for (const [track, observer] of attempt.observers) {
     for (const event of ['mute', 'unmute', 'ended']) track.removeEventListener?.(event, observer);
@@ -121,6 +122,9 @@ function callError(error: unknown): Problem {
   if (error instanceof DeviceError && error.type === 'undefined-mediadevices')
     return { id: 'voice:problem', type: 'retry', title: 'Microphone unavailable', severity: 'error', duration: null,
       message: 'Open this page in a current browser, then try again.' };
+  if (error instanceof ApiError && error.body.code === 'callExpired')
+    return { id: 'voice:problem', type: 'retry', title: 'Call expired', severity: 'info', duration: null,
+      message: 'This call expired. Reconnect to continue with your saved figures.' };
   if (error instanceof ApiError && (error.status === 401 || error.status === 403))
     return { id: 'voice:problem', type: 'session', title: 'Sign-in required', severity: 'error', duration: null, dismissible: false,
       message: 'Your sign-in could not be verified. Reload the page and sign in again to continue.' };
@@ -621,11 +625,16 @@ export function Conversation({ settings, sessionId, disabled, onStarted, onBusyC
       let join: CallJoin;
       try { join = await current.join; }
       catch (error) {
-        if (error instanceof ApiError && error.status < 500) current.join = undefined;
+        if (error instanceof ApiError && error.status < 500 && error.body.code !== 'callExpired') current.join = undefined;
         throw error;
       }
       if (!live()) return;
       if (join.callId !== current.callId) throw new Error('Call ownership could not be confirmed.');
+      const remaining = Date.parse(join.expiresAt) - Date.now();
+      if (!Number.isFinite(remaining)) throw new Error('Call credentials could not be confirmed.');
+      const expired = new ApiError(410, { code: 'callExpired', message: 'Call expired.' });
+      if (remaining <= 0) throw expired;
+      current.expiryTimer = setTimeout(() => fail(callError(expired)), remaining);
       mark('join-ready');
       deadline();
       mark('connect');

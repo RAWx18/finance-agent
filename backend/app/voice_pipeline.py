@@ -112,7 +112,7 @@ class VoicePipeline:
             raise Problem(503, "voiceUnavailable", "Missing setup: " + ", ".join(missing) + ".")
         # SDK debug messages can contain transcripts, tokens, and provider error bodies.
         from loguru import logger as sdk_logger
-        from openai import APIConnectionError, RateLimitError
+        from openai import APIConnectionError, APIStatusError, RateLimitError
         from pydantic import BaseModel
 
         sdk_logger.disable("pipecat")
@@ -250,7 +250,11 @@ class VoicePipeline:
             transient = (
                 source is pipeline.llm
                 and frame.metadata.get("voice_response_failure") is True
-                and isinstance(frame.exception, (TimeoutError, APIConnectionError, RateLimitError))
+                and (
+                    isinstance(frame.exception, (TimeoutError, APIConnectionError, RateLimitError))
+                    or isinstance(frame.exception, APIStatusError)
+                    and frame.exception.status_code in {408, 500, 502, 503, 504}
+                )
                 and getattr(frame.exception, "code", None) not in {
                     "insufficient_quota", "billing_hard_limit_reached"
                 }
@@ -269,6 +273,13 @@ class VoicePipeline:
             pipeline.initiative = None
             calls.clear()
             count("response_failures")
+            logger.warning(
+                "Voice response paused source=%s exception=%s status=%s generation=%s",
+                type(source).__name__,
+                type(frame.exception).__name__,
+                getattr(frame.exception, "status_code", None),
+                pipeline.generation,
+            )
             pipeline.recovery = pipeline.worker.task_manager.create_task(
                 pause_response(), "response-recovery"
             )
@@ -284,6 +295,10 @@ class VoicePipeline:
                 async def observed() -> Any:
                     try:
                         return await coroutine
+                    except SystemExit:
+                        count("worker_crashes")
+                        failed()
+                        raise RuntimeError("Voice worker exited") from None
                     except Exception:
                         count("worker_crashes")
                         failed()

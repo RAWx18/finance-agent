@@ -73,7 +73,7 @@ export class PipecatClient {
   }
 
   async connect(params: { url: string; token: string }) {
-    if (params.url !== 'https://voice-fixture.invalid/room' || params.token !== 'synthetic-provider-double')
+    if (params.url !== 'https://voice-fixture.daily.co/room' || params.token !== 'synthetic-provider-double')
       throw new Error('Provider-double transport accepts only synthetic join data.');
     this.connections.push(params);
     if (window.voiceFixture.connectError) throw new Error('Synthetic connection failure');

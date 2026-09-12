@@ -25,7 +25,7 @@ import { projectWorkspace } from './workspace';
 beforeEach(() => {
   mockAuth(); Stream.instances = []; vi.stubGlobal('EventSource', Stream);
   vi.spyOn(api, 'settings').mockResolvedValue(settings);
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
   vi.spyOn(api, 'startCall'); vi.spyOn(api, 'start');
   vi.spyOn(api, 'current').mockResolvedValue(planningSnapshot());
   vi.spyOn(api, 'save').mockResolvedValue({ ...planningSnapshot(), revision: 1, sequence: 1 });

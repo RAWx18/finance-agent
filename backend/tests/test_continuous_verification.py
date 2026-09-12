@@ -92,15 +92,20 @@ def browser_app():
             super().__init__(**kwargs)
             self._speech_config.output_format = OutputFormat.Detailed
 
-        def _on_handle_recognized(self, event):
-            if event.result.reason == ResultReason.RecognizedSpeech:
+        def _receive(self, event, kind, identity):
+            if (
+                kind == "recognized"
+                and identity is self._recognition_id
+                and identity is not None
+                and event.result.reason == ResultReason.RecognizedSpeech
+            ):
                 result = json.loads(event.result.json)
                 recognition.extend(
                     {key: candidate.get(key) for key in ("Confidence", "Lexical", "ITN", "Display")}
                     for candidate in result.get("NBest", [])[:1]
                 )
                 del recognition[:-20]
-            super()._on_handle_recognized(event)
+            super()._receive(event, kind, identity)
 
     @asynccontextmanager
     async def observed_lifespan(app):
@@ -118,7 +123,7 @@ def browser_app():
                                     requests[pipeline] = json.loads(request.content)
 
                             call.pipeline.llm._client._client.event_hooks["request"].append(capture)
-                    name = "finance-" + call.id.hex
+                    name = call.room_name
                     if name not in rooms:
                         rooms.add(name)
                         path = app.state.calls.environment.data_dir / "rooms.json"

@@ -34,7 +34,7 @@ vi.mock('@pipecat-ai/client-js', async original => ({
 }));
 vi.mock('@pipecat-ai/daily-transport', () => ({ DailyTransport: class { dailyCallClient = { destroy: sdk.destroy, on: sdk.dailyOn, off: sdk.dailyOff }; } }));
 
-const join = { callId: 'call-one', url: 'https://room.daily.co/test', token: 'test-only-token', expiresAt: '2026-09-11T05:00:00Z' };
+const join = { url: 'https://room.daily.co/test', token: 'test-only-token' };
 const local: Participant = { id: 'consumer', name: 'You', local: true };
 function track(readyState = 'live') {
   return Object.assign(new EventTarget(), { kind: 'audio', readyState, stop: vi.fn() }) as unknown as MediaStreamTrack;
@@ -84,9 +84,11 @@ beforeEach(() => {
   vi.spyOn(api, 'settings').mockResolvedValue({ ...settings, voiceAvailable: true, voiceUnavailableReason: null });
   vi.spyOn(api, 'current').mockResolvedValue(snapshot());
   vi.spyOn(api, 'start').mockResolvedValue(snapshot());
-  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', message: null });
-  vi.spyOn(api, 'startCall').mockResolvedValue(join);
-  vi.spyOn(api, 'endCall').mockResolvedValue({ callId: join.callId, status: 'ended', message: null });
+  vi.spyOn(api, 'call').mockResolvedValue({ callId: null, status: 'idle', cleanupConfirmed: true, message: null });
+  vi.spyOn(api, 'startCall').mockImplementation(async callId => ({
+    ...join, callId, expiresAt: new Date(Date.now() + 3600000).toISOString(),
+  }));
+  vi.spyOn(api, 'endCall').mockImplementation(async callId => ({ callId, status: 'ended', cleanupConfirmed: true, message: null }));
   vi.spyOn(api, 'save').mockResolvedValue({ ...planningSnapshot(), revision: 1, sequence: 1 });
   vi.spyOn(api, 'delete').mockResolvedValue({ deleted: true });
   vi.spyOn(api, 'options').mockResolvedValue(adjustmentOptions);
@@ -677,7 +679,9 @@ describe('App voice and financial journey', () => {
     expect(sdk.tracks().local.audio.stop).toHaveBeenCalled();
     expect(screen.getByRole('main')).toHaveAttribute('data-stage', 'ending');
     expect(screen.queryByRole('button', { name: 'Finish review' })).not.toBeInTheDocument();
-    await act(async () => ending.resolve({ callId: join.callId, status: 'ended', message: null }));
+    const callId = vi.mocked(api.startCall).mock.calls[0][0];
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(callId, expect.any(AbortSignal));
+    await act(async () => ending.resolve({ callId, status: 'ended', cleanupConfirmed: true, message: null }));
     await waitFor(() => expect(screen.getByRole('main')).toHaveAttribute('data-view', 'review'));
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Your 30-day plan.');
     const picture = screen.getByRole('region', { name: 'Your financial picture' });
@@ -870,6 +874,9 @@ describe('App voice and financial journey', () => {
     await waitFor(() => expect(screen.getByRole('main')).toHaveAttribute('data-view', 'review'));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Finish review' })).toBeEnabled());
     expect(api.endCall).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(api.endCall).mock.calls.map(([callId]) => callId)).toEqual([
+      vi.mocked(api.startCall).mock.calls[0][0], vi.mocked(api.startCall).mock.calls[0][0],
+    ]);
     expect(api.save).not.toHaveBeenCalled();
     expect(screen.getByRole('article', { name: 'Cash gap and timing risk' })).toHaveTextContent('₹7,000.00');
   });
@@ -940,9 +947,10 @@ describe('App voice and financial journey', () => {
   });
 
   it.each(['active', 'unconfirmed'] as const)('blocks finishing and deletion for an %s existing call and returns to termination controls', async status => {
+    const callId = crypto.randomUUID();
     vi.mocked(api.current).mockResolvedValue(planningSnapshot());
-    if (status === 'active') vi.mocked(api.call).mockResolvedValue({ callId: join.callId, status: 'active', message: null });
-    else vi.mocked(api.call).mockRejectedValue(new TypeError('Private call check failure'));
+    vi.mocked(api.call).mockResolvedValue({ callId, status: 'active', cleanupConfirmed: false, message: null });
+    if (status === 'unconfirmed') vi.mocked(api.call).mockRejectedValueOnce(new TypeError('Private call check failure'));
     render(<App />); await updates();
     await userEvent.click(screen.getByRole('button', { name: /Review saved picture/ }));
     expect(screen.getByRole('button', { name: 'Finish review' })).toBeDisabled();
@@ -960,7 +968,9 @@ describe('App voice and financial journey', () => {
     expect(screen.queryByRole('button', { name: 'Finish review' })).not.toBeInTheDocument();
     expect(moneyLink()).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByRole('button', { name: 'Delete plan' })).not.toBeInTheDocument();
-    await act(async () => ending.resolve({ callId: join.callId, status: 'ended', message: null }));
+    expect(api.call).toHaveBeenCalledTimes(status === 'active' ? 1 : 2);
+    expect(api.endCall).toHaveBeenCalledExactlyOnceWith(callId, expect.any(AbortSignal));
+    await act(async () => ending.resolve({ callId, status: 'ended', cleanupConfirmed: true, message: null }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'Finish review' })).toBeEnabled());
     expect(api.delete).not.toHaveBeenCalled(); expect(api.save).not.toHaveBeenCalled();
   });
