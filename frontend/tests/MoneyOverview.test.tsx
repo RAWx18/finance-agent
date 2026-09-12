@@ -6,10 +6,23 @@ import { MemoryRouter } from 'react-router';
 import { expect, it, vi } from 'vitest';
 import { MoneyOverview } from '../src/MoneyOverview';
 import { MoneyChart } from '../src/MoneyChart';
+import { PlanComparison } from '../src/ScenarioDetails';
 import { financialText } from '../src/money';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
+import { projectWorkspace } from './workspace';
 
 const controls = { blocked: false, onEdit: vi.fn(), onChecks: vi.fn(), onCommand: vi.fn() };
+
+it('keeps timing exposure distinct in both sides of a proposal comparison', () => {
+  const saved = planningSnapshot();
+  saved.plan.peakGapPaise = 500000; saved.plan.peakGapDate = '2026-09-16';
+  saved.plan.timingRisks = [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 }];
+  const original = structuredClone(saved.plan);
+  render(<PlanComparison baseline={saved.plan} assumed={saved.plan} reserve={0} label="Compared plan" />);
+  expect(screen.getAllByText('Largest timing exposure')).toHaveLength(2);
+  expect(screen.queryByText('Largest cash gap')).not.toBeInTheDocument();
+  expect(saved.plan).toEqual(original);
+});
 
 it('shows server totals with the first and largest shortfalls, not a misleading closing surplus', async () => {
   const saved = planningSnapshot();
@@ -31,6 +44,66 @@ it('shows server totals with the first and largest shortfalls, not a misleading 
   const details = screen.getByRole('dialog', { name: 'Plan details' });
   expect(within(details).getByText('Largest shortfall').parentElement).toHaveTextContent('₹16,000 · 18 Sept');
   expect(details).toHaveTextContent('The first and largest shortfalls are not amounts to add together.');
+});
+
+it.each([
+  { receiptDate: '2026-09-16', label: 'Largest timing exposure' },
+  { receiptDate: '2026-09-17', label: 'Largest shortfall' },
+])('labels the calculation peak as $label with income on $receiptDate', async ({ receiptDate, label }) => {
+  const saved = planningSnapshot();
+  // Balances are supplied in conservative event order, not calculated by the frontend.
+  const events = [
+    { id: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-14', amountPaise: 100000, balancePaise: -100000 },
+    { id: 'utilities', label: 'Utilities', kind: 'essential', date: '2026-09-16', amountPaise: 400000, balancePaise: -500000 },
+    { id: 'salary', label: 'Salary', kind: 'income', date: receiptDate, amountPaise: 500000, balancePaise: 0 },
+    { id: 'groceries', label: 'Groceries', kind: 'essential', date: '2026-09-18', amountPaise: 100000, balancePaise: -100000 },
+  ] as const;
+  saved.facts.opening = { amountPaise: 0, status: 'exact' };
+  saved.facts.coverage = { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' };
+  saved.facts.records = events.map(({ id, label, kind, date, amountPaise }) => ({ id, label, kind,
+    amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact' }, autoDebit: false,
+    ...(kind === 'income' ? { reliability: 'reliable' as const } : { controllability: 'committed' as const }),
+  }));
+  saved.plan = { ...saved.plan, projectionPartial: false, reliableIncomePaise: 500000, outflowPaise: 600000,
+    closingPaise: -100000, troughPaise: -500000, reserveShortfallPaise: 0,
+    firstGap: { date: '2026-09-14', amountPaise: 100000 }, peakGapPaise: 500000, peakGapDate: '2026-09-16',
+    timingRisks: receiptDate === '2026-09-16' ? [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 }] : [],
+    events: events.map(event => ({ ...saved.plan.events[0], ...event, id: `${event.id}:${event.date}`, recordId: event.id, originalDueDate: event.date })),
+    decisionAssessment: { consequences: [
+      { id: 'cash:2026-09-14', kind: 'cashExposure', eventIds: ['rent:2026-09-14'], date: '2026-09-14', amountPaise: 100000 },
+      { id: 'cash:2026-09-16', kind: 'cashExposure', eventIds: ['utilities:2026-09-16'], date: '2026-09-16', amountPaise: 500000 },
+      { id: 'cash:2026-09-18', kind: 'cashExposure', eventIds: ['groceries:2026-09-18'], date: '2026-09-18', amountPaise: 100000 },
+    ] },
+  };
+  projectWorkspace(saved);
+  render(<MemoryRouter><MoneyOverview {...controls} snapshot={saved} /></MemoryRouter>);
+  await userEvent.click(screen.getByRole('button', { name: 'View calculation' }));
+  const details = screen.getByRole('dialog', { name: 'Plan details' });
+  const peak = within(details).getByText(/^Largest /).parentElement;
+  expect(peak).toBeVisible();
+  expect(peak).toHaveTextContent('₹5,000');
+  expect(peak).toHaveTextContent('16 Sept');
+  expect(peak).toHaveTextContent(label);
+  expect(details).not.toHaveTextContent(label === 'Largest shortfall' ? 'Largest timing exposure' : 'Largest shortfall');
+});
+
+it.each(['reported', 'accepted'] as const)('labels a later peak as timing exposure in the %s calculation details without applying a preview', async basis => {
+  const saved = planningSnapshot(); saved.preview = scenario();
+  if (basis === 'accepted') saved.accepted = scenario('accepted');
+  const plan = saved.accepted?.plan ?? saved.plan;
+  plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+  plan.peakGapPaise = 500000; plan.peakGapDate = '2026-09-16';
+  plan.timingRisks = [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 }];
+  const original = structuredClone(saved);
+  render(<MemoryRouter><MoneyOverview {...controls} snapshot={saved} /></MemoryRouter>);
+  expect(within(screen.getByRole('region', { name: 'What needs attention' })).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 14 Sept');
+  await userEvent.click(screen.getByRole('button', { name: 'View calculation' }));
+  const details = screen.getByRole('dialog', { name: 'Plan details' });
+  expect(saved).toEqual(original);
+  expect(within(details).getByText('Largest timing exposure').parentElement).toHaveTextContent('₹5,000 · 16 Sept');
+  expect(details).toHaveTextContent(/before same-day income/i);
+  expect(details).toHaveTextContent(/No remaining gap after included income/i);
+  expect(within(details).queryByText('Largest shortfall')).not.toBeInTheDocument();
 });
 
 it('shows formatted qualifications once beside closing rather than repeating them in attention', () => {

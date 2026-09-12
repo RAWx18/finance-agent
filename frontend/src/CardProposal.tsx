@@ -4,9 +4,14 @@ import { useId, useState } from 'react';
 import type { Command, Plan, Snapshot } from './api';
 import { cardDate, cardMoney } from './cardFields';
 
-/** Describes a plan's first shortfall or the absence of a known shortfall. */
+/** Distinguishes a plan's first timing exposure from an unfunded shortfall. */
 function gapLabel(plan: Plan): string {
-  return plan.firstGap ? `${cardMoney(plan.firstGap.amountPaise)} · ${cardDate(plan.firstGap.date)}` : plan.closingPaise === null ? 'Unknown' : 'None in known items';
+  const gap = plan.firstGap;
+  if (!gap) return plan.closingPaise === null ? 'Unknown' : 'None in known items';
+  const timing = plan.timingRisks?.find(item => item.date === gap.date);
+  const label = `${timing ? 'Timing exposure' : 'Funding shortfall'} · ${cardMoney(gap.amountPaise)} · ${cardDate(gap.date)}`;
+  if (!timing) return label;
+  return `${label} · Needed before same-day income. ${timing.remainingGapPaise === 0 ? 'No remaining gap after included income; payment timing is not guaranteed.' : `${cardMoney(timing.remainingGapPaise)} still unfunded after included income.`}`;
 }
 
 /** Presents planning changes and consent controls in a financial card. */

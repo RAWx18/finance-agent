@@ -9,6 +9,7 @@ import { DailyTransport } from '@pipecat-ai/daily-transport';
 import { appRouter, mockAuth } from './appSupport';
 import { api } from '../src/api';
 import type { Snapshot } from '../src/api';
+import { CardProposal } from '../src/CardProposal';
 import { adjustmentOptions, planningSnapshot, scenario, settings, Stream } from './fixtures';
 import { projectWorkspace } from './workspace';
 
@@ -53,6 +54,38 @@ async function review(router = appRouter()) {
 }
 
 describe('App inline financial actions', () => {
+  it.each([
+    ['before', 0, 'No remaining gap after included income'],
+    ['before', 120000, '₹1,200 still unfunded after included income'],
+    ['after', 0, 'No remaining gap after included income'],
+    ['after', 120000, '₹1,200 still unfunded after included income'],
+  ] as const)('distinguishes the %s proposal timing endpoint with %i residual funding from a true gap', (endpoint, remainingGapPaise, explanation) => {
+    saved.accepted = scenario('accepted');
+    saved.accepted.plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+    saved.preview!.plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+    const plan = endpoint === 'before' ? saved.accepted.plan : saved.preview!.plan;
+    plan.firstGap = { date: '2026-09-16', amountPaise: 500000 };
+    plan.timingRisks = [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise }];
+    const original = structuredClone(saved);
+    const onCommand = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(<CardProposal snapshot={saved} active blocked={false} onCommand={onCommand} />);
+    const impact = container.querySelector('.card-impact')!;
+    expect(impact).toBeVisible();
+    expect(saved).toEqual(original);
+    expect(onCommand).not.toHaveBeenCalled();
+    const [before, after] = impact.querySelector('p')!.textContent!.split('→');
+    const timing = endpoint === 'before' ? before : after;
+    const funding = endpoint === 'before' ? after : before;
+    expect(timing).toMatch(/Timing exposure/i);
+    expect(timing).toContain('₹5,000'); expect(timing).toContain('16 Sept');
+    expect(timing).toMatch(/before same-day income/i);
+    expect(timing).toContain(explanation);
+    expect(timing).not.toMatch(/First shortfall|Funding shortfall/i);
+    expect(funding).toMatch(/Funding shortfall/i);
+    expect(funding).toContain('₹1,000'); expect(funding).toContain('14 Sept');
+    expect(funding).not.toMatch(/Timing exposure/i);
+  });
+
   it('requires live updates and explicit consent before accepting the exact inline proposal', async () => {
     const response = deferred<Snapshot>();
     vi.mocked(api.save).mockReturnValueOnce(response.promise);

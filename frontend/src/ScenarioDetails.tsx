@@ -74,7 +74,7 @@ export function PlanComparison({ baseline, assumed, reserve, label, beforeLabel 
         <div><dt>{plan.timingRisks?.some(item => item.date === plan.firstGap?.date) ? 'Timing risk' : 'First cash gap'}</dt><dd>{plan.firstGap ? <GapFigure plan={plan} /> : plan.closingPaise === null ? 'Unknown' : 'None in dated figures'}</dd></div>
       </dl>
       <details className="money-comparison-details"><summary>More calculated results</summary><dl className="comparison-values">
-        <div><dt>Largest cash gap</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div>
+        <div><dt>{plan.timingRisks?.some(item => item.date === plan.peakGapDate) ? 'Largest timing exposure' : 'Largest cash gap'}</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div>
         <div><dt>{index ? 'Assumed closing cash' : 'Projected closing cash'}</dt><dd>{money(plan.closingPaise)}</dd></div>
         {(reserve > 0 || (plan.reserveShortfallPaise !== null && plan.reserveShortfallPaise > 0)) && <>
           <div><dt>Reserve floor · Reported, not an expense</dt><dd>{money(reserve)}</dd></div>

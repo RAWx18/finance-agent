@@ -36,6 +36,7 @@ export function MoneyOverview({ snapshot, blocked, stale = false, onEdit, onChec
   const conflicts = !!snapshot.facts.conflicts?.length;
   const estimated = snapshot.facts.opening.status === 'estimate' || plan.events.some(event => event.included && (event.amountStatus === 'estimate' || snapshot.facts.records.find(record => record.id === event.recordId)?.schedule.certainty === 'estimate'));
   const nextIncome = plan.events.find(event => event.kind === 'income' && event.included && event.amountPaise && event.date >= plan.evaluatedOn);
+  const peakTiming = plan.timingRisks?.find(item => item.date === plan.peakGapDate);
   const upcoming = plan.events.filter(event => event.date >= plan.evaluatedOn);
   const elapsed = plan.events.length - upcoming.length;
   const undated = new Set(plan.budgetBasis.unresolvedAmounts.filter(item => item.reason === 'missingDate').map(item => item.recordId)).size;
@@ -77,8 +78,9 @@ export function MoneyOverview({ snapshot, blocked, stale = false, onEdit, onChec
         <header className="money-section-head"><div><h2>Your cash flow</h2><span className="money-subtitle">Where money gets tight, not just where it ends</span></div><span className={`money-status-pill${incomplete || estimated || conflicts ? ' is-caution' : ''}`}>{conflicts ? 'Check figures' : incomplete ? 'Some details missing' : estimated ? 'Includes estimates' : 'Forecast'}</span></header>
         <MoneyChart snapshot={snapshot} />
         <div className="money-flow-footer"><span>Forecast, not a live bank balance or spending allowance.</span><Details label="View calculation" title="Plan details">
-          <dl className="money-detail-values"><div><dt>Starting cash · {dateLabel(snapshot.anchorDate)}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div><div><dt>Income included</dt><dd>{money(plan.reliableIncomePaise)}</dd></div><div><dt>Payments and budgeted spending</dt><dd>{money(plan.outflowPaise)}</dd></div><div><dt>Projected closing cash</dt><dd>{money(plan.closingPaise)}</dd></div><div><dt>Largest shortfall</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div></dl>
-          <p>Starting cash + included income − planned spending = closing cash. The first and largest shortfalls are not amounts to add together.</p>
+          <dl className="money-detail-values"><div><dt>Starting cash · {dateLabel(snapshot.anchorDate)}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div><div><dt>Income included</dt><dd>{money(plan.reliableIncomePaise)}</dd></div><div><dt>Payments and budgeted spending</dt><dd>{money(plan.outflowPaise)}</dd></div><div><dt>Projected closing cash</dt><dd>{money(plan.closingPaise)}</dd></div><div><dt>{peakTiming ? 'Largest timing exposure' : 'Largest shortfall'}</dt><dd>{money(plan.peakGapPaise)}{plan.peakGapDate && <> · {dateLabel(plan.peakGapDate)}</>}</dd></div></dl>
+          {peakTiming && <p>Needed before same-day income. {peakTiming.remainingGapPaise > 0 ? `${money(peakTiming.remainingGapPaise)} still unfunded after included income.` : 'No remaining gap after included income; payment timing is not guaranteed.'}</p>}
+          <p>Starting cash + included income − planned spending = closing cash. The first and largest {peakTiming ? 'exposures' : 'shortfalls'} are not amounts to add together.</p>
           <p>Payments precede income on the same day. Unconfirmed receipts, amounts and dates are not available money.</p>
           {outcome && <p>{outcome.conditions}</p>}
           <div className="money-detail-actions">{result('closing', 'How this is calculated')}{result('firstGap', 'What causes the first shortfall')}{result('reliableIncome', 'Which income is included')}</div>

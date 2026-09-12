@@ -69,8 +69,10 @@ function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
   const reserve = results?.find(result => result.id === 'reserveShortfall');
   const gap = results?.find(result => result.id === 'firstGap');
   const reserveRisk = plan.decisionAssessment?.consequences?.find(item => item.kind === 'reserveBreach');
+  const peakTiming = plan.timingRisks?.find(item => item.date === plan.peakGapDate);
   const laterRisk = plan.timingRisks?.some(item => item.date === plan.firstGap?.date)
     ? plan.decisionAssessment?.consequences?.find(item => item.kind === 'cashExposure' && item.date && plan.firstGap && item.date > plan.firstGap.date) : undefined;
+  const laterTiming = plan.timingRisks?.find(item => item.date === laterRisk?.date);
   return <>
     <div className="card-cash"><span className="card-caption">Cash at plan start</span>
       <AmountField {...editing} target={{ field: 'opening' }} label="Cash at plan start" reported />
@@ -82,8 +84,8 @@ function CashCard({ card, ...editing }: Editing & { card: WorkspaceCard }) {
     </div>}
     {plan.firstGap && <div className="card-risk"><GapFigure plan={plan} />
       {gap && ['estimated', 'conflicting', 'uncertain', 'unresolved'].includes(gap.state) && <span className="card-meta">{gap.state === 'estimated' ? 'Includes estimates' : 'Figures need checking'}</span>}
-      {plan.peakGapPaise != null && plan.peakGapPaise > plan.firstGap.amountPaise && <p className="card-meta">Largest shortfall · {cardMoney(plan.peakGapPaise)}{plan.peakGapDate && ` · ${cardDate(plan.peakGapDate)}`}</p>}
-      {laterRisk && <p className="card-meta">Later payment risk · {cardMoney(laterRisk.amountPaise)}{laterRisk.date && ` · ${cardDate(laterRisk.date)}`}</p>}
+      {plan.peakGapPaise != null && plan.peakGapPaise > plan.firstGap.amountPaise && <p className="card-meta">{peakTiming ? 'Largest timing exposure' : 'Largest shortfall'} · {cardMoney(plan.peakGapPaise)}{plan.peakGapDate && ` · ${cardDate(plan.peakGapDate)}`}{peakTiming && <> · Needed before same-day income. {peakTiming.remainingGapPaise > 0 ? `${cardMoney(peakTiming.remainingGapPaise)} still unfunded after included income.` : 'No remaining gap after included income; payment timing is not guaranteed.'}</>}</p>}
+      {laterRisk && <p className="card-meta">Later payment risk · {cardMoney(laterRisk.amountPaise)}{laterTiming && ' · Needed before same-day income'}{laterRisk.date && ` · ${cardDate(laterRisk.date)}`}{laterTiming && <>. {laterTiming.remainingGapPaise > 0 ? `${cardMoney(laterTiming.remainingGapPaise)} still unfunded after included income.` : 'No remaining gap after included income; payment timing is not guaranteed.'}</>}</p>}
     </div>}
   </>;
 }
@@ -178,6 +180,7 @@ function UncertaintyCard({ card, ...editing }: Editing & { card: WorkspaceCard }
       ? <CardField {...editing} target={{ recordId: record!.id, field }} label={`${record!.label} ${record!.schedule.recurrence === 'once' ? 'date' : 'series start'}`}><span>{record!.schedule.date ? cardDate(record!.schedule.date) : 'Unknown'}</span><span className="card-badge" data-tone="caution">{status}</span></CardField>
       : <AmountField {...editing} target={{ ...(field === 'opening' ? {} : { recordId: record!.id }), field }} label={field === 'opening' ? 'Cash at plan start' : `${record!.label} ${field}`} />
       : <span className="card-badge" data-tone="caution">{status}</span>}
+    {issue.field === 'controllability' && <p className="card-meta">Confirm whether this spending can be reduced or skipped.</p>}
     {issue.reason && <details className="card-terms"><summary>Why this matters</summary><p>{issue.reason}</p></details>}
     {issue.beforeDate && <span className="card-meta">Before {cardDate(issue.beforeDate)}</span>}
   </div>;
@@ -197,7 +200,12 @@ function CompanionCards({ proposalActive, ...editing }: Editing & { proposalActi
   return <>{cards.filter(card => ['cash', 'timeline', 'questions', 'proposal'].includes(card.template)).map(card => {
     if (card.template === 'questions') {
       const issue = snapshot.workspace?.issues?.find(issue => card.issueIds?.includes(issue.id));
-      if (!issue || issue.recordIds.length > 0 && issue.recordIds.every(id => visibleIds.includes(id)) || ['opening', 'reserve'].includes(issue.field) && cards.some(card => card.template === 'cash')) return null;
+      if (!issue) return null;
+      const askable = snapshot.workspace?.questions?.some(question => question.id === issue.id && question.actionId);
+      const inline = ['schedule.date', 'reliability'].includes(issue.field) || ['amount', 'target'].includes(issue.field)
+        && issue.recordIds.every(id => !snapshot.facts.records.find(record => record.id === id)?.schedule.amounts?.length);
+      if (issue.recordIds.length > 0 && issue.recordIds.every(id => visibleIds.includes(id)) && (!askable || inline)
+        || ['opening', 'reserve'].includes(issue.field) && cards.some(card => card.template === 'cash')) return null;
     }
     const title = card.template === 'timeline' ? 'Commitments & income' : card.title;
     return <Fragment key={card.id}><article className={`companion-card companion-${card.template}`} aria-label={title}>

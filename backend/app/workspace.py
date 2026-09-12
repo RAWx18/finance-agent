@@ -333,7 +333,15 @@ def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list
             + sorted(facts.decision.focus_record_ids)
             + sorted(corrections)
             + [identity for item in priorities for identity in sorted(item.record_ids)]
-            + sorted(records)
+            + sorted(
+                records,
+                key=lambda identity: (
+                    next_events[identity].date
+                    if identity in next_events
+                    else records[identity].schedule.date or date.max,
+                    identity,
+                ),
+            )
         )
     )
     ordered_ids = [identity for identity in ordered_ids if identity in records]
@@ -395,11 +403,21 @@ def timeline_cards(snapshot: Snapshot, plan: Plan, workspace: Workspace) -> list
             )
         )
     visible_ids = set(ordered_ids[:4])
+    askable_ids = {question.id for question in workspace.questions if question.action_id}
     question = next(
         (
             item
             for item in priorities
-            if not (item.record_ids and set(item.record_ids) <= visible_ids)
+            if not (
+                item.record_ids
+                and set(item.record_ids) <= visible_ids
+                and (
+                    item.id not in askable_ids
+                    or item.field in {"schedule.date", "reliability"}
+                    or item.field in {"amount", "target"}
+                    and all(not records[identity].schedule.amounts for identity in item.record_ids)
+                )
+            )
             and not (
                 any(card.id == "cash" for card in workspace.cards)
                 and item.field in {"opening", "reserve"}

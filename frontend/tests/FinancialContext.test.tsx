@@ -8,6 +8,7 @@ import type { components } from '../src/contracts';
 import { changeNotes, FinancialContext } from '../src/FinancialContext';
 import { cardDate } from '../src/cardFields';
 import { planningSnapshot, scenario, snapshot } from './fixtures';
+import { projectWorkspace } from './workspace';
 
 const controls = { locked: false, proposalActive: true, onCommand: vi.fn<(operation: Command['operation']) => Promise<Snapshot | undefined>>(), stale: false };
 beforeEach(() => { controls.onCommand.mockReset().mockResolvedValue(undefined); });
@@ -101,6 +102,25 @@ describe('financial companion', () => {
     expect(within(screen.getByLabelText('Projected closing cash')).queryByRole('button')).not.toBeInTheDocument();
     expect(within(screen.getByLabelText('First shortfall')).queryByRole('button')).not.toBeInTheDocument();
     expect(cash).not.toHaveTextContent(/available to spend|paid|Keep aside/);
+  });
+
+  it.each(['reported', 'accepted'] as const)('labels a later peak as timing exposure in the %s cash card without applying a preview', basis => {
+    const saved = picture(); saved.preview = scenario();
+    if (basis === 'accepted') saved.accepted = scenario('accepted');
+    const plan = saved.accepted?.plan ?? saved.plan;
+    plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+    plan.peakGapPaise = 500000; plan.peakGapDate = '2026-09-16';
+    plan.timingRisks = [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 }];
+    const original = structuredClone(saved);
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(saved).toEqual(original);
+    expect(controls.onCommand).not.toHaveBeenCalled();
+    expect(within(cash).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 14 Sept');
+    expect(cash).toHaveTextContent('Largest timing exposure · ₹5,000 · 16 Sept');
+    expect(cash).toHaveTextContent(/before same-day income/i);
+    expect(cash).toHaveTextContent(/No remaining gap after included income/i);
+    expect(cash).not.toHaveTextContent('Largest shortfall');
   });
 
   it('distinguishes zero, unknown and estimated sources without global decimal formatting changes', () => {
@@ -275,6 +295,112 @@ describe('financial companion', () => {
     expect(cash).toHaveTextContent('Largest shortfall · ₹16,000 · 18 Sept');
     expect(cash).toHaveTextContent('Buffer at risk · ₹1,000 below reserve · 14 Sept. Largest buffer shortfall: ₹2,000.');
     expect(cash).not.toHaveTextContent('₹2,000 below reserve · 14 Sept');
+  });
+
+  it.each([0, 200000])('qualifies a later peak timing exposure with %i paise remaining without changing the first funding gap', remainingGapPaise => {
+    const saved = picture();
+    saved.plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+    saved.plan.peakGapPaise = 500000; saved.plan.peakGapDate = '2026-09-16';
+    saved.plan.timingRisks = [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise }];
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(within(cash).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 14 Sept');
+    expect(within(cash).queryByLabelText('Timing risk')).not.toBeInTheDocument();
+    const peak = within(cash).getByText(/^Largest timing exposure/);
+    expect(peak).toHaveTextContent('Largest timing exposure · ₹5,000 · 16 Sept · Needed before same-day income.');
+    expect(peak).toHaveTextContent(remainingGapPaise > 0 ? '₹2,000 still unfunded after included income.' : 'No remaining gap after included income; payment timing is not guaranteed.');
+    expect(peak).not.toHaveTextContent('₹5,000 still unfunded');
+  });
+
+  it('keeps genuine peak and later funding-risk labels unchanged when only the first gap is a timing risk', () => {
+    const saved = picture();
+    saved.plan.timingRisks = [{ date: saved.plan.firstGap!.date, exposurePaise: saved.plan.firstGap!.amountPaise, remainingGapPaise: 0 }];
+    saved.plan.decisionAssessment!.consequences!.push({ id: 'later', kind: 'cashExposure', amountPaise: 1600000, date: '2026-09-18', eventIds: [] });
+    render(<FinancialContext {...controls} snapshot={saved} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(within(cash).getByLabelText('Timing risk')).toHaveTextContent('₹7,000Timing risk · 13 Sept');
+    expect(within(cash).getByText(/^Largest shortfall/).textContent).toBe('Largest shortfall · ₹16,000 · 18 Sept');
+    expect(within(cash).getByText(/^Later payment risk/).textContent).toBe('Later payment risk · ₹16,000 · 18 Sept');
+    expect(cash).not.toHaveTextContent('Needed before same-day income');
+  });
+
+  it('refreshes peak and later timing qualifications from corrected accepted plans, including residual changes', () => {
+    const saved = picture(); saved.accepted = scenario('accepted');
+    saved.accepted.plan.firstGap = { date: '2026-09-14', amountPaise: 100000 };
+    saved.accepted.plan.peakGapPaise = 500000; saved.accepted.plan.peakGapDate = '2026-09-16';
+    saved.accepted.plan.timingRisks = [
+      { date: '2026-09-14', exposurePaise: 100000, remainingGapPaise: 0 },
+      { date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 },
+    ];
+    saved.accepted.plan.decisionAssessment!.consequences = [{ id: 'later', kind: 'cashExposure', amountPaise: 500000, date: '2026-09-16', eventIds: [] }];
+    saved.workspace!.results!.find(result => result.id === 'firstGap')!.state = 'estimated';
+    const { rerender } = render(<FinancialContext {...controls} snapshot={saved} stale />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(screen.getByRole('status')).toHaveTextContent('Updates paused · showing saved figures');
+    expect(within(cash).getByRole('button', { name: 'Edit Cash at plan start' })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(cash).getByLabelText('Timing risk')).toHaveTextContent('₹1,000Timing risk · 14 Sept');
+    expect(cash).toHaveTextContent('Includes estimates');
+    expect(cash).not.toHaveTextContent('₹16,000');
+    const peak = within(cash).getByText(/^Largest timing exposure/);
+    const later = within(cash).getByText(/^Later payment risk/);
+    expect(peak).toHaveTextContent('Largest timing exposure · ₹5,000 · 16 Sept · Needed before same-day income. No remaining gap after included income; payment timing is not guaranteed.');
+    expect(later).toHaveTextContent('Later payment risk · ₹5,000 · Needed before same-day income · 16 Sept. No remaining gap after included income; payment timing is not guaranteed.');
+    const receipt = structuredClone(saved); receipt.revision++; receipt.sequence++;
+    receipt.accepted!.plan.timingRisks![1].remainingGapPaise = 200000;
+    rerender(<FinancialContext {...controls} snapshot={receipt} />);
+    expect(peak).toHaveTextContent('₹2,000 still unfunded after included income.');
+    expect(later).toHaveTextContent('₹2,000 still unfunded after included income.');
+    expect(later).not.toHaveTextContent('No remaining gap');
+    const corrected = structuredClone(receipt); corrected.revision++; corrected.sequence++;
+    corrected.accepted!.plan.timingRisks = [corrected.accepted!.plan.timingRisks![0]];
+    rerender(<FinancialContext {...controls} snapshot={corrected} />);
+    expect(peak.textContent).toBe('Largest shortfall · ₹5,000 · 16 Sept');
+    expect(later.textContent).toBe('Later payment risk · ₹5,000 · 16 Sept');
+    expect(cash).not.toHaveTextContent(/Needed before same-day income|₹2,000 still unfunded/);
+    expect(within(cash).getByLabelText('Timing risk')).toHaveTextContent('₹1,000Timing risk · 14 Sept');
+    expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { receiptDate: '2026-09-16', label: 'Largest timing exposure' },
+    { receiptDate: '2026-09-17', label: 'Largest shortfall' },
+  ])('labels the cash-card peak as $label with income on $receiptDate', ({ receiptDate, label }) => {
+    const saved = planningSnapshot();
+    // Balances are supplied in conservative event order, not calculated by the frontend.
+    const events = [
+      { id: 'rent', label: 'Rent', kind: 'essential', date: '2026-09-14', amountPaise: 100000, balancePaise: -100000 },
+      { id: 'utilities', label: 'Utilities', kind: 'essential', date: '2026-09-16', amountPaise: 400000, balancePaise: -500000 },
+      { id: 'salary', label: 'Salary', kind: 'income', date: receiptDate, amountPaise: 500000, balancePaise: 0 },
+      { id: 'groceries', label: 'Groceries', kind: 'essential', date: '2026-09-18', amountPaise: 100000, balancePaise: -100000 },
+    ] as const;
+    saved.facts.opening = { amountPaise: 0, status: 'exact' };
+    saved.facts.coverage = { income: 'reviewed', essential: 'reviewed', optional: 'none', debt: 'none' };
+    saved.facts.records = events.map(({ id, label, kind, date, amountPaise }) => ({ id, label, kind,
+      amount: { amountPaise, status: 'exact' }, schedule: { date, recurrence: 'once', certainty: 'exact' }, autoDebit: false,
+      ...(kind === 'income' ? { reliability: 'reliable' as const } : { controllability: 'committed' as const }),
+    }));
+    saved.plan = { ...saved.plan, projectionPartial: false, reliableIncomePaise: 500000, outflowPaise: 600000,
+      closingPaise: -100000, troughPaise: -500000, reserveShortfallPaise: 0,
+      firstGap: { date: '2026-09-14', amountPaise: 100000 }, peakGapPaise: 500000, peakGapDate: '2026-09-16',
+      timingRisks: receiptDate === '2026-09-16' ? [{ date: '2026-09-16', exposurePaise: 500000, remainingGapPaise: 0 }] : [],
+      events: events.map(event => ({ ...saved.plan.events[0], ...event, id: `${event.id}:${event.date}`, recordId: event.id, originalDueDate: event.date })),
+      decisionAssessment: { consequences: [
+        { id: 'cash:2026-09-14', kind: 'cashExposure', eventIds: ['rent:2026-09-14'], date: '2026-09-14', amountPaise: 100000 },
+        { id: 'cash:2026-09-16', kind: 'cashExposure', eventIds: ['utilities:2026-09-16'], date: '2026-09-16', amountPaise: 500000 },
+        { id: 'cash:2026-09-18', kind: 'cashExposure', eventIds: ['groceries:2026-09-18'], date: '2026-09-18', amountPaise: 100000 },
+      ] },
+    };
+    projectWorkspace(saved);
+    render(<FinancialContext {...controls} snapshot={companion(saved)} />);
+    const cash = screen.getByRole('article', { name: 'Cash & timing' });
+    expect(within(cash).getByLabelText('First shortfall')).toHaveTextContent('₹1,000First shortfall · 14 Sept');
+    expect(screen.getByLabelText('Projected closing cash')).toHaveTextContent('-₹1,000');
+    const peak = within(cash).getByText(/^Largest /);
+    expect(peak).toBeVisible();
+    expect(peak).toHaveTextContent('₹5,000');
+    expect(peak).toHaveTextContent('16 Sept');
+    expect(peak).toHaveTextContent(label);
+    expect(cash).not.toHaveTextContent(label === 'Largest shortfall' ? 'Largest timing exposure' : 'Largest shortfall');
   });
 
   it('preserves MoneyPage changeNotes formatting and the earlier-gap qualification', () => {
