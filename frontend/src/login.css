@@ -1,0 +1,64 @@
+/* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+#root:has(.login-page) { --page-width: 1152px; height: auto; min-height: 100dvh; grid-template-rows: auto 1fr auto; }
+#root:has(.login-page) > .site-header { min-height: 76px; background: transparent; border-bottom-color: transparent; }
+#root:has(.login-page) > .site-footer { padding-inline: max(var(--page-gutter), calc((100% - var(--page-width)) / 2 + var(--page-gutter))); padding-block: .75rem; }
+main.login-page { grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: clamp(2rem, 6vw, 5rem); padding: clamp(2.5rem, 7dvh, 5rem) var(--page-gutter); overflow: visible; }
+.login-hero { min-width: 0; }
+.login-hero > .eyebrow { margin-bottom: 1.1rem; font-size: .7rem; letter-spacing: .12em; }
+.login-hero h1 { max-width: none; margin: 0 0 1.25rem; font-size: clamp(2.15rem, 4vw, 3.35rem); font-weight: 600; letter-spacing: -.045em; line-height: 1.12; text-wrap: balance; }
+.login-hero h1 > span { display: block; color: var(--teal); }
+.login-description { max-width: 43ch; margin: 0; color: var(--muted); font-size: 1rem; line-height: 1.7; text-wrap: pretty; }
+.login-signin { margin-top: 1.75rem; max-width: 28rem; }
+.login-signin .google-signin { margin-top: 0; gap: .65rem; }
+.login-signin .google-signin > .primary { width: min(100%, 16rem); min-height: 50px; padding: .8rem 1.5rem; font-size: .9rem; border-radius: 9px; }
+.login-signin .google-signin > [role="status"] { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.login-signin > .button { margin-bottom: .75rem; }
+.login-permission { display: flex; align-items: flex-start; gap: .45rem; max-width: 39ch; margin: .85rem 0 0; color: var(--muted); font-size: .75rem; line-height: 1.55; }
+.login-permission svg { flex: none; margin-top: .12rem; }
+.login-trust { max-width: 43ch; margin: 1.75rem 0 0; padding-top: 1rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .78rem; line-height: 1.6; }
+.login-preview { min-width: 0; width: 100%; margin: 0; padding: 1.4rem; border: 1px solid #d4e2d9; border-radius: 18px; background: #edf3ef; }
+.login-preview figcaption { font-size: .85rem; font-weight: 600; letter-spacing: -.01em; }
+.login-preview figcaption > span { display: block; margin-top: .15rem; color: var(--muted); font-size: .7rem; font-weight: 400; letter-spacing: 0; }
+.login-dialogue { display: grid; gap: 1rem; padding-block: 1.5rem; }
+.login-message { max-width: 92%; margin: 0; padding: .85rem 1rem; border-radius: 12px; }
+.login-message > span { display: block; margin-bottom: .35rem; font-size: .67rem; font-weight: 600; }
+.login-message p { margin: 0; font-size: .93rem; line-height: 1.6; text-wrap: pretty; }
+.login-message-user { justify-self: end; background: #dcece2; border-bottom-right-radius: 4px; }
+.login-message-user > span { color: #436452; }
+.login-message-assistant { justify-self: start; background: var(--paper); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.login-message-assistant > span { color: var(--teal); }
+.login-preview-note { display: flex; align-items: center; gap: .5rem; padding-top: .8rem; border-top: 1px solid #d4e2d9; color: var(--muted); font-size: .73rem; line-height: 1.5; }
+.login-preview-note svg { flex: none; color: var(--teal); }
+.login-page .google-signin .recovery-inline { max-width: 100%; }
+@media (max-width: 800px) {
+  #root:has(.login-page) { --page-width: 38rem; }
+  main.login-page { grid-template-columns: minmax(0, 1fr); align-content: center; gap: 2rem; padding-block: 2rem 2.5rem; }
+  .login-hero h1 { font-size: clamp(2.1rem, 6.3vw, 2.8rem); }
+  .login-description, .login-trust { max-width: none; }
+  .login-preview { padding: 1.25rem; }
+  .login-dialogue { padding-block: 1rem; gap: .75rem; }
+  .login-trust { margin-top: 1.25rem; }
+}
+@media (max-width: 480px) {
+  #root:has(.login-page) > .site-header { min-height: 64px; }
+  main.login-page { align-content: start; padding-top: 1.5rem; gap: 1.75rem; }
+  .login-hero > .eyebrow { font-size: .65rem; margin-bottom: .9rem; }
+  .login-hero h1 { margin-bottom: 1rem; }
+  .login-description { font-size: .95rem; line-height: 1.65; }
+  .login-signin { margin-top: 1.3rem; }
+  .login-signin .google-signin > .primary { width: 100%; }
+  .login-permission { max-width: none; }
+  .login-preview { border-radius: 14px; }
+}
+@media (max-width: 360px), (max-height: 560px) {
+  main.login-page { padding-block: 1.25rem 2rem; }
+  .login-hero h1 { font-size: clamp(1.8rem, 8vw, 2.1rem); }
+  .login-page :is(h1, p, figcaption, button, a) { overflow-wrap: anywhere; }
+}
+@media (max-width: 360px) {
+  #root:has(.login-page) { --page-gutter: 16px; }
+  .login-preview { padding: 14px; }
+  .login-message { max-width: 100%; padding: 12px 14px; }
+  .login-signin .google-signin > .primary { padding-inline: 16px; }
+}

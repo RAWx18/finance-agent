@@ -8,10 +8,11 @@ import type { AuthSettings, ReturnPath } from './api';
 import { dismiss, notify } from './Toast';
 import { Recovery } from './Recovery';
 import { isMoneyRoute } from './moneyRoutes';
-import { isHistoryRoute } from './historyRoutes';
+import { isConversationRoute, isHistoryRoute } from './historyRoutes';
+import './login.css';
 
 export function returnPath(value: string | null | undefined): ReturnPath {
-  return value && (isMoneyRoute(value) || isHistoryRoute(value)) ? value : value === '/account' ? value : '/app';
+  return value && (isMoneyRoute(value) || isHistoryRoute(value) || isConversationRoute(value)) ? value : value === '/account' ? value : '/app';
 }
 
 export function GoogleSignIn({ returnTo, onBegin }: { returnTo: ReturnPath; onBegin?: () => void }) {
@@ -113,19 +114,29 @@ export function Login() {
     return () => { current = false; dismiss('login:error'); };
   }, [failure, code, location.search]);
 
-  return <main id="main" className="access-page">
-    <section className="access-copy"><p className="eyebrow">Your next 30 days</p>
-      <h1>A clearer plan starts here.</h1><p>Talk through your money and bills, see what’s coming, and decide what to do next.</p>
-      <p className="hint">No bank connection. No payments made.</p>
+  return <main id="main" className="access-page login-page">
+    <section className="login-hero" aria-labelledby="login-heading">
+      <p className="eyebrow">Personal finance, in conversation</p>
+      <h1 id="login-heading">Your money. <span>Let’s talk it through.</span></h1>
+      <p className="login-description">A personal AI financial assistant you can talk to. Make sense of your income and bills, and plan your next 30 days.</p>
+      <section ref={signin} className="login-signin" aria-labelledby="signin-heading">
+        <h2 id="signin-heading" className="sr-only">Sign in to Cash flow</h2>
+        {auth.phase === 'ready' && <Link className="button" to={returnTo}>Continue to your plan</Link>}
+        <GoogleSignIn returnTo={returnTo} onBegin={() => {
+          if (location.search && auth.phase !== 'ready') void navigate(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`, { replace: true });
+        }} />
+        <p className="login-permission"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M9 5a3 3 0 0 1 6 0v6a3 3 0 0 1-6 0V5Z M5 10v1a7 7 0 0 0 14 0v-1 M12 18v3 M9 21h6" /></svg>
+          Your microphone stays off until you choose to start talking.</p>
+      </section>
+      <p className="login-trust">No bank connection needed. Your plan is based on what you share.</p>
     </section>
-    <section ref={signin} className="card signin-card" aria-labelledby="signin-heading">
-      <h2 id="signin-heading">Sign in to Cash flow</h2>
-      <p>Keep your figures private and return to your saved plan.</p>
-      {auth.phase === 'ready' && <Link className="button" to={returnTo}>Continue to your plan</Link>}
-      <GoogleSignIn returnTo={returnTo} onBegin={() => {
-        if (location.search && auth.phase !== 'ready') void navigate(`/login${returnTo === '/app' ? '' : `?returnTo=${returnTo}`}`, { replace: true });
-      }} />
-      <p className="hint">Google confirms who you are. Your microphone stays off until you choose to start talking.</p>
-    </section>
+    <figure className="login-preview" aria-labelledby="preview-caption">
+      <figcaption id="preview-caption">Start with what’s on your mind<span>Example conversation</span></figcaption>
+      <div className="login-dialogue">
+        <blockquote className="login-message login-message-user"><span>You</span><p>Can I cover rent before payday?</p></blockquote>
+        <blockquote className="login-message login-message-assistant"><span>Your AI assistant</span><p>Let’s look at what’s due and when your income arrives.</p></blockquote>
+      </div>
+      <p className="login-preview-note"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true"><path d="M4 10v4 M8 6v12 M12 3v18 M16 7v10 M20 10v4" /></svg>Talk naturally. See the numbers clearly.</p>
+    </figure>
   </main>;
 }

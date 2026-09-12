@@ -15,10 +15,11 @@ import { Conversation } from './Conversation';
 import type { VoicePhase } from './Conversation';
 import { FinancialContext } from './FinancialContext';
 import { History } from './History';
-import { isHistoryRoute } from './historyRoutes';
+import { isConversationRoute, isHistoryRoute } from './historyRoutes';
 import { Details } from './Dialog';
 import { Recovery } from './Recovery';
 import { ProfileMenu } from './ProfileMenu';
+import brandIcon from './brand.svg?no-inline';
 
 type Journey = 'landing' | 'ready' | 'session' | 'review' | 'finished';
 
@@ -104,7 +105,6 @@ function Workspace() {
   useEffect(() => {
     const id = moneyOpen ? 'money-heading' : accountOpen ? 'account-heading' : historyOpen
       ? location.pathname === '/history' ? 'history-heading' : 'history-conversation-heading' : 'page-heading';
-    document.title = `${isMoneyRoute(location.pathname) ? moneyRoutes[location.pathname] : accountOpen ? 'Settings' : historyOpen ? 'History' : 'Your 30-day plan'} · Cash flow`;
     document.getElementById(id)?.focus({ preventScroll: true });
   }, [location.pathname, moneyOpen, accountOpen, historyOpen]);
 
@@ -204,14 +204,26 @@ function Workspace() {
         revision={`${historyRevision}:${voicePhase}:${state.phase}:${snapshot?.sessionId ?? ''}`} />}
     </main>
     <footer className="site-footer no-print"><span>No payments are made.</span><Details label="Privacy">
-      <p>Audio and words are processed to prepare your plan. Avoid account numbers, passwords and card details.</p>
-      <p>{settings ? `Figures and saved conversations are kept for up to ${settings.retentionHours} hours. ` : ''}Deleting your plan or account also deletes its conversations. Signing out hides them on this device.</p>
+      <h3>Information stored</h3>
+      <p>Cash flow stores your Google sign-in details, profile, financial information, plans, corrections and text conversations. Saved preferences and context may be used in later conversations. The application does not save audio recordings, receive your Google password, connect to bank accounts or make payments.</p>
+      <h3>Service providers</h3>
+      <p>Google provides sign-in. Daily carries live calls. Azure Speech processes audio and spoken replies. Azure OpenAI processes conversation and financial context, including your display name and saved notes, to generate responses. Provider processing and retention are governed by their applicable policies; application deletion does not guarantee deletion of provider-held data.</p>
+      <h3>Retention and deletion</h3>
+      <p>{settings ? `Plans and associated conversations expire ${settings.retentionHours} hours after plan creation and are removed during expiry cleanup. ` : 'Plans and associated conversations are removed during configured expiry cleanup. '}Account-level context expires separately; saved preferences remain until forgotten or the account is deleted.</p>
+      <p>Deleting a plan removes its conversations and chat notes, but not account-level preferences or context. Deleting your account removes its saved application records. Signing out does not delete saved data. You may ask the assistant to forget a saved note; this does not erase the conversation in which it appeared.</p>
+      <p>Do not provide passwords, bank account numbers or full payment-card details.</p>
     </Details></footer>
   </>;
 }
 
 function Brand() {
-  return <Link className="brand" to="/app" aria-label="Cash flow home"><svg aria-hidden="true" viewBox="0 0 32 32" width="30" height="30" fill="none"><path d="M7 5h18a3 3 0 0 1 3 3v13a3 3 0 0 1-3 3H13l-7 5v-5a3 3 0 0 1-3-3V8a3 3 0 0 1 4-3Z" stroke="currentColor" strokeWidth="1.7" /><path d="M10 15h3m3-5v10m5-7v4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg><span>Cash flow</span></Link>;
+  const { pathname } = useLocation();
+  useEffect(() => {
+    const page = isMoneyRoute(pathname) ? moneyRoutes[pathname] : pathname === '/account' ? 'Settings'
+      : isHistoryRoute(pathname) ? 'History' : isConversationRoute(pathname) ? 'Your 30-day plan' : '';
+    document.title = page ? `${page} · Cash flow` : 'Cash flow';
+  }, [pathname]);
+  return <Link className="brand" to="/app" aria-label="Cash flow home"><img src={brandIcon} alt="" width="28" height="28" /><span>Cash flow</span></Link>;
 }
 
 function Header({ voiceBusy = false, hasDraft = false }: { voiceBusy?: boolean; hasDraft?: boolean }) {

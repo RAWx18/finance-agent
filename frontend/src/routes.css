@@ -1,11 +1,6 @@
 /* SPDX-FileCopyrightText: Ryan Madhuwala [rawx18.dev@gmail.com](mailto:rawx18.dev@gmail.com) */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 .access-page { width: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: clamp(1.5rem, 5vw, 5rem); align-content: center; align-items: center; overflow: auto; scrollbar-width: thin; }
-.access-copy { max-width: 38rem; }
-.access-copy h1 { font-size: clamp(2.25rem, 4vw, 3.5rem); font-weight: 550; margin-block: 1rem; }
-.access-copy > p:not(.eyebrow) { max-width: 40ch; }
-.signin-card { max-width: 32rem; padding: clamp(1.25rem, 3vw, 2rem); }
-.signin-card > .hint { margin-top: 1.25rem; }
 .google-signin { display: flex; flex-wrap: wrap; gap: .65rem; align-items: center; margin-top: 1.25rem; }
 .google-signin p { flex-basis: 100%; margin: 0; }
 .page-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1rem; padding-bottom: 1rem; }
