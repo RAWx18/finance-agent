@@ -21,7 +21,8 @@ export function MoneyEvent({ event, snapshot, compact = false }: { event: Plan['
   const status = event.amountBasis === 'assumed' ? adjustment ? 'Saved assumption' : 'Assumption'
     : factStatus(snapshot, field, record) === 'Conflicting reports' ? 'Conflicting reports' : amountStatus[event.amountStatus];
   return <li className="money-event" aria-label={event.label}>
-    <div><h3>{event.label}</h3><p className="money-meta">{budget ? 'Estimated daily budget share' : event.overdue ? 'Carried to' : event.kind === 'income' ? 'Incoming' : 'Due'} · <time dateTime={event.date}>{dateLabel(event.date)}</time> · {budget || event.overdue ? 'Calculated' : `Date: ${factStatus(snapshot, 'schedule.date', record)}`}</p>
+    <div><h3>{event.label}</h3><p className="money-meta">{event.dateAssumption ? 'Assumed date' : budget ? 'Estimated daily budget share' : event.overdue ? 'Carried to' : event.kind === 'income' ? 'Incoming' : 'Due'} · <time dateTime={event.date}>{dateLabel(event.date)}</time> · {event.dateAssumption || budget || event.overdue ? 'Calculated' : `Date: ${factStatus(snapshot, 'schedule.date', record)}`}</p>
+      {event.dateAssumption && <p className="money-meta">{event.dateAssumption}</p>}
       {budget && <p className="money-meta">{budgetDescription}</p>}
       {event.source?.conversion && <p className="money-meta">{sourceDescription(event.source)} · Calculated INR shown alongside.</p>}
       {event.scheduleIndex != null && !!record?.schedule.amounts?.length && <p className="money-meta">Occurrence {event.scheduleIndex + 1} of {record.schedule.amounts.length}</p>}

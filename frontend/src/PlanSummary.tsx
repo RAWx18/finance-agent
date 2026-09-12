@@ -12,8 +12,8 @@ export function ResultQualification({ snapshot, id }: { snapshot: Snapshot; id: 
   const estimated = result?.state === 'estimated';
   const qualifications = result?.qualifications ?? [];
   const state = snapshot.facts.conflicts?.length || result?.state === 'conflicting' ? 'Conflicting figures'
-    : result?.state === 'missing' ? 'Unknown' : plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete ? 'Incomplete forecast'
-      : result?.state === 'uncertain' || result?.state === 'unresolved' ? 'Some details unconfirmed' : 'Forecast';
+    : result?.state === 'missing' ? 'Amount not yet known' : plan.projectionPartial || !plan.budgetBasis.datedProjectionComplete ? 'Based on dated items'
+      : result?.state === 'uncertain' || result?.state === 'unresolved' ? 'Based on what you shared' : 'Forecast';
   return <span className="result-qualification">
     <span>{state}{estimated && ' · Includes estimates'}{id === 'closing' && ' · Not a spending allowance'}</span>
     {qualifications.map(text => <span key={text}>{text}</span>)}

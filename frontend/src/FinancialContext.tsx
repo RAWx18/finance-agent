@@ -125,8 +125,8 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
     </div> : <div className="card-record-amount card-meta">Varies by occurrence</div>}
     <div className="card-row-meta">
     <CardField {...editing} target={{ recordId: record.id, field: 'schedule.date' }} label={dateFieldLabel} className="card-date">
-      <span><ChangedValue value={date ? `${budget ? 'Starts' : event?.overdue ? 'Originally due' : record.kind === 'income' ? 'Expected' : 'Due'} ${cardDate(date)}` : record.kind === 'income' ? 'Arrival date needed' : 'Due date needed'} /></span>
-      {(dateConflict || date && record.schedule.certainty !== 'exact') && <span className="card-badge" data-tone="caution">{dateConflict ? 'Conflicting' : cardStatus[record.schedule.certainty]}</span>}
+      <span><ChangedValue value={date ? `${event?.dateAssumption ? 'Assumed' : budget ? 'Starts' : event?.overdue ? 'Originally due' : record.kind === 'income' ? 'Expected' : 'Due'} ${cardDate(date)}` : record.kind === 'income' ? 'Arrival date unknown' : 'Payment date unknown'} /></span>
+      {(dateConflict || date && record.schedule.certainty !== 'exact') && <span className="card-badge" data-tone="caution">{dateConflict ? 'Conflicting' : event?.dateAssumption ? 'Calculated' : cardStatus[record.schedule.certainty]}</span>}
       {record.schedule.recurrence !== 'once' && !budget && <span className="card-meta">{recurrenceLabels[record.schedule.recurrence]}</span>}
     </CardField>
     <div className="card-row-status">
@@ -136,6 +136,7 @@ function FactRow({ record, event, ...editing }: Editing & { record: Fact; event?
       {record.kind !== 'income' && record.controllability === 'committed' && <span className="card-meta">Committed</span>}
     </div>
     </div>
+    {event?.dateAssumption && <p className="card-row-note card-meta">From your {record.schedule.pattern?.kind === 'monthEnd' ? 'month-end' : `monthly day ${record.schedule.pattern?.day}`} pattern. Correct the date if this occurrence differs.</p>}
     {debt && !variable && <div className="card-secondary"><span className="card-caption">{target.field === 'amount' ? 'Intended payment' : record.debtType === 'card' ? 'Minimum payment' : 'Required payment'}</span>
       <AmountField {...editing} target={{ recordId: record.id, field: target.field === 'amount' ? 'target' : 'amount' }} label={`${record.label} ${target.field === 'amount' ? 'target' : 'required amount'}`} /></div>}
     {assumed && <p className="card-row-note card-meta">Plan {cardMoney(assumed.amountPaise)} · Saved assumption, not paid</p>}

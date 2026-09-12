@@ -16,4 +16,11 @@
 .plan-deadline { display: block; font-size: .78rem; margin-top: .15rem; }
 .plan-basis, .plan-expiry { color: var(--muted); font-size: .78rem; line-height: 1.5; }
 .plan-expiry { margin: .5rem 0; }
+.planning-possibilities { min-width: 0; padding: .75rem 0; overflow-wrap: anywhere; }
+.planning-possibilities h3 { font-size: .92rem; margin: 0 0 .4rem; }
+.planning-possibilities p, .planning-possibilities li { font-size: .82rem; line-height: 1.5; }
+.planning-possibilities p { margin: .35rem 0; }
+.planning-possibilities ul { padding-left: 1.2rem; }
+.planning-income { margin-top: .75rem; }
+.planning-result { padding: .5rem .65rem; border-left: 3px solid var(--teal); background: var(--paper); }
 @media print { .plan-summary { break-inside: avoid; } }

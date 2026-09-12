@@ -5,6 +5,7 @@ import { ChangedValue } from './CardField';
 import { cardDate, cardMoney } from './cardFields';
 import { lastDate, recurrenceLabels } from './money';
 import { fieldLabels, reasons } from './WorkspaceDetails';
+import { PlanningPossibilities } from './PlanningPossibilities';
 
 export function FinancialStatus({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
@@ -34,9 +35,10 @@ export function FinancialStatus({ snapshot }: { snapshot: Snapshot }) {
     {closing.amountPaise === null ? <p>Cash amount needed to project an end balance.</p>
       : !plan.events.length ? <p className="card-meta">Starting cash only · No dated forecast yet</p>
         : partial && <p className="card-meta">Based on dated items only</p>}
-    {dates.length > 0 && <p className="status-missing"><strong>Needs dates</strong>: {dates.slice(0, 2).map(amount).join(' · ')}{dates.length > 2 && ` · +${dates.length - 2} more`}</p>}
+    {dates.length > 0 && !plan.undatedImpact && <p className="status-missing"><strong>Timing to check</strong>: {dates.slice(0, 2).map(amount).join(' · ')}{dates.length > 2 && ` · +${dates.length - 2} more`}</p>}
     {unresolved.some(item => item.reason !== 'missingDate') && <p className="status-missing">Payment amounts still need checking.</p>}
-    <p className="card-meta">{partial ? 'Plan is incomplete · Not a spending allowance' : unconfirmed ? 'Some details unconfirmed · Not a spending allowance' : 'Not a spending allowance'}</p>
+    <PlanningPossibilities snapshot={snapshot} />
+    <p className="card-meta">{partial ? 'Dates and remaining costs can change this picture.' : unconfirmed ? 'Some details are still unconfirmed.' : 'Based on your reported figures.'} Not a spending allowance.</p>
     <details className="card-terms status-details"><summary>{needsAttention ? 'Needs attention' : 'Why?'}</summary>
       <div className="status-detail-body">
         <p>Starting cash plus counted income, less dated spending and payments. Undated items can still reduce what is left.</p>

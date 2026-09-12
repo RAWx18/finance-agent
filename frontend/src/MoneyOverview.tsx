@@ -8,6 +8,7 @@ import { ResultDetails } from './WorkspaceDetails';
 import { ActionDetails } from './ScenarioDetails';
 import { PlanExpiry, PlanSummary, ResultQualification } from './PlanSummary';
 import { Download } from './Download';
+import { PlanningPossibilities } from './PlanningPossibilities';
 import { MoneyChart } from './MoneyChart';
 import { MoneyIcon } from './MoneyIcon';
 import type { EditTarget } from './MoneyEdit';
@@ -53,7 +54,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
         <div className="money-metric"><dt>Starting cash<button className="money-edit-cash" disabled={blocked} aria-label="Correct starting cash" title="Correct starting cash" onClick={() => onEdit({ field: 'opening' })}><MoneyIcon name="edit" /></button></dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd><span>{dateLabel(snapshot.anchorDate)}{snapshot.facts.opening.status === 'estimate' && ' · Estimated'}{factStatus(snapshot, 'opening') === 'Conflicting reports' && ' · Check amount'}</span></div>
         <div className="money-metric is-income"><dt><span className="money-direction" aria-hidden="true">↙</span> Money coming in</dt><dd>{hasIncome ? unknownIncome ? 'Unknown' : money(plan.reliableIncomePaise) : 'Not added'}</dd><span>{unknownIncome ? 'Amount or date still needed' : nextIncome ? `Next ${dateLabel(nextIncome.date)}` : plan.uncertainIncomePaise > 0 ? 'Only confirmed amounts included' : hasIncome ? 'During these 30 days' : 'Add your expected income'}</span></div>
         <div className="money-metric"><dt><span className="money-direction" aria-hidden="true">↗</span> Money going out</dt><dd>{hasOutflow ? unknownOutflow ? 'Unknown' : money(plan.outflowPaise) : 'Not added'}</dd><span>{unknownOutflow ? 'Amount or date still needed' : hasOutflow ? 'Payments & budgeted spending' : 'Add bills and living costs'}</span></div>
-        <div className="money-metric money-metric-closing"><dt>Closing forecast</dt><dd>{money(plan.closingPaise)}</dd><span>For {dateLabel(lastDate(snapshot.endDateExclusive))}</span><ResultQualification snapshot={snapshot} id="closing" /></div>
+        <div className="money-metric money-metric-closing"><dt>{plan.undatedImpact ? 'Dated end balance' : 'Closing forecast'}</dt><dd>{money(plan.closingPaise)}</dd><span>For {dateLabel(lastDate(snapshot.endDateExclusive))}</span><ResultQualification snapshot={snapshot} id="closing" /></div>
       </dl>
     </section>
 
@@ -64,6 +65,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
           : ['clarify', 'confirmReceipt', 'verifyTerms', 'contactPayee', 'followUp', 'seekSupport', 'resolveGroup'].includes(action.kind) && <button disabled={blocked} onClick={() => onCommand({ type: 'respondToAction', actionId: action.id, response: 'unavailable' })}>I can’t confirm or take this step now</button>}
       </Details> : <button onClick={onChecks}>Review details</button>}</div>
     </PlanSummary>
+    <PlanningPossibilities snapshot={snapshot} />
 
     <div className="money-overview-body">
       <section className="money-panel money-flow" aria-label="Cash flow forecast">
@@ -83,7 +85,7 @@ export function MoneyOverview({ snapshot, blocked, onEdit, onChecks, onCommand }
           const record = snapshot.facts.records.find(record => record.id === event.recordId);
           const recurring = record && record.schedule.recurrence !== 'once';
           const basis = !event.included ? 'Not included · unconfirmed' : event.amountBasis === 'requiredOnly' ? 'Minimum only · total not known' : event.amountBasis === 'assumed' ? 'Saved change · not paid' : record?.target ? 'Intended payment · includes minimum' : event.kind === 'income' ? 'Expected' : record?.kind === 'debt' ? 'Required payment' : '';
-          const certainty = event.amountStatus === 'estimate' || record?.schedule.certainty === 'estimate' ? 'Estimated' : '';
+          const certainty = event.dateAssumption ? 'Calculated date from your pattern' : event.amountStatus === 'estimate' || record?.schedule.certainty === 'estimate' ? 'Estimated' : '';
           return <li key={event.recordId} aria-label={event.label}><span className={`money-event-symbol${event.kind === 'income' ? ' is-income' : ''}`} aria-hidden="true">{event.kind === 'income' ? '↙' : '↗'}</span><div className="money-upcoming-name"><strong>{event.label}</strong><span>{dateLabel(event.originalDueDate)}{event.amountBasis === 'budget' ? ' · Daily budget' : event.autoDebit ? ' · Auto-debit' : recurring ? ' · Next payment' : ''}</span><span className="money-upcoming-status">{[basis, certainty].filter(Boolean).join(' · ')}</span></div><strong className={`money-upcoming-amount${event.kind === 'income' ? ' is-income' : ''}`}>{event.amountPaise === null ? 'Unknown' : `${event.kind === 'income' ? '+' : '−'}${money(event.amountPaise)}`}</strong></li>;
         })}</ol> : <div className="money-upcoming-empty"><p>{elapsed ? 'No later dated items' : 'No upcoming dates yet'}</p><Link to={elapsed ? '/money/upcoming' : '/money/spending'}>{elapsed ? 'Review earlier payments' : 'Add a bill or expense'}</Link></div>}
         {!!elapsed && nextItems.length > 0 && <Link className="money-text-link" to="/money/upcoming">{elapsed} earlier {elapsed === 1 ? 'item' : 'items'} · status unconfirmed</Link>}

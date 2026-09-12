@@ -7,6 +7,7 @@ import { MoneyEvent } from './MoneyUpcoming';
 import { amountStatus, coverageLabels, factStatus } from './MoneyRecords';
 import { moneyIssues } from './MoneyChecks';
 import { PlanExpiry, PlanSummary, ResultQualification } from './PlanSummary';
+import { PlanningPossibilities } from './PlanningPossibilities';
 
 export function MoneyPrint({ snapshot }: { snapshot: Snapshot }) {
   const plan = snapshot.accepted?.plan ?? snapshot.plan;
@@ -14,6 +15,7 @@ export function MoneyPrint({ snapshot }: { snapshot: Snapshot }) {
   return <article hidden className="money-print print-only" aria-label="Saved plan for printing">
     <h1>Money</h1><p>{dateLabel(snapshot.anchorDate)} – {dateLabel(lastDate(snapshot.endDateExclusive))}</p>
     <PlanSummary snapshot={snapshot} />
+    <PlanningPossibilities snapshot={snapshot} />
     <PlanExpiry snapshot={snapshot} />
     <dl><div><dt>Cash at plan start · {dateLabel(snapshot.anchorDate)} · {factStatus(snapshot, 'opening')}</dt><dd>{money(snapshot.facts.opening.amountPaise)}</dd></div>
       <div><dt>Income included · Calculated, expected, not received</dt><dd>{money(plan.reliableIncomePaise)}</dd></div>
