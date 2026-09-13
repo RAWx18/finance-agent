@@ -184,7 +184,7 @@ export function installMicrophone(payload) {
 async function run(values) {
   const payload = JSON.parse(readFileSync(values.samples, 'utf8'));
   assert.equal(payload.sampleRate, 16000);
-  assert.equal(Object.keys(payload.samples).length, 7);
+  assert.equal(Object.keys(payload.samples).length, values.phase === 'demo' ? 8 : 7);
   assert.match(payload.dueDate, /^\d{4}-\d{2}-\d{2}$/);
   for (const sample of Object.values(payload.samples)) {
     assert.equal(typeof sample, 'string');
@@ -579,7 +579,10 @@ async function main() {
     return;
   }
   try { await run(values); }
-  catch { console.error(JSON.stringify({ check: 'harnessFailure', passed: false })); process.exitCode = 1; }
+  catch (error) {
+    console.error(JSON.stringify({ check: 'harnessFailure', passed: false, error: String(error?.message ?? error).slice(0, 300) }));
+    process.exitCode = 1;
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await main();
